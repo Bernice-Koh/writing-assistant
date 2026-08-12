@@ -1,0 +1,89 @@
+# --- Secrets ---------------------------------------------------------------
+# Anthropic and AWS credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.p12
+secrets.json
+credentials.json
+
+# --- Private working material ------------------------------------------------
+_local/
+
+# --- Rust / Tauri ----------------------------------------------------------
+target/
+**/*.rs.bk
+*.pdb
+src-tauri/gen/
+src-tauri/target/
+
+# Tauri updater signing keys
+*.key
+tauri.conf.local.json
+
+# --- Node / frontend -------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+build/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Browser extension & Word add-in builds --------------------------------
+extension/dist/
+extension/*.zip
+word-addin/dist/
+word-addin/*.zip
+
+# --- Adapter training ---------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# --- Large binaries: fetched or generated, never committed -----------------
+src-tauri/resources/languagetool-server.jar
+src-tauri/resources/languagetool/
+# Bundled Java runtime produced by jlink
+src-tauri/resources/jre/
+# Model weights, quantizations, and trained adapters
+*.gguf
+*.onnx
+*.safetensors
+*.bin
+adapter/artifacts/
+adapter/data/*.jsonl
+
+# --- User data (lives in the per-user config dir, not the repo) -------
+# Style Card, profiles, exemplar corpus, and training pairs are personal.
+*.sqlite
+*.sqlite3
+*.db
+style-card.md
+corpus/
+profiles/
+
+# --- Installer output ------------------------------------------------------
+*.msi
+*.exe
+*.nsis
+bundle/
+
+# --- Editors and OS --------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.swp
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store

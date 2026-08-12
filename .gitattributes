@@ -1,0 +1,32 @@
+# Normalize to LF in the repo, check out native on Windows.
+* text=auto
+
+# Always LF: consumed by Linux tooling (SageMaker training jobs, CI).
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.js      text eol=lf
+*.html    text eol=lf
+*.json    text eol=lf
+*.jsonl   text eol=lf
+*.py      text eol=lf
+*.sh      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+
+# Always CRLF: Windows-native build inputs.
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.wxs     text eol=crlf
+*.nsi     text eol=crlf
+
+# Binary: never diffed, never line-ending converted.
+*.png     binary
+*.ico     binary
+*.jar     binary
+*.gguf    binary
+*.onnx    binary
+*.safetensors binary

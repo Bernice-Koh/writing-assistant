@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-ssr/
+extension/dist/
+word-addin/dist/
+src-tauri/target/
+package-lock.json
+
+# Prose formatting is docs/style-guide.md's call, not Prettier's.
+*.md
