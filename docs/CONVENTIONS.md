@@ -67,9 +67,14 @@ log it at `debug` and say why in the log line, not in a comment.
 
 ## Branches
 
-Optional. Direct commits to `main` are fine for solo work; branch when a change is large
-enough to want to iterate before it lands, using `feat/<short>`, `fix/<short>`,
-`docs/<short>`, `chore/<short>`.
+Every change lands on `main` through a pull request, including one-line fixes; direct commits
+to `main` are not made. The repository is public, and a public repository holds to
+branch-then-review regardless of team size.
+
+Branch names: `feat/<short>`, `fix/<short>`, `docs/<short>`, `chore/<short>`.
+
+A pull request merges once GitHub Actions passes on the pull request itself, not only on a
+local run of the same checks. Merge with a merge commit; delete the branch afterwards.
 
 ## GitHub issues
 
