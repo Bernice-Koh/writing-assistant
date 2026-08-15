@@ -25,11 +25,21 @@ export default tseslint.config(
   },
   {
     files: ["word-addin/**/*.js", "extension/**/*.js"],
+    ignores: ["word-addin/dev-server.js"],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
-      globals: { ...globals.browser, Office: "readonly", chrome: "readonly" },
+      globals: { ...globals.browser, Office: "readonly", Word: "readonly", chrome: "readonly" },
+    },
+  },
+  {
+    files: ["word-addin/dev-server.js"],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: globals.node,
     },
   },
   {
