@@ -21,7 +21,10 @@ const CONTENT_TYPES = {
 };
 
 async function handleRequest(request, response) {
-  const requestedPath = request.url === "/" ? "/taskpane.html" : request.url;
+  // Word appends a query string to the task pane URL (host, platform, locale), so the path
+  // must be parsed out rather than used as the request URL directly.
+  const { pathname } = new URL(request.url, "http://localhost");
+  const requestedPath = pathname === "/" ? "/taskpane.html" : pathname;
   const filePath = normalize(join(ROOT, requestedPath));
   if (!filePath.startsWith(ROOT)) {
     response.writeHead(403).end();
