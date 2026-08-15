@@ -26,3 +26,29 @@ pub enum NativeCaptureError {
     #[error("target text not found in the element")]
     TextNotFound,
 }
+
+/// Maps this backend's own, specific failure modes onto the `Capture` trait's shared
+/// vocabulary at the trait boundary, per #19: a caller of the trait never matches on
+/// `NativeCaptureError` directly. `NoCaret` becomes `Unsupported` rather than a dedicated
+/// variant: from the trait's perspective, an element whose TextPattern reports no caret range
+/// cannot answer a cursor-rect request right now, the same practical outcome as an element
+/// with no TextPattern at all.
+impl From<NativeCaptureError> for crate::capture::CaptureError {
+    fn from(error: NativeCaptureError) -> Self {
+        use crate::capture::CaptureError;
+        let message = error.to_string();
+        match error {
+            NativeCaptureError::TextNotFound => CaptureError::TextNotFound,
+            NativeCaptureError::InsertionUnverified => CaptureError::Unverified,
+            NativeCaptureError::NoTextPattern
+            | NativeCaptureError::NoCaret
+            | NativeCaptureError::NoValuePattern
+            | NativeCaptureError::ReadOnly => CaptureError::Unsupported,
+            NativeCaptureError::Com(_)
+            | NativeCaptureError::ThreadSpawn(_)
+            | NativeCaptureError::ThreadNotReady
+            | NativeCaptureError::SendInputIncomplete { .. }
+            | NativeCaptureError::ClipboardAlloc => CaptureError::Communication(message),
+        }
+    }
+}

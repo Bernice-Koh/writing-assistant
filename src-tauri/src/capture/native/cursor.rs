@@ -11,13 +11,10 @@ use windows::Win32::UI::Accessibility::{
 
 use super::error::NativeCaptureError;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CursorRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
+/// The `Capture` trait's shared type, not a native-specific one: reconciled here rather than
+/// kept as a duplicate now that #19 gives the whole capture module one `CursorRect` to agree
+/// on.
+pub use crate::capture::CursorRect;
 
 /// Reads the caret's screen rectangle for `element`, or the specific reason it couldn't.
 pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCaptureError> {
