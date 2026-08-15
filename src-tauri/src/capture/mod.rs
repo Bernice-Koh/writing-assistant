@@ -4,6 +4,8 @@
 //!
 //! The shared contract itself is not yet defined: `native` is the first of three backends
 //! (native, web, word) to exist, and the contract is designed once there is more than one to
-//! abstract over, not guessed from a single data point.
+//! abstract over, not guessed from a single data point. `web` is the second: so far it is only
+//! the messaging bridge the capture contract will eventually run over, not the contract itself.
 
 pub mod native;
+pub mod web;

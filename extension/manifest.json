@@ -3,5 +3,17 @@
   "name": "Writing Assistant",
   "version": "0.1.0",
   "description": "Web capture surface for the Writing Assistant desktop app.",
-  "minimum_chrome_version": "116"
+  "minimum_chrome_version": "116",
+  "permissions": ["alarms"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*", "https://mail.google.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
 }
