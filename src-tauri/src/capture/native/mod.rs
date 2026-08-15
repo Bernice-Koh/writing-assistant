@@ -6,7 +6,9 @@
 //! apartment membership). Both event handlers therefore only ever *signal* the owning thread
 //! from whatever UIA-managed callback thread they're delivered on; every actual UIA call
 //! (re-scoping the text-change registration, fetching the caret rect) happens back on the one
-//! thread that owns the client, never inside a callback.
+//! thread that owns the client, never inside a callback. The `Capture` trait's methods (#20)
+//! extend the same principle: they too only send a signal and await a reply carrying owned
+//! data, never a COM object, across the boundary.
 
 pub mod client;
 pub mod cursor;
@@ -15,14 +17,16 @@ mod focus;
 pub mod insert;
 mod text_change;
 
-use std::sync::mpsc;
+use std::sync::mpsc as ready_channel;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use tokio::sync::{mpsc as signal_channel, oneshot};
 use windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationEventHandler, IUIAutomationFocusChangedEventHandler,
 };
 
+use crate::capture::{CaptureError, CursorRect};
 use client::Uia;
 use error::NativeCaptureError;
 use focus::FocusHandler;
@@ -31,7 +35,7 @@ use focus::FocusHandler;
 /// registration, and whichever element the text-change registration currently targets.
 /// Dropping it unregisters everything and joins the thread.
 pub struct NativeCapture {
-    stop: Option<mpsc::Sender<Signal>>,
+    tx: Option<signal_channel::UnboundedSender<Signal>>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -43,16 +47,16 @@ impl NativeCapture {
     /// Returns the error if the thread could not be spawned, ended before signalling
     /// readiness, or a UIA setup call failed.
     pub fn start() -> Result<Self, NativeCaptureError> {
-        let (stop_tx, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let thread_tx = stop_tx.clone();
+        let (tx, rx) = signal_channel::unbounded_channel();
+        let (ready_tx, ready_rx) = ready_channel::channel();
+        let thread_tx = tx.clone();
         let join = thread::Builder::new()
             .name("writing-assistant-uia".to_owned())
             .spawn(move || run(&ready_tx, rx, thread_tx))
             .map_err(|error| NativeCaptureError::ThreadSpawn(error.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
-                stop: Some(stop_tx),
+                tx: Some(tx),
                 join: Some(join),
             }),
             Ok(Err(error)) => {
@@ -65,12 +69,62 @@ impl NativeCapture {
             }
         }
     }
+
+    /// Sends a signal built by `build` to the capture thread and awaits its reply. The bridge
+    /// between this struct's async `Capture` methods and the thread's own synchronous,
+    /// COM-apartment-bound event loop: `build` receives the reply half of a fresh channel and
+    /// returns the `Signal` carrying it, so each caller only names which request it wants,
+    /// never the channel plumbing itself.
+    async fn request<T: Send>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, CaptureError>>) -> Signal,
+    ) -> Result<T, CaptureError> {
+        let tx = self.tx.as_ref().ok_or_else(|| {
+            CaptureError::Communication("capture thread has already stopped".to_owned())
+        })?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(build(reply_tx))
+            .map_err(|_| CaptureError::Communication("capture thread is not running".to_owned()))?;
+        reply_rx.await.map_err(|_| {
+            CaptureError::Communication("capture thread dropped the reply".to_owned())
+        })?
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::capture::Capture for NativeCapture {
+    async fn current_text(&self) -> Result<String, CaptureError> {
+        self.request(Signal::GetText).await
+    }
+
+    async fn cursor_rect(&self) -> Result<CursorRect, CaptureError> {
+        self.request(Signal::GetCursorRect).await
+    }
+
+    async fn replace(
+        &self,
+        anchor: &str,
+        local_start: usize,
+        local_length: usize,
+        replacement: &str,
+    ) -> Result<(), CaptureError> {
+        let anchor = anchor.to_owned();
+        let replacement = replacement.to_owned();
+        self.request(|reply| Signal::Replace {
+            anchor,
+            local_start,
+            local_length,
+            replacement,
+            reply,
+        })
+        .await
+    }
 }
 
 impl Drop for NativeCapture {
     fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(Signal::Stop);
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Signal::Stop);
         }
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -79,12 +133,22 @@ impl Drop for NativeCapture {
 }
 
 /// Sent through one shared channel so the owning thread's loop can wait on a single receiver:
-/// UIA delivers focus and text-change events on its own callback threads, and `Drop` signals
-/// teardown from whatever thread drops the `NativeCapture`.
+/// UIA delivers focus and text-change events on its own callback threads, `Drop` signals
+/// teardown from whatever thread drops the `NativeCapture`, and a `Capture` trait call signals
+/// a request from whatever async task made it.
 enum Signal {
     FocusChanged,
     TextChanged,
     Stop,
+    GetText(oneshot::Sender<Result<String, CaptureError>>),
+    GetCursorRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
+    Replace {
+        anchor: String,
+        local_start: usize,
+        local_length: usize,
+        replacement: String,
+        reply: oneshot::Sender<Result<(), CaptureError>>,
+    },
 }
 
 impl Signal {
@@ -93,6 +157,9 @@ impl Signal {
             Signal::FocusChanged => "FocusChanged",
             Signal::TextChanged => "TextChanged",
             Signal::Stop => "Stop",
+            Signal::GetText(_) => "GetText",
+            Signal::GetCursorRect(_) => "GetCursorRect",
+            Signal::Replace { .. } => "Replace",
         }
     }
 }
@@ -106,9 +173,9 @@ struct TextChangeScope {
 }
 
 fn run(
-    ready: &mpsc::Sender<Result<(), NativeCaptureError>>,
-    rx: mpsc::Receiver<Signal>,
-    tx: mpsc::Sender<Signal>,
+    ready: &ready_channel::Sender<Result<(), NativeCaptureError>>,
+    mut rx: signal_channel::UnboundedReceiver<Signal>,
+    tx: signal_channel::UnboundedSender<Signal>,
 ) {
     let setup = (|| -> Result<_, NativeCaptureError> {
         let uia = Uia::new()?;
@@ -142,7 +209,7 @@ fn run(
 
     let mut current_scope: Option<TextChangeScope> = None;
 
-    for signal in rx {
+    while let Some(signal) = rx.blocking_recv() {
         log::debug!("signal received: {}", signal.name());
         match signal {
             Signal::Stop => break,
@@ -184,6 +251,41 @@ fn run(
                 if let Some(scope) = &current_scope {
                     log_caret_rect("text changed", &scope.element);
                 }
+            }
+            Signal::GetText(reply) => {
+                let result = match &current_scope {
+                    Some(scope) => insert::current_text(&scope.element).map_err(CaptureError::from),
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::GetCursorRect(reply) => {
+                let result = match &current_scope {
+                    Some(scope) => cursor::caret_rect(&scope.element).map_err(CaptureError::from),
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::Replace {
+                anchor,
+                local_start,
+                local_length,
+                replacement,
+                reply,
+            } => {
+                let result = match &current_scope {
+                    Some(scope) => insert::replace_within(
+                        &scope.element,
+                        &anchor,
+                        local_start,
+                        local_length,
+                        &replacement,
+                    )
+                    .map(|method| log::info!("replace succeeded via {method:?}"))
+                    .map_err(CaptureError::from),
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
             }
         }
     }
