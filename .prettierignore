@@ -2,7 +2,6 @@ node_modules/
 dist/
 dist-ssr/
 extension/dist/
-word-addin/dist/
 src-tauri/target/
 package-lock.json
 
