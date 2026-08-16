@@ -1,23 +1,18 @@
-// Content script for the web capture bridge spike (issue #12). Reads the focused editable
-// element on a keyboard trigger, round-trips it through the background script to the Rust
-// core, and writes the reply back into the same element. Proves DOM read, the messaging round
-// trip, and DOM write against a real page; the trigger is temporary scaffolding for manual
-// verification, not the eventual live-check flow.
-
-const TRIGGER_KEY = "y";
+// Content script for the web capture bridge (issue #21). Tracks the focused editable element as
+// focus moves around the page, and answers the background script's request-text and replace
+// messages against whichever element is currently tracked, so the Rust core can pull text and
+// push a replacement on its own schedule rather than on a manual trigger.
 
 console.debug("[writing-assistant] content script injected on", location.href);
 
-function focusedEditable() {
-  const active = document.activeElement;
-  if (!active) {
-    return null;
+let focusedTarget = null;
+
+function focusedEditable(element) {
+  if (element.tagName === "TEXTAREA" || element.tagName === "INPUT") {
+    return { element, kind: "value" };
   }
-  if (active.tagName === "TEXTAREA" || active.tagName === "INPUT") {
-    return { element: active, kind: "value" };
-  }
-  if (active.isContentEditable) {
-    return { element: active, kind: "content-editable" };
+  if (element.isContentEditable) {
+    return { element, kind: "content-editable" };
   }
   return null;
 }
@@ -35,37 +30,46 @@ function writeText(target, text) {
   target.element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-let pendingTarget = null;
-
-// Capture phase, not bubble: a site's own keydown handler further down the tree can call
-// stopPropagation before a bubble-phase listener on `document` ever sees the event, and Gmail's
-// compose surface does exactly that for several shortcuts.
+// Capture phase, not bubble: a site's own focus handler further down the tree can stop this
+// event from ever reaching a bubble-phase listener on `document`, the same reasoning the
+// removed keydown-trigger spike (#12) applied to its own listener.
 document.addEventListener(
-  "keydown",
+  "focusin",
   (event) => {
-    if (!event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== TRIGGER_KEY) {
-      return;
-    }
-    console.debug("[writing-assistant] trigger seen, activeElement:", document.activeElement);
-    const target = focusedEditable();
-    if (!target) {
-      console.debug("[writing-assistant] no editable target found");
-      return;
-    }
-    event.preventDefault();
-    pendingTarget = target;
-    console.debug("[writing-assistant] sending capture-request", {
-      length: readText(target).length,
-    });
-    chrome.runtime.sendMessage({ type: "capture-request", text: readText(target) });
+    focusedTarget = focusedEditable(event.target);
   },
   true,
 );
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type !== "capture-reply" || !pendingTarget) {
+document.addEventListener(
+  "focusout",
+  (event) => {
+    if (focusedTarget && event.target === focusedTarget.element) {
+      focusedTarget = null;
+    }
+  },
+  true,
+);
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === "request-text") {
+    sendResponse(focusedTarget ? { text: readText(focusedTarget) } : { noFocus: true });
     return;
   }
-  writeText(pendingTarget, message.text);
-  pendingTarget = null;
+  if (message.type === "replace") {
+    if (!focusedTarget) {
+      sendResponse({ found: false });
+      return;
+    }
+    const text = readText(focusedTarget);
+    const anchorIndex = text.indexOf(message.anchor);
+    if (anchorIndex === -1) {
+      sendResponse({ found: false });
+      return;
+    }
+    const start = anchorIndex + message.localStart;
+    const end = start + message.localLength;
+    writeText(focusedTarget, text.slice(0, start) + message.replacement + text.slice(end));
+    sendResponse({ found: true });
+  }
 });
