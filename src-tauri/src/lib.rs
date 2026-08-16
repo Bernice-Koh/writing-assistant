@@ -12,6 +12,11 @@ pub mod style;
 
 /// Builds and runs the Tauri application.
 pub fn run() {
+    // `info` rather than `env_logger`'s own `error` default, so a normal run shows the capture
+    // backend's flow without the caller having to know to set `RUST_LOG`. The Tier 0 path's
+    // per-keystroke lines stay at `debug` and so stay off until asked for.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     tauri::Builder::default()
         .setup(|app| {
             overlay::create(app.handle())?;
