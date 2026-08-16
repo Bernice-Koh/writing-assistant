@@ -9,6 +9,8 @@ pub enum NativeCaptureError {
     NoTextPattern,
     #[error("TextPattern exposed no caret range")]
     NoCaret,
+    #[error("text selection is a range, not a caret")]
+    SelectionNotCaret,
     #[error("could not spawn the UI Automation thread: {0}")]
     ThreadSpawn(String),
     #[error("UI Automation thread ended before signalling readiness")]
@@ -32,7 +34,8 @@ pub enum NativeCaptureError {
 /// `NativeCaptureError` directly. `NoCaret` becomes `Unsupported` rather than a dedicated
 /// variant: from the trait's perspective, an element whose TextPattern reports no caret range
 /// cannot answer a cursor-rect request right now, the same practical outcome as an element
-/// with no TextPattern at all.
+/// with no TextPattern at all. `SelectionNotCaret` joins them for that same reason; the two
+/// stay separate variants only so a log line can say which of the two happened.
 impl From<NativeCaptureError> for crate::capture::CaptureError {
     fn from(error: NativeCaptureError) -> Self {
         use crate::capture::CaptureError;
@@ -42,6 +45,7 @@ impl From<NativeCaptureError> for crate::capture::CaptureError {
             NativeCaptureError::InsertionUnverified => CaptureError::Unverified,
             NativeCaptureError::NoTextPattern
             | NativeCaptureError::NoCaret
+            | NativeCaptureError::SelectionNotCaret
             | NativeCaptureError::NoValuePattern
             | NativeCaptureError::ReadOnly => CaptureError::Unsupported,
             NativeCaptureError::Com(_)
