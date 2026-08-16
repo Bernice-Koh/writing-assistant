@@ -10,6 +10,12 @@ pub mod rewrite;
 pub mod store;
 pub mod style;
 
+use std::sync::Arc;
+
+use tauri::Manager;
+
+use capture::Capture;
+
 /// Builds and runs the Tauri application.
 pub fn run() {
     // `info` rather than `env_logger`'s own `error` default, so a normal run shows the capture
@@ -20,6 +26,12 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             overlay::create(app.handle())?;
+            let backend: Arc<dyn Capture> = Arc::new(capture::native::NativeCapture::start()?);
+            // Managed as well as tracked: the overlay only needs the cursor rect, but the
+            // commands that will serve the Style Card and the rewrite orchestrator need the
+            // same backend, and the trait object is what keeps them from naming a surface.
+            app.manage(Arc::clone(&backend));
+            overlay::track_cursor(app.handle().clone(), backend);
             Ok(())
         })
         .run(tauri::generate_context!())
