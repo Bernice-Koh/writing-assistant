@@ -59,7 +59,7 @@ Work is assigned to a tier by how fast it has to answer, and stays there.
 
 | Feature | Detail |
 |---|---|
-| Three capture surfaces | Browser extension, Word add-in, and UI Automation client, all behind one interface |
+| Two capture surfaces | Browser extension and UI Automation client, all behind one interface |
 | Declared target voice | Flagging scores against the voice the user chose, kept separate from measured habit |
 | Live style flagging | Per-sentence drift at Tier 0. Each flag names the target it missed and by how much |
 | Editable Style Card | Any line editable, pinned lines survive regeneration, every rewrite traces back to a rule |
@@ -380,7 +380,6 @@ writing-assistant/
 ├── src/                          # React + TypeScript frontend
 │   └── components/               # Overlay, Style Card editor, onboarding, settings, tray
 ├── extension/                    # Browser extension, web capture backend
-├── word-addin/                   # Office add-in, Word capture backend
 └── adapter/                      # Pair synthesis, QLoRA training job
 ```
 
@@ -391,9 +390,8 @@ The style and checking engine is a library crate with a clean public API, so it 
 | Component | Responsibility |
 |---|---|
 | Capture interface | One contract for text delivery, cursor reporting, and replacement. The engine never learns which backend served a request |
-| Web backend | Reads and writes in the DOM, covering any browser-based editor |
-| Word backend | Reads and writes through the Word document object model |
-| Native backend | Focus and text-change subscriptions, sentence expansion, cursor rectangle for overlay placement |
+| Web backend | Reads and writes in the DOM, covering browser-based editors with real DOM text content. Canvas-rendered editors (Google Docs, Word for the web) are not currently captured |
+| Native backend | Focus and text-change subscriptions, sentence expansion, cursor rectangle for overlay placement. Also the path for Microsoft Word's desktop document surface, which exposes UI Automation's `TextPattern` like any other rich-text control |
 | Insertion cascade | Writes corrections into native apps, degrading per application through value-set, synthetic input, then clipboard paste |
 | Analyzer pipeline | Debounce, incremental diffing, merge and dedupe by span, ranking, LRU cache |
 | Grammar engine | Tier 0.5 rule set, subprocess lifecycle, health checks, bounded restart |
@@ -411,7 +409,7 @@ The style and checking engine is a library crate with a clean public API, so it 
 | Layer | Technologies |
 |---|---|
 | Core | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), [Rayon](https://github.com/rayon-rs/rayon), [`parking_lot`](https://github.com/Amanieu/parking_lot) `FairMutex` for deterministic real-time latency |
-| Capture | [`windows-rs`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`, [Extension MV3](https://developer.chrome.com/docs/extensions/mv3/intro/), [Office.js](https://learn.microsoft.com/en-us/office/dev/add-ins/reference/javascript-api-for-office) |
+| Capture | [`windows-rs`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`, [Extension MV3](https://developer.chrome.com/docs/extensions/mv3/intro/) |
 | Analysis | [`similar`](https://crates.io/crates/similar), [`ropey`](https://crates.io/crates/ropey), [`regex`](https://crates.io/crates/regex), [`unicode-segmentation`](https://crates.io/crates/unicode-segmentation), hunspell with `en_GB` plus a Singapore supplement, LanguageTool 6.x set to `en-GB` over localhost HTTP |
 | Style features | 50 to 200 deterministic features across function words, punctuation, orthography, sentence shape, and readability, plus the AI-telltale catalog |
 | Models | Claude Sonnet 5 for rewrites, soft critic, onboarding generation, and de-styling. Encoder classifier with a regression head for register. Quantized Qwen3 8B plus QLoRA for the local adapter |
@@ -433,7 +431,7 @@ The AI-telltale catalog is vendored from [signs-of-ai-writing](https://github.co
 | Runtime | Bundled `jlink` Java runtime |
 | Network | Required for rewrites. Live checking works offline |
 | Credentials | Anthropic API key on first run. AWS with SageMaker access only to train a voice adapter |
-| Optional | A Chromium-based browser for the web surface, Word 2016 or later for the add-in |
+| Optional | A Chromium-based browser for the web surface |
 
 Offline, the app still captures text and runs spelling, grammar, drift, and AI-tell flagging locally. Rewriting and the soft critic need the cloud until an adapter is trained, after which they run locally too.
 

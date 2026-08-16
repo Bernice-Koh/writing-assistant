@@ -35,11 +35,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# --- Browser extension & Word add-in builds --------------------------------
+# --- Browser extension builds -----------------------------------------------
 extension/dist/
 extension/*.zip
-word-addin/dist/
-word-addin/*.zip
 
 # --- Adapter training ---------------------------------------------
 __pycache__/

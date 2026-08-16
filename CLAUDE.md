@@ -29,8 +29,10 @@ Current top level, matching README's Repository structure:
   `src-tauri/resources/`.
 - `src/` - the React and TypeScript frontend: overlay, Style Card editor, onboarding,
   settings, tray.
-- `extension/` - the browser extension, the web capture backend.
-- `word-addin/` - the Office add-in, the Word capture backend.
+- `extension/` - the browser extension, the web capture backend. There is no separate Word
+  backend: Microsoft Word's desktop document surface is captured natively (see
+  `src-tauri/src/capture/native/`). Word for the web is a different, unsolved problem; see
+  README's Components section.
 - `adapter/` - pair synthesis and the QLoRA training job, Python, run on Amazon SageMaker.
 - `_local/` - private working material: early research, draft specifications, decision logs.
   Gitignored. See the archive boundary in `docs/constitution.md`.

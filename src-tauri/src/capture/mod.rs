@@ -2,11 +2,15 @@
 //! Automation backend and the insertion cascade behind it. The rest of the engine never learns
 //! which backend served a request.
 //!
-//! [`Capture`] is that contract, designed now that there is more than one backend ([`native`],
-//! [`web`], word) to abstract over rather than guessed from a single data point. `word` has no
-//! Rust module yet: #22 builds its Rust-side bridge from scratch and implements this trait
-//! directly, unlike native and web, whose existing spike code this trait's doc comments map
-//! onto.
+//! [`Capture`] has two implementations: [`native`], which also covers Microsoft Word's desktop
+//! document surface (UI Automation's `TextPattern` covers it like any other rich-text control,
+//! no Word-specific integration needed), and [`web`], which covers browser-based editors with
+//! real DOM text content. A third backend built on Office.js was scoped in #22 to give Word its
+//! own document-object-model path; it was dropped once manual verification confirmed native's
+//! coverage against real Word, with the reasoning recorded on that issue. Word for the web was
+//! briefly assumed to fall under `web` instead, until manual verification found otherwise: like
+//! Google Docs, it renders into a canvas with no real DOM behind it, so `web`'s DOM-based read
+//! sees only a decoy input, not the document. See #31.
 
 pub mod error;
 pub mod native;
@@ -27,28 +31,22 @@ pub struct CursorRect {
 
 /// One contract for text delivery, cursor reporting, and replacement, so the rest of the engine
 /// never learns which backend served a request. Async because every real implementation crosses
-/// a thread or network boundary: native forwards through its dedicated UIA thread, web and word
-/// both round-trip a message.
+/// a thread or network boundary: native forwards through its dedicated UIA thread, web
+/// round-trips a message.
 #[async_trait::async_trait]
 pub trait Capture: Send + Sync {
     /// The full current text of whatever the backend considers "the document": an element's
-    /// value for native ([`native::insert::current_text`]), the captured element's text for
-    /// web, and the document body's text for word.
-    ///
-    /// Web's current spike ([`web::message::ClientMessage::Capture`]) is push-only: the
-    /// extension sends text on its own trigger, the core does not ask for it. Conforming to
-    /// this method needs a new pull-capable request added to the bridge protocol, not just a
-    /// signature wrapped around the existing message. Word has no protocol yet at all; #22
-    /// designs one pull-capable from the start.
+    /// value for native ([`native::insert::current_text`]), or the captured element's text for
+    /// web.
     async fn current_text(&self) -> Result<String, CaptureError>;
 
     /// The caret's on-screen rectangle, for overlay placement. Native answers this from UI
-    /// Automation's TextPattern ([`native::cursor::caret_rect`]). Web and word are expected to
-    /// return [`CaptureError::Unsupported`]: a browser content script cannot reliably convert a
-    /// DOM position to absolute screen coordinates (no way to learn the browser chrome's
-    /// height from page JavaScript), and Office.js exposes no on-screen pixel position at all.
-    /// Those surfaces need a presentation mechanism other than a desktop overlay window, a
-    /// decision left to whoever designs that presentation, not this trait.
+    /// Automation's TextPattern ([`native::cursor::caret_rect`]), including for Word's desktop
+    /// document surface. Web returns [`CaptureError::Unsupported`]: a browser content script
+    /// cannot reliably convert a DOM position to absolute screen coordinates (no way to learn
+    /// the browser chrome's height from page JavaScript). That surface needs a presentation
+    /// mechanism other than a desktop overlay window, a decision left to whoever designs that
+    /// presentation, not this trait.
     async fn cursor_rect(&self) -> Result<CursorRect, CaptureError>;
 
     /// Replaces the `local_length`-UTF-16-code-unit span starting `local_start` code units into
@@ -56,13 +54,13 @@ pub trait Capture: Send + Sync {
     ///
     /// Anchored on found text rather than an absolute document offset for the reason
     /// [`native::insert::replace_within`] already documents: absolute character counting
-    /// drifts near auto-numbered list items in UI Automation, and plausibly in Word's own
-    /// object model too, while a local offset from a freshly-found anchor never crosses the
-    /// boundary that causes the drift.
+    /// drifts near auto-numbered list items in UI Automation, including in Word's own document
+    /// surface, while a local offset from a freshly-found anchor never crosses the boundary
+    /// that causes the drift.
     ///
     /// UTF-16 code units because that is what UI Automation counts by and what JavaScript
-    /// strings are natively, in both the browser extension and Office.js: a genuine
-    /// convergence across all three backends, not a Windows-specific artifact.
+    /// strings are natively: a genuine convergence across both backends, not a
+    /// Windows-specific artifact.
     ///
     /// Native's spike also has `replace_at` (absolute offset), `replace_span` and
     /// `replace_last_typed` (content search without a caller-supplied anchor), and bare
