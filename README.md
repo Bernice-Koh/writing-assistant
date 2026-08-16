@@ -390,7 +390,7 @@ The style and checking engine is a library crate with a clean public API, so it 
 | Component | Responsibility |
 |---|---|
 | Capture interface | One contract for text delivery, cursor reporting, and replacement. The engine never learns which backend served a request |
-| Web backend | Reads and writes in the DOM, covering any browser-based editor, including Word for the web |
+| Web backend | Reads and writes in the DOM, covering browser-based editors with real DOM text content. Canvas-rendered editors (Google Docs, Word for the web) are not currently captured |
 | Native backend | Focus and text-change subscriptions, sentence expansion, cursor rectangle for overlay placement. Also the path for Microsoft Word's desktop document surface, which exposes UI Automation's `TextPattern` like any other rich-text control |
 | Insertion cascade | Writes corrections into native apps, degrading per application through value-set, synthetic input, then clipboard paste |
 | Analyzer pipeline | Debounce, incremental diffing, merge and dedupe by span, ranking, LRU cache |

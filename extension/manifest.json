@@ -10,12 +10,7 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://github.com/*",
-        "https://mail.google.com/*",
-        "https://word-edit.officeapps.live.com/*",
-        "https://*.cloud.microsoft/*"
-      ],
+      "matches": ["https://github.com/*", "https://mail.google.com/*"],
       "js": ["content-script.js"],
       "run_at": "document_idle",
       "all_frames": true

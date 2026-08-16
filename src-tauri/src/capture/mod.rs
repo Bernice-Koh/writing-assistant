@@ -4,10 +4,13 @@
 //!
 //! [`Capture`] has two implementations: [`native`], which also covers Microsoft Word's desktop
 //! document surface (UI Automation's `TextPattern` covers it like any other rich-text control,
-//! no Word-specific integration needed), and [`web`], which also covers Word for the web. A
-//! third backend built on Office.js was scoped in #22 to give Word its own document-object-model
-//! path; it was dropped once manual verification confirmed native's coverage against real Word,
-//! with the reasoning recorded on that issue.
+//! no Word-specific integration needed), and [`web`], which covers browser-based editors with
+//! real DOM text content. A third backend built on Office.js was scoped in #22 to give Word its
+//! own document-object-model path; it was dropped once manual verification confirmed native's
+//! coverage against real Word, with the reasoning recorded on that issue. Word for the web was
+//! briefly assumed to fall under `web` instead, until manual verification found otherwise: like
+//! Google Docs, it renders into a canvas with no real DOM behind it, so `web`'s DOM-based read
+//! sees only a decoy input, not the document. See #31.
 
 pub mod error;
 pub mod native;
