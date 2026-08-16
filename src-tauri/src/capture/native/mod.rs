@@ -15,6 +15,7 @@ pub mod cursor;
 pub mod error;
 mod focus;
 pub mod insert;
+mod process;
 mod text_change;
 
 use std::sync::mpsc as ready_channel;
@@ -214,6 +215,31 @@ fn run(
         match signal {
             Signal::Stop => break,
             Signal::FocusChanged => {
+                let element = match uia.focused_element(&cache) {
+                    Ok(element) => element,
+                    Err(error) => {
+                        log::debug!("no focused element: {error}");
+                        continue;
+                    }
+                };
+                // SAFETY: `element` is live and owned by this thread.
+                let pid = match unsafe { element.CurrentProcessId() } {
+                    Ok(pid) => pid.cast_unsigned(),
+                    Err(error) => {
+                        log::debug!(
+                            "could not read the focused element's process id, \
+                             treating it as the user's: {error}"
+                        );
+                        0
+                    }
+                };
+                // Resolved before the previous scope is torn down, so that clicking the app's
+                // own window leaves whatever the user was writing in still tracked rather than
+                // dropping it in favour of our own UI.
+                if process::belongs_to_this_app(pid) {
+                    log::debug!("focus is on this app's own window (pid {pid}); scope unchanged");
+                    continue;
+                }
                 if let Some(scope) = current_scope.take() {
                     // SAFETY: `scope.element`/`scope.handler` are the exact pair returned by
                     // the matching `text_change::register` call below.
@@ -223,28 +249,21 @@ fn run(
                         log::debug!("failed to remove previous text-change registration: {error}");
                     }
                 }
-                match uia.focused_element(&cache) {
-                    Ok(element) => {
-                        log_caret_rect("focus changed", &element);
-                        let text_tx = tx.clone();
-                        let callback: text_change::TextChangeCallback =
-                            Arc::new(move |_element: &IUIAutomationElement| {
-                                let _ = text_tx.send(Signal::TextChanged);
-                            });
-                        // SAFETY: `uia.client()`, `cache`, and `element` are all live and owned
-                        // by this thread.
-                        match unsafe {
-                            text_change::register(uia.client(), &cache, &element, callback)
-                        } {
-                            Ok(handler) => {
-                                current_scope = Some(TextChangeScope { element, handler });
-                            }
-                            Err(error) => {
-                                log::debug!("failed to register text-change handler: {error}");
-                            }
-                        }
+                log_caret_rect("focus changed", &element);
+                let text_tx = tx.clone();
+                let callback: text_change::TextChangeCallback =
+                    Arc::new(move |_element: &IUIAutomationElement| {
+                        let _ = text_tx.send(Signal::TextChanged);
+                    });
+                // SAFETY: `uia.client()`, `cache`, and `element` are all live and owned by this
+                // thread.
+                match unsafe { text_change::register(uia.client(), &cache, &element, callback) } {
+                    Ok(handler) => {
+                        current_scope = Some(TextChangeScope { element, handler });
                     }
-                    Err(error) => log::debug!("no focused element: {error}"),
+                    Err(error) => {
+                        log::debug!("failed to register text-change handler: {error}");
+                    }
                 }
             }
             Signal::TextChanged => {
@@ -303,7 +322,27 @@ fn run(
 
 fn log_caret_rect(reason: &str, element: &IUIAutomationElement) {
     match cursor::caret_rect(element) {
-        Ok(rect) => log::info!("{reason}: caret rect {rect:?}"),
-        Err(error) => log::debug!("{reason}: no caret rect ({error})"),
+        Ok(rect) => log::info!("{reason}: caret rect {rect:?} on {}", describe(element)),
+        Err(error) => {
+            log::debug!("{reason}: no caret rect ({error}) on {}", describe(element));
+        }
+    }
+}
+
+/// Identifies an element by class, control type, and owning process, so a caret-rect failure
+/// can be traced to *which* element UIA handed over rather than only that it had no caret.
+/// Deliberately omits the element's `Name`: on some controls that property carries the user's
+/// own text, which never enters a log at any level.
+fn describe(element: &IUIAutomationElement) -> String {
+    // SAFETY: `element` is live and owned by this thread; each property getter fails safely
+    // (Err) rather than trapping, and every BSTR returned is dropped by windows-rs.
+    unsafe {
+        let class = element
+            .CurrentClassName()
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+        let control_type = element.CurrentControlType().map_or(0, |id| id.0);
+        let pid = element.CurrentProcessId().unwrap_or(0);
+        format!("class={class:?} control_type={control_type} pid={pid}")
     }
 }
