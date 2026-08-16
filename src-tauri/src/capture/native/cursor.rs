@@ -6,7 +6,9 @@ use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
 };
 use windows::Win32::UI::Accessibility::{
-    IUIAutomationElement, IUIAutomationTextPattern, TextUnit_Character, UIA_TextPatternId,
+    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextRange,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+    UIA_TextPatternId,
 };
 
 use super::error::NativeCaptureError;
@@ -28,6 +30,9 @@ pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCa
     let selection = unsafe { pattern.GetSelection() }?;
     // SAFETY: `selection` is a live text-range array from the call above.
     let caret = unsafe { selection.GetElement(0) }.map_err(|_| NativeCaptureError::NoCaret)?;
+    if !is_degenerate(&caret)? {
+        return Err(NativeCaptureError::SelectionNotCaret);
+    }
     // SAFETY: `caret` is a live range from the call above.
     unsafe { caret.ExpandToEnclosingUnit(TextUnit_Character) }?;
     // SAFETY: `caret` is a live, expanded range; the returned SAFEARRAY is drained and
@@ -36,6 +41,30 @@ pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCa
     // SAFETY: `array` was just returned by GetBoundingRectangles above, not read elsewhere.
     let floats = unsafe { drain_f64_safearray(array) };
     rect_from_floats(&floats).ok_or(NativeCaptureError::NoCaret)
+}
+
+/// Whether `range` is a caret rather than a span of selected text. A caret is *degenerate*: its
+/// start and end resolve to the same point, which is what `CompareEndpoints` reporting zero
+/// means.
+///
+/// `GetSelection` answers with a non-degenerate range whenever text is actually selected, and
+/// some documents hand one back covering their whole body when there is no caret at all.
+/// Expanding either to a character unit yields the first character or embedded object inside
+/// it, whose rectangle bears no relation to a caret: in manual verification a browser reported
+/// an entire 1912x914 viewport this way, and a video player element 141x139, each of which
+/// threw the overlay to a meaningless part of the screen. Tested before expanding, because
+/// expansion destroys the very property being tested.
+fn is_degenerate(range: &IUIAutomationTextRange) -> Result<bool, NativeCaptureError> {
+    // SAFETY: `range` is live; comparing a range's own start endpoint against its own end
+    // endpoint reads only that range and creates nothing needing release.
+    let spread = unsafe {
+        range.CompareEndpoints(
+            TextPatternRangeEndpoint_Start,
+            range,
+            TextPatternRangeEndpoint_End,
+        )
+    }?;
+    Ok(spread == 0)
 }
 
 /// # Safety
