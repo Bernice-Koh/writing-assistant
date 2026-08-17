@@ -20,12 +20,19 @@
 //! full accessibility tree to UI Automation for screen-reader support, and Word for the web's own
 //! editing surface backs that tree completely, so `native`'s ordinary `TextPattern`/caret read
 //! sees the real document there, with no Word-for-the-web-specific code needed, the same way
-//! Word's desktop surface needed none. Google Docs did not: like `native/insert/mod.rs`'s
-//! `replace_last_typed` doc comment already found from the write side, Google Docs exposes a
-//! "side DOM" purely for accessibility that does not back a trustworthy read either, so `native`
-//! against it returns empty text and no caret rect, not a decoy but not the document. Recorded
-//! here as explicitly unsupported rather than solved: neither backend reads Google Docs' real
-//! content.
+//! Word's desktop surface needed none. Google Docs needs a condition Word for the web does not:
+//! by default it does not, matching `native/insert/mod.rs`'s `replace_last_typed` doc comment's
+//! finding from the write side, that Google Docs exposes a "side DOM" purely for accessibility
+//! that does not back a trustworthy read, so `native` against it returns empty text and no caret
+//! rect, not a decoy but not the document either. Turning on both of Google Docs' own
+//! Tools > Accessibility toggles, "Turn on screen reader support" and then "Enable braille
+//! support", changes that: manual verification against a real document with both toggles on
+//! found `native`'s ordinary `TextPattern`/caret read landing on a real, growing character count
+//! and a caret rect that moved with each keystroke, the same signature Word for the web gives.
+//! Screen reader support alone was not enough; only with braille support also on did a
+//! `TextPattern`-backed element appear at all. Both toggles are Google's own account-level
+//! accessibility settings, not something this project's code sets, so using Google Docs with
+//! this tool means turning them on once, the same one-time step a screen reader user takes.
 
 pub mod error;
 pub mod native;
