@@ -11,6 +11,13 @@ pub enum NativeCaptureError {
     NoCaret,
     #[error("text selection is a range, not a caret")]
     SelectionNotCaret,
+    #[error("caret rectangle {width}x{height} at ({x}, {y}) does not look like a caret")]
+    ImplausibleCaretShape {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
     #[error("could not spawn the UI Automation thread: {0}")]
     ThreadSpawn(String),
     #[error("UI Automation thread ended before signalling readiness")]
@@ -36,6 +43,10 @@ pub enum NativeCaptureError {
 /// cannot answer a cursor-rect request right now, the same practical outcome as an element
 /// with no TextPattern at all. `SelectionNotCaret` joins them for that same reason; the two
 /// stay separate variants only so a log line can say which of the two happened.
+/// `ImplausibleCaretShape` joins them too: an element whose reported rectangle does not look
+/// like a caret cannot answer a cursor-rect request right now either, and `track_cursor`'s
+/// existing handling of an `Err` result, holding the overlay at its last position rather than
+/// moving it, is exactly the behaviour `#28` needs for a fabricated rectangle.
 impl From<NativeCaptureError> for crate::capture::CaptureError {
     fn from(error: NativeCaptureError) -> Self {
         use crate::capture::CaptureError;
@@ -46,6 +57,7 @@ impl From<NativeCaptureError> for crate::capture::CaptureError {
             NativeCaptureError::NoTextPattern
             | NativeCaptureError::NoCaret
             | NativeCaptureError::SelectionNotCaret
+            | NativeCaptureError::ImplausibleCaretShape { .. }
             | NativeCaptureError::NoValuePattern
             | NativeCaptureError::ReadOnly => CaptureError::Unsupported,
             NativeCaptureError::Com(_)
