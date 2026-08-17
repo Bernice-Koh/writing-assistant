@@ -7,10 +7,25 @@
 //! no Word-specific integration needed), and [`web`], which covers browser-based editors with
 //! real DOM text content. A third backend built on Office.js was scoped in #22 to give Word its
 //! own document-object-model path; it was dropped once manual verification confirmed native's
-//! coverage against real Word, with the reasoning recorded on that issue. Word for the web was
-//! briefly assumed to fall under `web` instead, until manual verification found otherwise: like
-//! Google Docs, it renders into a canvas with no real DOM behind it, so `web`'s DOM-based read
-//! sees only a decoy input, not the document. See #31.
+//! coverage against real Word, with the reasoning recorded on that issue.
+//!
+//! Canvas-rendered web editors, which draw their document onto a canvas instead of real DOM
+//! text nodes for cross-browser layout fidelity, defeat `web`'s DOM-based read: it sees only the
+//! decoy input such an editor positions at the caret to capture keystrokes and IME composition,
+//! not the document. `native` is not automatically exempt, since it depends just as much on a
+//! trustworthy accessibility tree, only reached a different way (UI Automation against the
+//! browser tab's own bridged tree, rather than the page's DOM). Manual verification against
+//! each editor individually, not an assumption from one covering the other, is what #31 settled.
+//! Word for the web turned out to be readable through `native` regardless: Chromium bridges its
+//! full accessibility tree to UI Automation for screen-reader support, and Word for the web's own
+//! editing surface backs that tree completely, so `native`'s ordinary `TextPattern`/caret read
+//! sees the real document there, with no Word-for-the-web-specific code needed, the same way
+//! Word's desktop surface needed none. Google Docs did not: like `native/insert/mod.rs`'s
+//! `replace_last_typed` doc comment already found from the write side, Google Docs exposes a
+//! "side DOM" purely for accessibility that does not back a trustworthy read either, so `native`
+//! against it returns empty text and no caret rect, not a decoy but not the document. Recorded
+//! here as explicitly unsupported rather than solved: neither backend reads Google Docs' real
+//! content.
 
 pub mod error;
 pub mod native;
