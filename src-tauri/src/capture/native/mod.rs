@@ -249,7 +249,7 @@ fn run(
                         log::debug!("failed to remove previous text-change registration: {error}");
                     }
                 }
-                log_caret_rect("focus changed", &element);
+                let _ = log_caret_rect("focus changed", &element);
                 let text_tx = tx.clone();
                 let callback: text_change::TextChangeCallback =
                     Arc::new(move |_element: &IUIAutomationElement| {
@@ -268,7 +268,7 @@ fn run(
             }
             Signal::TextChanged => {
                 if let Some(scope) = &current_scope {
-                    log_caret_rect("text changed", &scope.element);
+                    let _ = log_caret_rect("text changed", &scope.element);
                 }
             }
             Signal::GetText(reply) => {
@@ -280,7 +280,9 @@ fn run(
             }
             Signal::GetCursorRect(reply) => {
                 let result = match &current_scope {
-                    Some(scope) => cursor::caret_rect(&scope.element).map_err(CaptureError::from),
+                    Some(scope) => {
+                        log_caret_rect("GetCursorRect", &scope.element).map_err(CaptureError::from)
+                    }
                     None => Err(CaptureError::NoFocus),
                 };
                 let _ = reply.send(result);
@@ -320,13 +322,18 @@ fn run(
     }
 }
 
-fn log_caret_rect(reason: &str, element: &IUIAutomationElement) {
-    match cursor::caret_rect(element) {
+fn log_caret_rect(
+    reason: &str,
+    element: &IUIAutomationElement,
+) -> Result<CursorRect, NativeCaptureError> {
+    let rect = cursor::caret_rect(element);
+    match &rect {
         Ok(rect) => log::info!("{reason}: caret rect {rect:?} on {}", describe(element)),
         Err(error) => {
             log::debug!("{reason}: no caret rect ({error}) on {}", describe(element));
         }
     }
+    rect
 }
 
 /// Identifies an element by class, control type, and owning process, so a caret-rect failure

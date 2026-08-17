@@ -40,7 +40,16 @@ pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCa
     let array = unsafe { caret.GetBoundingRectangles() }?;
     // SAFETY: `array` was just returned by GetBoundingRectangles above, not read elsewhere.
     let floats = unsafe { drain_f64_safearray(array) };
-    rect_from_floats(&floats).ok_or(NativeCaptureError::NoCaret)
+    let rect = rect_from_floats(&floats).ok_or(NativeCaptureError::NoCaret)?;
+    if !looks_like_caret(&rect) {
+        return Err(NativeCaptureError::ImplausibleCaretShape {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        });
+    }
+    Ok(rect)
 }
 
 /// Whether `range` is a caret rather than a span of selected text. A caret is *degenerate*: its
@@ -91,6 +100,32 @@ unsafe fn drain_f64_safearray(array: *mut SAFEARRAY) -> Vec<f64> {
         let _ = SafeArrayDestroy(array);
         out
     }
+}
+
+/// A genuine caret's bounding rectangle, in manual verification against real typing, took one
+/// of two shapes: a thin bar (a pixel or so wide against a line-height-tall rectangle, in either
+/// orientation, since a caret at certain layout moments reports its width and height swapped),
+/// or a small rectangle collapsed close to a point (as small as 1x1) whose position still
+/// advanced correctly with every keystroke. `#28` found a third shape that is neither: VS Code's
+/// chat input, when this app's own UI Automation client presence switches Monaco into its
+/// screen-reader-optimized rendering, exposes an accessible element (`messageInput_cKsPxg`) that
+/// answers `GetBoundingRectangles` with a fixed 20x20 square, unmoving no matter what is typed,
+/// instead of the caret's real position. A rectangle that is neither a thin bar nor collapsed to
+/// near-nothing, a mid-sized square such as that one, is what gets rejected; both genuine shapes
+/// pass.
+const MAX_CARET_THIN_TO_LONG_RATIO: f64 = 0.5;
+const MAX_CARET_COLLAPSED_SIZE: f64 = 3.0;
+
+fn looks_like_caret(rect: &CursorRect) -> bool {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return false;
+    }
+    let (thin, long) = if rect.width <= rect.height {
+        (rect.width, rect.height)
+    } else {
+        (rect.height, rect.width)
+    };
+    thin <= long * MAX_CARET_THIN_TO_LONG_RATIO || long <= MAX_CARET_COLLAPSED_SIZE
 }
 
 /// UIA reports bounding rectangles as flat `[x, y, width, height]` groups, one group per
@@ -180,5 +215,61 @@ mod tests {
                 height: 40.0
             })
         );
+    }
+
+    fn rect(width: f64, height: f64) -> CursorRect {
+        CursorRect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn a_thin_bar_looks_like_a_caret() {
+        // The exact values #28's manual verification read from a real, per-character-advancing
+        // caret: 1 wide against 18, 22, 24, or 32 tall, and 11 wide against 32 tall.
+        assert!(looks_like_caret(&rect(1.0, 18.0)));
+        assert!(looks_like_caret(&rect(1.0, 22.0)));
+        assert!(looks_like_caret(&rect(1.0, 24.0)));
+        assert!(looks_like_caret(&rect(11.0, 32.0)));
+    }
+
+    #[test]
+    fn a_thin_bar_with_width_and_height_swapped_still_looks_like_a_caret() {
+        // #28's manual verification read the same real, correctly-positioned caret as both
+        // 1x24 and, moments later at the same position, 24x1: UIA sometimes reports a caret's
+        // bounding rectangle with its dimensions transposed.
+        assert!(looks_like_caret(&rect(24.0, 1.0)));
+    }
+
+    #[test]
+    fn a_collapsed_near_point_rect_still_looks_like_a_caret() {
+        // #28's manual verification read a real caret advancing correctly, character by
+        // character, while its reported rectangle stayed collapsed to 1x1 throughout.
+        assert!(looks_like_caret(&rect(1.0, 1.0)));
+    }
+
+    #[test]
+    fn the_fixed_20x20_square_from_28_does_not() {
+        // Neither a thin bar nor collapsed to near-nothing: the fabricated rectangle VS Code's
+        // chat input reports, fixed regardless of typing, that this check exists to catch.
+        assert!(!looks_like_caret(&rect(20.0, 20.0)));
+    }
+
+    #[test]
+    fn a_zero_size_rect_does_not() {
+        assert!(!looks_like_caret(&rect(0.0, 0.0)));
+    }
+
+    #[test]
+    fn exactly_half_as_wide_as_tall_still_counts() {
+        assert!(looks_like_caret(&rect(10.0, 20.0)));
+    }
+
+    #[test]
+    fn just_over_the_collapsed_size_threshold_and_not_thin_enough_does_not() {
+        assert!(!looks_like_caret(&rect(4.0, 4.0)));
     }
 }
