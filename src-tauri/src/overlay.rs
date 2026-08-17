@@ -10,6 +10,11 @@ use tauri::{
     AppHandle, Manager, PhysicalPosition, PhysicalRect, PhysicalSize, WebviewUrl,
     WebviewWindowBuilder,
 };
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ShowWindow, PBT_APMRESUMEAUTOMATIC, SW_HIDE, SW_SHOW, WM_POWERBROADCAST,
+};
 
 use crate::capture::{Capture, CursorRect};
 
@@ -27,7 +32,7 @@ const HEIGHT: f64 = 120.0;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
         .title("Writing Assistant Overlay")
         .transparent(true)
         .decorations(false)
@@ -38,7 +43,68 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .position(INITIAL_X, INITIAL_Y)
         .inner_size(WIDTH, HEIGHT)
         .build()?;
+
+    // Tauri's own `hwnd()` links against a different windows-rs version than this crate's own
+    // dependency (0.61 against this crate's 0.62, both present in Cargo.lock because tauri pins
+    // its own minor version); `HWND` has been a bare wrapped pointer across both, unchanged, so
+    // reconstructing this crate's own `HWND` from the same raw pointer value is a sound, if
+    // ceremonious, way to call this crate's own windows-rs APIs against tauri's window.
+    let hwnd = HWND(window.hwnd()?.0);
+    // SAFETY: `hwnd` is the live overlay window just built above, on the thread that owns it
+    // (Tauri's `setup` closure runs on the main thread, the same thread that later pumps this
+    // window's messages); `resume_subclass_proc` matches `SUBCLASSPROC`'s required signature.
+    if !unsafe { SetWindowSubclass(hwnd, Some(resume_subclass_proc), RESUME_SUBCLASS_ID, 0) }
+        .as_bool()
+    {
+        log::warn!("could not subclass the overlay window to detect sleep/resume");
+    }
     Ok(())
+}
+
+/// Arbitrary, only needs to be unique among subclasses registered on the same window; this is
+/// the overlay window's only one.
+const RESUME_SUBCLASS_ID: usize = 1;
+
+/// Recovers the overlay from a DWM/WebView2 composition bug reported in #27: after the machine
+/// sleeps and resumes, the overlay window keeps reporting itself visible, keeps its topmost
+/// z-order and requested position, and `PrintWindow` still captures its correct rendered
+/// content, but nothing of that reaches the screen. Restarting the app was the only fix found
+/// by hand. That points at DWM's redirection surface for the window, or WebView2's own
+/// DirectComposition visual tree feeding it, going stale across the sleep, not at anything
+/// `overlay.rs` itself computes; a known WebView2 defect
+/// (MicrosoftEdge/WebView2Feedback#3429) reports display corruption after sleep with no
+/// automatic recovery, in the same GPU-composition family as this bug even though its exact
+/// symptom differs. Manual verification against a real sleep, lid close and reopen, confirmed
+/// that toggling this window's visibility on resume is enough to force it to recomposite: the
+/// overlay stayed visible and kept tracking the caret afterward, where it previously required
+/// restarting the app.
+///
+/// Chained via `SetWindowSubclass` rather than by replacing `GWLP_WNDPROC` directly: that keeps
+/// this addition from breaking any other subclass already registered on this same window, such
+/// as one WebView2 or tao, tauri's own windowing layer, installs, unlike a raw `GWLP_WNDPROC`
+/// swap, which would need to preserve and call whichever procedure was already there.
+unsafe extern "system" fn resume_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _ref_data: usize,
+) -> LRESULT {
+    if msg == WM_POWERBROADCAST && wparam.0 == PBT_APMRESUMEAUTOMATIC as usize {
+        log::info!("system resume detected; nudging the overlay window to recomposite");
+        // SAFETY: `hwnd` is the same live window this subclass is installed on, supplied by
+        // the message dispatcher that invoked this callback.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+    // SAFETY: `hwnd`, `msg`, `wparam`, and `lparam` are exactly what the message dispatcher
+    // passed to this callback; forwarding every message, handled or not, to the next subclass
+    // (or the window's own procedure, once the chain ends) is `SetWindowSubclass`'s own
+    // contract, without which the window stops handling everything this callback does not.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 /// Spawns a background task that repositions the overlay window to `capture`'s live cursor
