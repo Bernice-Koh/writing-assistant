@@ -41,6 +41,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "que
 regex = "1"
 similar = "2"
 lru = "0.12"
+directories = "6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
