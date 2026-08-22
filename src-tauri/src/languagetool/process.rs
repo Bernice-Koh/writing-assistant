@@ -142,13 +142,14 @@ mod tests {
 
     #[test]
     fn finds_the_preferred_port_when_it_is_free() {
-        // Bind and drop first so the exact port is free but was recently in use, closer to the
-        // real "previous run just exited" case than an untouched port would be.
-        let port = {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        assert_eq!(find_free_port(port).unwrap(), port);
+        // A fixed, high port distinct from every other port this test module touches, rather
+        // than one discovered by binding and dropping an OS-assigned port: `cargo test` runs
+        // tests in parallel by default, and a dropped OS-assigned port can be grabbed by another
+        // test's own bind-to-port-0 call before this test gets to re-probe it. `find_free_port`
+        // itself already documents accepting exactly that race for its real scanning behaviour;
+        // this test should not also depend on it just to prove the happy path.
+        const LIKELY_FREE_PORT: u16 = 59417;
+        assert_eq!(find_free_port(LIKELY_FREE_PORT).unwrap(), LIKELY_FREE_PORT);
     }
 
     #[test]
