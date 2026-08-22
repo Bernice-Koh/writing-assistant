@@ -38,3 +38,4 @@ serde_json = "1"
 spellbook = "0.4"
 unicode-segmentation = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query"] }
+regex = "1"

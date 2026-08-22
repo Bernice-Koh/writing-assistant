@@ -1,0 +1,193 @@
+[
+  {
+    "id": "significance-legacy-emphasis",
+    "category": "content",
+    "description": "Puffs up an ordinary fact by tying it to significance, legacy, or a broader trend",
+    "match_phrases": [
+      "stands as a testament", "serves as a testament", "is a testament to",
+      "is a reminder of", "a vital role", "a significant role", "a crucial role",
+      "a pivotal role", "a key role", "a pivotal moment", "underscores its importance",
+      "underscores its significance", "highlights its importance", "highlights its significance",
+      "reflects broader", "symbolizing its ongoing", "symbolizing its enduring",
+      "symbolizing its lasting", "contributing to the broader", "setting the stage for",
+      "marking a shift", "represents a shift", "marks a shift", "key turning point",
+      "evolving landscape", "focal point", "indelible mark", "deeply rooted"
+    ],
+    "source": "humanizer SKILL.md section 1, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "notability-media-emphasis",
+    "category": "content",
+    "description": "Hits the reader over the head with claims of notability or media coverage",
+    "match_phrases": [
+      "independent coverage", "local media outlets", "regional media outlets",
+      "national media outlets", "written by a leading expert", "active social media presence"
+    ],
+    "source": "humanizer SKILL.md section 2, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "superficial-ing-endings",
+    "category": "content",
+    "description": "Tacks a present-participle clause onto a sentence for fake depth rather than a real point",
+    "match_regex": ",\\s*(highlighting|underscoring|emphasizing|ensuring|reflecting|symbolizing|contributing to|cultivating|fostering|encompassing|showcasing)\\b",
+    "source": "humanizer SKILL.md section 3, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "promotional-language",
+    "category": "content",
+    "description": "Advertisement-like language, especially for places and cultural topics",
+    "match_phrases": [
+      "boasts a", "nestled in", "nestled within", "in the heart of", "must-visit",
+      "breathtaking", "stunning natural beauty", "renowned for its", "exemplifies",
+      "commitment to excellence", "vibrant culture", "rich cultural heritage"
+    ],
+    "source": "humanizer SKILL.md section 4, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "vague-attributions",
+    "category": "content",
+    "description": "Attributes an opinion to a vague, uncited authority",
+    "match_phrases": [
+      "industry reports", "observers have cited", "observers have noted",
+      "experts argue", "experts believe", "some critics argue"
+    ],
+    "source": "humanizer SKILL.md section 5, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "challenges-future-prospects",
+    "category": "content",
+    "description": "Formulaic closing section framing ordinary facts as challenges and future outlook",
+    "match_phrases": ["despite these challenges", "challenges and legacy", "future outlook"],
+    "source": "humanizer SKILL.md section 6, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "ai-vocabulary-words",
+    "category": "language-and-grammar",
+    "description": "A word that appears far more often in post-2023 text than in ordinary human writing",
+    "match_phrases": [
+      "delve into", "tapestry of", "testament to", "underscore the", "underscores the",
+      "intricate", "intricacies", "pivotal", "interplay of", "interplay between",
+      "fostering a", "garner attention", "garnered attention", "enduring legacy",
+      "align with", "aligns with"
+    ],
+    "source": "humanizer SKILL.md section 7, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "copula-avoidance",
+    "category": "language-and-grammar",
+    "description": "Substitutes an elaborate construction for a plain \"is\" or \"are\"",
+    "match_phrases": ["serves as a", "serves as the", "stands as a", "stands as the", "boasts a", "boasts an"],
+    "source": "humanizer SKILL.md section 8, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "negative-parallelism",
+    "category": "language-and-grammar",
+    "description": "The \"it's not just X, it's Y\" construction, overused as a rhetorical device",
+    "match_regex": "(?i)\\bit'?s not (?:just|merely|only)\\b[^,.;]{1,80}?,?\\s*it'?s\\b",
+    "source": "humanizer SKILL.md section 9, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "em-en-dashes",
+    "category": "style",
+    "description": "An em dash, en dash, or spaced double hyphen used as a dash, one of the most reliable AI tells",
+    "match_phrases": ["—", "–", " -- "],
+    "source": "humanizer SKILL.md section 14, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "inline-header-lists",
+    "category": "style",
+    "description": "A bullet list where each item opens with a bolded label followed by a colon",
+    "match_regex": "(?m)^\\s*[-*]\\s+\\*\\*[^*\\n]+:\\*\\*",
+    "source": "humanizer SKILL.md section 16, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "emojis",
+    "category": "style",
+    "description": "An emoji used to decorate a heading or bullet point in prose",
+    "match_regex": "[🌀-🫿☀-➿🇦-🇿]",
+    "source": "humanizer SKILL.md section 18, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "curly-quotes",
+    "category": "style",
+    "description": "A curly (typographic) quotation mark rather than a straight one",
+    "match_phrases": ["“", "”"],
+    "source": "humanizer SKILL.md section 19, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "collaborative-communication-artifacts",
+    "category": "communication",
+    "description": "Chatbot correspondence pasted into content rather than rewritten as content",
+    "match_phrases": [
+      "i hope this helps", "of course!", "certainly!", "you're absolutely right",
+      "would you like me to", "let me know if", "here is a"
+    ],
+    "source": "humanizer SKILL.md section 20, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "knowledge-cutoff-speculative-gapfill",
+    "category": "communication",
+    "description": "A knowledge-cutoff disclaimer, or a guess dressed up as fact to cover a missing source",
+    "match_phrases": [
+      "up to my last training update", "while specific details are limited",
+      "while specific details are scarce", "based on available information",
+      "not publicly available", "maintains a low profile", "keeps personal details private",
+      "prefers to stay out of the spotlight", "it is believed that"
+    ],
+    "source": "humanizer SKILL.md section 21, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "sycophantic-tone",
+    "category": "communication",
+    "description": "Overly positive, people-pleasing language",
+    "match_phrases": ["great question", "that's an excellent point", "you're absolutely right"],
+    "source": "humanizer SKILL.md section 22, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "filler-phrases",
+    "category": "filler-and-hedging",
+    "description": "A padded phrase with a shorter, plainer equivalent",
+    "match_phrases": [
+      "in order to", "due to the fact that", "at this point in time",
+      "in the event that", "has the ability to", "it is important to note that"
+    ],
+    "source": "humanizer SKILL.md section 23, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "excessive-hedging",
+    "category": "filler-and-hedging",
+    "description": "Multiple hedging qualifiers stacked on one claim",
+    "match_phrases": ["could potentially possibly", "it could potentially be argued", "may possibly"],
+    "source": "humanizer SKILL.md section 24, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "generic-positive-conclusions",
+    "category": "filler-and-hedging",
+    "description": "A vague, upbeat closing line that says nothing specific",
+    "match_phrases": [
+      "the future looks bright", "exciting times lie ahead",
+      "a major step in the right direction", "represents a major step forward"
+    ],
+    "source": "humanizer SKILL.md section 25, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "persuasive-authority-tropes",
+    "category": "filler-and-hedging",
+    "description": "Pretends to cut through noise to a deeper truth, then just restates an ordinary point",
+    "match_phrases": [
+      "the real question is", "at its core,", "what really matters",
+      "the deeper issue", "the heart of the matter"
+    ],
+    "source": "humanizer SKILL.md section 27, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "signposting-announcements",
+    "category": "filler-and-hedging",
+    "description": "Announces what is about to be explained instead of just explaining it",
+    "match_phrases": [
+      "let's dive in", "let's dive into", "let's explore", "let's break this down",
+      "here's what you need to know", "without further ado"
+    ],
+    "source": "humanizer SKILL.md section 28, Wikipedia:Signs of AI writing"
+  }
+]
