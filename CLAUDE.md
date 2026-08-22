@@ -23,10 +23,10 @@ Current top level, matching README's Repository structure:
 - `LICENSE` - MIT. Third-party components keep their own licences; see README's License
   section.
 - `docs/` - committed engineering and prose documentation. Start here for conventions.
-- `src-tauri/` - the Rust core: capture, LanguageTool subprocess management, the style
-  engine, the local store, the rewrite orchestrator, the analyzer and learning scheduler.
-  Bundled resources (the LanguageTool JAR, the vendored AI-telltale catalog) live under
-  `src-tauri/resources/`.
+- `src-tauri/` - the Rust core: capture, spelling, LanguageTool subprocess management, the
+  style engine, the local store, the rewrite orchestrator, the analyzer and learning
+  scheduler. Bundled resources (the LanguageTool JAR, the vendored dictionaries and
+  AI-telltale catalog) live under `src-tauri/resources/`.
 - `src/` - the React and TypeScript frontend: overlay, Style Card editor, onboarding,
   settings, tray.
 - `extension/` - the browser extension, the web capture backend. There is no separate Word
