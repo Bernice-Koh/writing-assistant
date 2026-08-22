@@ -3,10 +3,12 @@
 
 pub mod analyzer;
 pub mod capture;
+pub mod flag;
 pub mod languagetool;
 pub mod learning;
 pub mod overlay;
 pub mod rewrite;
+pub mod spelling;
 pub mod store;
 pub mod style;
 

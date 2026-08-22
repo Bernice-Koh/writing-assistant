@@ -1,0 +1,63 @@
+HDB
+HDBs
+MRT
+LRT
+CPF
+COE
+ERP
+GST
+PSLE
+PUB
+SMRT
+SBS
+kiasu
+kiasuism
+kiasi
+lepak
+shiok
+atas
+sinseh
+kopitiam
+kopi
+teh
+otah
+laksa
+rojak
+satay
+roti
+prata
+kaya
+kueh
+nasi
+lah
+lor
+leh
+meh
+sian
+paiseh
+chope
+makan
+walao
+aiyoh
+aiyah
+angmoh
+towkay
+kampong
+kampung
+void deck
+hawker
+hawkers
+Yishun
+Woodlands
+Tampines
+Bishan
+Toa Payoh
+Ang Mo Kio
+Bukit
+Bedok
+Jurong
+Sengkang
+Punggol
+Novena
+Dhoby Ghaut
+Buona Vista
