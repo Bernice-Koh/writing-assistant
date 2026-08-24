@@ -216,12 +216,14 @@ fn rect_from_floats(floats: &[f64]) -> Option<CursorRect> {
 /// rather than only the first.
 fn rects_from_floats(floats: &[f64]) -> Vec<CursorRect> {
     floats
-        .chunks_exact(4)
-        .map(|group| CursorRect {
-            x: group[0],
-            y: group[1],
-            width: group[2],
-            height: group[3],
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[x, y, width, height]| CursorRect {
+            x,
+            y,
+            width,
+            height,
         })
         .collect()
 }
