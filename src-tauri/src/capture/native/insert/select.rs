@@ -8,8 +8,9 @@
 
 use windows::core::BSTR;
 use windows::Win32::UI::Accessibility::{
-    IUIAutomationElement, IUIAutomationTextPattern, TextPatternRangeEndpoint_End,
-    TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPatternId,
+    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextRange,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+    UIA_TextPatternId,
 };
 
 use super::super::error::NativeCaptureError;
@@ -98,11 +99,6 @@ pub fn select_range(
 /// the target span sit within the same structural region (the same list item or paragraph), the
 /// move never crosses a boundary that could be miscounted.
 ///
-/// `anchor` still goes through `FindText` under the hood, so it inherits that method's
-/// first-occurrence behaviour; it must be specific enough to be effectively unique, a full
-/// sentence or paragraph, not a single word, unlike `select_text`'s target, which is exactly the
-/// ambiguity this function exists to avoid for anything shorter.
-///
 /// `local_start` and `local_length` are UTF-16 code units measured from `anchor`'s own start,
 /// not the document's. See `select_range`'s documentation for why UTF-16, not Rust `char`s or
 /// UTF-8 bytes.
@@ -112,6 +108,29 @@ pub fn select_within(
     local_start: usize,
     local_length: usize,
 ) -> Result<(), NativeCaptureError> {
+    let range = find_within_range(element, anchor, local_start, local_length)?;
+    // SAFETY: `range` is the live range `find_within_range` just returned, now covering exactly
+    // `[local_start, local_start + local_length)` relative to `anchor`'s start.
+    unsafe { range.Select() }?;
+    Ok(())
+}
+
+/// The same `[local_start, local_start + local_length)` range `select_within` selects, without
+/// selecting it: `span_rect` (`cursor::span_rects`) needs a span's on-screen rectangles to
+/// underline it, on every analyzer poll cycle, and calling `Select` there would repeatedly steal
+/// the user's own selection out from under them just to compute where to draw an underline.
+/// `select_within` itself now delegates here, so the two never drift apart.
+///
+/// `anchor` still goes through `FindText` under the hood, so it inherits that method's
+/// first-occurrence behaviour; it must be specific enough to be effectively unique, a full
+/// sentence or paragraph, not a single word, unlike `select_text`'s target, which is exactly the
+/// ambiguity this function exists to avoid for anything shorter.
+pub fn find_within_range(
+    element: &IUIAutomationElement,
+    anchor: &str,
+    local_start: usize,
+    local_length: usize,
+) -> Result<IUIAutomationTextRange, NativeCaptureError> {
     // SAFETY: `element` is live; GetCurrentPatternAs fails safely when unsupported.
     let text_pattern =
         unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
@@ -145,6 +164,5 @@ pub fn select_within(
     }?;
     // SAFETY: `range` now covers exactly `[local_start, local_start + local_length)` relative to
     // `anchor`'s start.
-    unsafe { range.Select() }?;
-    Ok(())
+    Ok(range)
 }
