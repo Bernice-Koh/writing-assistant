@@ -23,6 +23,10 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "resources": {
+      "resources/dictionaries": "dictionaries",
+      "resources/ai-telltales": "ai-telltales"
+    }
   }
 }
