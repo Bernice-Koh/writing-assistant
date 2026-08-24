@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use lru::LruCache;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
@@ -52,6 +53,13 @@ struct Inner {
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
     flags: RwLock<Vec<Flag>>,
+    /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
+    /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
+    /// this channel via `borrow`, so there is exactly one source of truth, not two that could
+    /// drift apart. Kept separate from `flags` rather than folding it into a single
+    /// `watch`-backed field because `current_flags` is a plain, lock-based read with no
+    /// subscription semantics, a simpler contract for a caller that only wants the value once.
+    flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
     previous_sentences: Mutex<Vec<String>>,
     /// Counts calls into [`check_sentence`], real work a cache hit skips. Per-instance rather
@@ -72,11 +80,13 @@ impl Analyzer {
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
     ) -> Self {
+        let (flags_tx, _) = watch::channel(Vec::new());
         let inner = Arc::new(Inner {
             capture,
             spelling,
             languagetool,
             flags: RwLock::new(Vec::new()),
+            flags_tx,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_CAPACITY)
                     .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
@@ -97,6 +107,17 @@ impl Analyzer {
             .read()
             .expect("a poisoned lock here means another thread already panicked; propagating that panic is correct, not recovering silently")
             .clone()
+    }
+
+    /// Notified with the complete, merged, and deduplicated flag set every time a recheck
+    /// finishes, so a subscriber (the overlay's own flag-positioning task) reacts the moment new
+    /// flags are ready instead of polling [`Self::current_flags`] on its own schedule. Delivers
+    /// only the latest value, not every intermediate one: a subscriber that is mid-reaction to
+    /// one recheck when another completes sees the newer flags next, never a queue of stale ones
+    /// to catch up on, which is the behaviour this receiver needs since only the current flag set
+    /// is ever meaningful to render.
+    pub fn subscribe(&self) -> watch::Receiver<Vec<Flag>> {
+        self.inner.flags_tx.subscribe()
     }
 
     /// How many times [`check_sentence`] actually ran real work, as opposed to a cache hit.
@@ -187,7 +208,12 @@ async fn recheck(inner: &Inner, text: &str) {
     *inner
         .flags
         .write()
-        .expect("a poisoned lock here means another thread already panicked") = document_flags;
+        .expect("a poisoned lock here means another thread already panicked") =
+        document_flags.clone();
+    // A subscriber-free channel (no `overlay::track_flags` task running yet, or the app running
+    // headless in a test) has no receivers left; `send` reporting that is expected, not an error
+    // worth logging.
+    let _ = inner.flags_tx.send(document_flags);
 }
 
 async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
@@ -254,6 +280,19 @@ mod tests {
             _replacement: &str,
         ) -> Result<(), CaptureError> {
             Ok(())
+        }
+
+        async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+            Err(CaptureError::Unsupported)
+        }
+
+        async fn span_rect(
+            &self,
+            _anchor: &str,
+            _local_start: usize,
+            _local_length: usize,
+        ) -> Result<Vec<CursorRect>, CaptureError> {
+            Err(CaptureError::Unsupported)
         }
     }
 
