@@ -202,7 +202,11 @@ async fn recheck(inner: &Inner, text: &str) {
                 flags
             }
         };
-        document_flags.extend(sentence_flags);
+        document_flags.extend(
+            sentence_flags
+                .into_iter()
+                .map(|flag| with_document_scope(index, flag)),
+        );
     }
 
     *inner
@@ -214,6 +218,23 @@ async fn recheck(inner: &Inner, text: &str) {
     // headless in a test) has no receivers left; `send` reporting that is expected, not an error
     // worth logging.
     let _ = inner.flags_tx.send(document_flags);
+}
+
+/// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
+/// checking source numbers its flags within the single sentence it was handed, so two sentences
+/// whose flags number the same way arrive with the same id: the same word misspelled in two
+/// sentences produces `spelling:0:recieve` twice. The overlay keys both its rendered underlines
+/// and its hover lookup by id, so a duplicate makes one flag's card open for the other.
+///
+/// The sentence's index, rather than the hash the cache is keyed by, because the index is the
+/// only part of a sentence's identity that separates two textually identical sentences. It shifts
+/// when a sentence is inserted earlier in the document, which re-keys the flags after it; that
+/// costs a remount of those underlines on the next emit, which is already a whole-set emit.
+fn with_document_scope(sentence_index: usize, flag: Flag) -> Flag {
+    Flag {
+        id: format!("{sentence_index}:{}", flag.id),
+        ..flag
+    }
 }
 
 async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
@@ -398,5 +419,27 @@ mod tests {
         // Only the one changed sentence should have gone through a real check this time; the
         // unchanged first sentence should have been served from the LRU cache instead.
         assert_eq!(analyzer.check_sentence_call_count(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_same_misspelling_in_two_sentences_gets_two_distinct_ids() {
+        // Each sentence is checked on its own, so both flags arrive numbered from that
+        // sentence's own start. Without a document-level scope they are both `spelling:2:eror`,
+        // and the overlay keys its underlines and its hover lookup by id.
+        let fake = Arc::new(FakeCapture::new("An eror here. An eror there."));
+        let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None);
+
+        step(6).await;
+        let flags = analyzer.current_flags();
+        let misspellings: Vec<&Flag> = flags
+            .iter()
+            .filter(|flag| flagged_text(flag) == "eror")
+            .collect();
+        assert_eq!(misspellings.len(), 2, "{flags:#?}");
+        assert_ne!(misspellings[0].id, misspellings[1].id, "{flags:#?}");
+        // The two sentences are different text, so each flag also anchors on its own sentence,
+        // which is what lets the overlay resolve them to two different places on screen.
+        assert_ne!(misspellings[0].span.anchor, misspellings[1].span.anchor);
     }
 }
