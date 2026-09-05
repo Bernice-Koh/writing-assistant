@@ -435,6 +435,15 @@ The AI-telltale catalog is vendored from [signs-of-ai-writing](https://github.co
 
 Offline, the app still captures text and runs spelling, grammar, drift, and AI-tell flagging locally. Rewriting and the soft critic need the cloud until an adapter is trained, after which they run locally too.
 
+### First-run setup
+
+```powershell
+src-tauri\scripts\build-languagetool-jre.ps1
+```
+
+Downloads LanguageTool and builds its trimmed Java runtime into `src-tauri/resources/`. Needs a
+JDK on `PATH`. Until it runs, only spelling and AI-tell flags appear.
+
 ## License
 
 This project is [MIT licensed](LICENSE).
