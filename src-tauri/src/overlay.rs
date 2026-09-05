@@ -32,12 +32,11 @@ const INITIAL_Y: f64 = 200.0;
 const INITIAL_WIDTH: f64 = 360.0;
 const INITIAL_HEIGHT: f64 = 120.0;
 
-/// How often `track_document_view` and `track_hover` each poll. Not the real Tier 0 pipeline's
-/// event-driven push for cursor and document-view tracking, out of scope for this phase (see
-/// #18), a polling bridge good enough to prove the overlay can reflect live capture data at all;
-/// a later phase replaces this with a push from the capture backend's own focus/text-change
-/// events. `track_flags` needs no such polling: it reacts to the analyzer's own `subscribe`
-/// channel instead, since the analyzer already knows the exact moment new flags are ready.
+/// How often `track_document_view`, `track_hover`, and `track_flags`'s own position refresh each
+/// poll. Not the real Tier 0 pipeline's event-driven push for cursor and document-view tracking,
+/// out of scope for this phase (see #18), a polling bridge good enough to prove the overlay can
+/// reflect live capture data at all; a later phase replaces this with a push from the capture
+/// backend's own focus/text-change events.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -191,13 +190,23 @@ pub struct PositionedFlag {
 /// against; only the boundary that actually renders ([`relative_flags`]) needs to know that.
 pub type SharedFlags = Arc<Mutex<Vec<PositionedFlag>>>;
 
-/// Spawns a background task that reacts to `analyzer`'s own flag-update channel: resolves each
-/// flag's on-screen position through `capture`, updates `shared` for [`track_hover`]'s
-/// hit-testing, and emits the same flags, relativized to the document view's current origin, as a
-/// `flags-updated` event for the overlay's own webview to render. Push-driven from the analyzer's
-/// own `subscribe` channel rather than a poll: the analyzer already knows the exact moment new
-/// flags are ready, so reacting to that directly avoids both a wasted round trip and the added
-/// latency a poll layered on top would cost.
+/// Spawns a background task that resolves each of `analyzer`'s current flags' on-screen positions
+/// through `capture`, updates `shared` for [`track_hover`]'s hit-testing, and emits the same
+/// flags, relativised to the document view's current origin, as a `flags-updated` event for the
+/// overlay's own webview to render.
+///
+/// Triggered two ways: reactively, the moment `analyzer`'s own `subscribe` channel reports a new
+/// flag set, and periodically, on the same [`POLL_INTERVAL`] cadence [`track_document_view`]
+/// already polls on. The periodic leg exists because a flag's *position* can go stale for reasons
+/// that have nothing to do with the flag set itself changing: the focused document scrolling, the
+/// window resizing, or focus having moved to a different document entirely, whose text no longer
+/// contains a still-cached flag's anchor at all. Manual verification against #48 found exactly
+/// that last case: closing a document and focusing a new one left the previous document's flags
+/// rendered, misplaced, inside the newly repositioned overlay window, because nothing re-resolved
+/// their positions until the analyzer's own debounced recheck eventually caught up, seconds later.
+/// Re-resolving on every poll tick, not only on a flag-set change, means a stale or momentarily
+/// unresolvable position self-heals within one `POLL_INTERVAL` instead of lingering, since
+/// [`resolve_positions`] already drops any flag whose anchor cannot currently be found.
 pub fn track_flags(
     app: AppHandle,
     capture: Arc<dyn Capture>,
@@ -206,10 +215,18 @@ pub fn track_flags(
 ) {
     tauri::async_runtime::spawn(async move {
         let mut updates = analyzer.subscribe();
+        let mut interval = tokio::time::interval(POLL_INTERVAL);
         loop {
-            if updates.changed().await.is_err() {
-                log::debug!("the analyzer's flag channel closed; no more flag updates to render");
-                return;
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() {
+                        log::debug!(
+                            "the analyzer's flag channel closed; no more flag updates to render"
+                        );
+                        return;
+                    }
+                }
+                _ = interval.tick() => {}
             }
             let flags = updates.borrow_and_update().clone();
             let positioned = resolve_positions(&capture, flags).await;
