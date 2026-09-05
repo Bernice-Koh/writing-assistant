@@ -323,6 +323,14 @@ mod tests {
         }
     }
 
+    /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
+    /// assert on what was flagged without depending on how the span happens to be anchored.
+    fn flagged_text(flag: &Flag) -> String {
+        let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
+        let end = flag.span.local_start + flag.span.local_length;
+        String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
     #[tokio::test(start_paused = true)]
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
@@ -350,7 +358,7 @@ mod tests {
         step(6).await;
         let flags = analyzer.current_flags();
         assert!(
-            flags.iter().any(|flag| flag.span.anchor == "mispelling"),
+            flags.iter().any(|flag| flagged_text(flag) == "mispelling"),
             "expected a recheck to have found the misspelling by now: {flags:#?}"
         );
     }
@@ -366,7 +374,7 @@ mod tests {
         assert!(
             first_pass
                 .iter()
-                .any(|flag| flag.span.anchor == "mispelling"),
+                .any(|flag| flagged_text(flag) == "mispelling"),
             "expected the first recheck to find the misspelling: {first_pass:#?}"
         );
         // Both sentences are new to the cache on this first pass, so both were checked for real.
@@ -380,11 +388,11 @@ mod tests {
         assert!(
             second_pass
                 .iter()
-                .any(|flag| flag.span.anchor == "mispelling"),
+                .any(|flag| flagged_text(flag) == "mispelling"),
             "the unchanged first sentence's flag should still be present: {second_pass:#?}"
         );
         assert!(
-            second_pass.iter().any(|flag| flag.span.anchor == "eror"),
+            second_pass.iter().any(|flag| flagged_text(flag) == "eror"),
             "the changed second sentence's new misspelling should be flagged: {second_pass:#?}"
         );
         // Only the one changed sentence should have gone through a real check this time; the

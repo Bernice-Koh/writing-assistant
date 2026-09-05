@@ -61,30 +61,43 @@ impl SpellChecker {
     /// word absent from both `en_GB` and the Singapore supplement, each carrying whatever
     /// corrections hunspell's suggestion algorithm offers.
     ///
+    /// Each flag anchors on `text` itself, carrying the word's own offset into it, rather than on
+    /// the bare misspelled word. [`crate::capture::Capture::span_rect`] and
+    /// [`crate::capture::Capture::replace`] both resolve an anchor to its *first* occurrence, so a
+    /// word misspelled twice anchored on itself produces two flags addressing the same first
+    /// occurrence: one underline drawn twice and the second misspelling left unmarked. Grammar
+    /// flags already anchor on their sentence for the same reason (see `languagetool::client`).
+    ///
     /// Capitalisation (proper nouns, a capital at the start of a sentence) is left entirely to
     /// `Dictionary::check`'s own casing rules; this function does not reimplement or second-guess
     /// them, and their exact behaviour against real `.aff` `SFX`/`PFX` rules has not been
     /// independently verified against every case.
     pub fn check(&self, text: &str) -> Vec<Flag> {
-        text.split_word_bounds()
-            .filter(|word| word.chars().any(char::is_alphabetic))
-            .filter(|word| !self.dictionary.check(word))
-            .enumerate()
-            .map(|(index, word)| self.flag_for(index, word))
-            .collect()
+        let mut flags = Vec::new();
+        let mut local_start = 0;
+        for word in text.split_word_bounds() {
+            let local_length = word.encode_utf16().count();
+            if word.chars().any(char::is_alphabetic) && !self.dictionary.check(word) {
+                flags.push(self.flag_for(text, word, local_start, local_length));
+            }
+            local_start += local_length;
+        }
+        flags
     }
 
-    fn flag_for(&self, index: usize, word: &str) -> Flag {
+    /// `local_start` doubles as the id's discriminator: it is the one thing that differs between
+    /// two occurrences of the same misspelled word in one `text`.
+    fn flag_for(&self, text: &str, word: &str, local_start: usize, local_length: usize) -> Flag {
         let mut suggestions = Vec::new();
         self.dictionary.suggest(word, &mut suggestions);
         suggestions.truncate(MAX_SUGGESTIONS);
         Flag {
-            id: format!("spelling:{index}:{word}"),
+            id: format!("spelling:{local_start}:{word}"),
             origin: FlagOrigin::Spelling,
             span: Span {
-                anchor: word.to_string(),
-                local_start: 0,
-                local_length: word.encode_utf16().count(),
+                anchor: text.to_string(),
+                local_start,
+                local_length,
             },
             message: format!("\"{word}\" is not in the dictionary"),
             suggestions,
@@ -120,13 +133,38 @@ mod tests {
         .expect("the vendored dictionary pair and supplement are well-formed, checked in CI")
     }
 
+    /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
+    /// assert on what was flagged without depending on how the span happens to be anchored.
+    fn flagged_text(flag: &Flag) -> String {
+        let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
+        let end = flag.span.local_start + flag.span.local_length;
+        String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
     #[test]
     fn flags_a_word_absent_from_both_dictionaries() {
-        let flags = checker().check("This sentnce has a typo.");
+        let text = "This sentnce has a typo.";
+        let flags = checker().check(text);
         assert_eq!(flags.len(), 1);
-        assert_eq!(flags[0].span.anchor, "sentnce");
+        assert_eq!(flags[0].span.anchor, text);
+        assert_eq!(flagged_text(&flags[0]), "sentnce");
         assert_eq!(flags[0].origin, FlagOrigin::Spelling);
         assert!(!flags[0].suggestions.is_empty());
+    }
+
+    #[test]
+    fn the_same_word_misspelled_twice_addresses_each_occurrence_separately() {
+        // Anchoring on the bare word would give both flags the same span and the same id, so the
+        // overlay would underline the first occurrence twice and leave the second unmarked.
+        let text = "I recieve one and I recieve two.";
+        let flags = checker().check(text);
+        assert_eq!(flags.len(), 2, "{flags:#?}");
+        assert_ne!(flags[0].span.local_start, flags[1].span.local_start);
+        assert_ne!(flags[0].id, flags[1].id);
+        assert_eq!(flagged_text(&flags[0]), "recieve");
+        assert_eq!(flagged_text(&flags[1]), "recieve");
+        // Sliced from the anchor, so these offsets genuinely point at each occurrence in turn.
+        assert_eq!(flags[1].span.local_start, text.find("recieve two").unwrap());
     }
 
     #[test]
@@ -148,7 +186,7 @@ mod tests {
         let flags = checker().check("This is wördz not English.");
         let flag = flags
             .iter()
-            .find(|flag| flag.span.anchor == "wördz")
+            .find(|flag| flagged_text(flag) == "wördz")
             .expect("wördz is not in either dictionary");
         assert_eq!(flag.span.local_length, 5);
     }
