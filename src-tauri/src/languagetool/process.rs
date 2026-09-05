@@ -167,26 +167,30 @@ fn without_extended_length_prefix(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// Fixed ports, below Windows' ephemeral range (49152-65535) and clear of each other's scan
+    /// window, rather than ports discovered by binding to 0. Two reasons, one per test below.
+    /// `cargo test` runs tests in parallel, so a dropped OS-assigned port can be grabbed by
+    /// another test before the test that dropped it re-probes it. And an OS-assigned port lands
+    /// inside the range every other socket on the machine is churning, where `find_free_port`'s
+    /// [`PORT_SCAN_ATTEMPTS`]-port upward scan can find all ten busy: that made
+    /// `scans_past_a_port_already_in_use` fail roughly one run in four. `find_free_port` itself
+    /// documents accepting that race for its real scanning behaviour; these tests should not
+    /// depend on it to prove anything.
+    const FREE_PORT: u16 = 45817;
+    const TAKEN_PORT: u16 = 45903;
+
     #[test]
     fn finds_the_preferred_port_when_it_is_free() {
-        // A fixed, high port distinct from every other port this test module touches, rather
-        // than one discovered by binding and dropping an OS-assigned port: `cargo test` runs
-        // tests in parallel by default, and a dropped OS-assigned port can be grabbed by another
-        // test's own bind-to-port-0 call before this test gets to re-probe it. `find_free_port`
-        // itself already documents accepting exactly that race for its real scanning behaviour;
-        // this test should not also depend on it just to prove the happy path.
-        const LIKELY_FREE_PORT: u16 = 59417;
-        assert_eq!(find_free_port(LIKELY_FREE_PORT).unwrap(), LIKELY_FREE_PORT);
+        assert_eq!(find_free_port(FREE_PORT).unwrap(), FREE_PORT);
     }
 
     #[test]
     fn scans_past_a_port_already_in_use() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let taken = listener.local_addr().unwrap().port();
-        let found = find_free_port(taken).unwrap();
-        assert_ne!(found, taken);
-        assert!(found > taken);
-        // Keep the listener alive for the whole assertion so the port stays genuinely taken.
+        let listener = TcpListener::bind(("127.0.0.1", TAKEN_PORT)).unwrap();
+        let found = find_free_port(TAKEN_PORT).unwrap();
+        assert_ne!(found, TAKEN_PORT);
+        assert!(found > TAKEN_PORT);
+        // Kept alive to here so the port stays genuinely taken for the whole scan above.
         drop(listener);
     }
 
