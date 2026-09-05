@@ -1,6 +1,7 @@
 //! Caret bounding-rectangle retrieval via TextPattern, split into the unsafe UIA call and a
 //! pure conversion any test can exercise without a live accessibility tree.
 
+use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
@@ -10,6 +11,7 @@ use windows::Win32::UI::Accessibility::{
     TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
     UIA_TextPatternId,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
 
 use super::error::NativeCaptureError;
 
@@ -50,6 +52,77 @@ pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCa
         });
     }
     Ok(rect)
+}
+
+/// The on-screen rectangle of `element`'s own bounds, or its containing window's when the
+/// element cannot usefully answer for itself, for sizing and positioning the full-viewport
+/// overlay. Tried in that order: `element`'s own `BoundingRectangle` is the more precise answer
+/// when it is usable, since it is Word's actual document pane rather than the whole application
+/// window ribbon and all, but some accessibility implementations report it as an empty rectangle
+/// (no width or height) for elements that do not carry a meaningful bounds of their own, which is
+/// what the fallback exists for. `element` is always the same one `caret_rect` was just able to
+/// read a caret from, so its containing window is, by construction, the foreground window: the
+/// one the user is actually typing into.
+pub fn document_view_rect(
+    element: &IUIAutomationElement,
+) -> Result<CursorRect, NativeCaptureError> {
+    match element_bounding_rect(element) {
+        Some(rect) => Ok(rect),
+        None => foreground_window_rect(),
+    }
+}
+
+/// `element`'s own `BoundingRectangle`, or `None` when the call fails or reports an empty
+/// rectangle: either way, not a usable answer for [`document_view_rect`], which should fall back
+/// to the containing window instead of handing the overlay a zero-sized target.
+fn element_bounding_rect(element: &IUIAutomationElement) -> Option<CursorRect> {
+    // SAFETY: `element` is live; CurrentBoundingRectangle fails safely (Err) when the property
+    // is unavailable rather than trapping.
+    let rect = unsafe { element.CurrentBoundingRectangle() }.ok()?;
+    let converted = rect_from_win32(rect);
+    (converted.width > 0.0 && converted.height > 0.0).then_some(converted)
+}
+
+/// The foreground window's own rectangle, via plain Win32 rather than a UI Automation tree walk
+/// up from `element` to its nearest window ancestor: `element` already has focus by the time
+/// [`document_view_rect`] is ever called (the capture thread only reads it once a focus-changed
+/// signal has landed), so the foreground window and `element`'s containing window are the same
+/// window, and asking for it directly is simpler than a walk that would land on the same answer.
+fn foreground_window_rect() -> Result<CursorRect, NativeCaptureError> {
+    // SAFETY: GetForegroundWindow takes no arguments; it can return a null handle when no window
+    // currently has focus at all, checked below before the handle is used for anything.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return Err(NativeCaptureError::NoForegroundWindow);
+    }
+    let mut rect = RECT::default();
+    // SAFETY: `hwnd` was just confirmed non-null; `rect` is a valid, uniquely-owned out
+    // parameter for the duration of this call.
+    unsafe { GetWindowRect(hwnd, &raw mut rect) }?;
+    Ok(rect_from_win32(rect))
+}
+
+fn rect_from_win32(rect: RECT) -> CursorRect {
+    CursorRect {
+        x: f64::from(rect.left),
+        y: f64::from(rect.top),
+        width: f64::from(rect.right - rect.left),
+        height: f64::from(rect.bottom - rect.top),
+    }
+}
+
+/// Every on-screen bounding rectangle `range` produces, for underlining a flagged span in place.
+/// [`caret_rect`]'s single rectangle is not reused here because a flagged span, unlike a caret,
+/// routinely spans more than one visible line; see this module's own `rect_from_floats` doc
+/// comment for why UIA groups a range's bounding rectangles the way it does.
+pub fn span_rects(range: &IUIAutomationTextRange) -> Result<Vec<CursorRect>, NativeCaptureError> {
+    // SAFETY: `range` is a live range from `select::find_within_range`; the returned SAFEARRAY
+    // is drained and destroyed exactly once by `drain_f64_safearray` below, which takes
+    // ownership.
+    let array = unsafe { range.GetBoundingRectangles() }?;
+    // SAFETY: `array` was just returned by GetBoundingRectangles above, not read elsewhere.
+    let floats = unsafe { drain_f64_safearray(array) };
+    Ok(rects_from_floats(&floats))
 }
 
 /// Whether `range` is a caret rather than a span of selected text. A caret is *degenerate*: its
@@ -130,16 +203,29 @@ fn looks_like_caret(rect: &CursorRect) -> bool {
 
 /// UIA reports bounding rectangles as flat `[x, y, width, height]` groups, one group per
 /// visible line the range spans (a caret range is zero-width, so this is normally one group,
-/// but a caret at a wrapped line boundary can report two). The first group is what overlay
-/// placement needs.
+/// but a caret at a wrapped line boundary can report two). The first group is what caret
+/// placement needs; [`rects_from_floats`] is the same grouping for a caller that needs every
+/// group, not just the first.
 fn rect_from_floats(floats: &[f64]) -> Option<CursorRect> {
-    let [x, y, width, height] = floats.get(0..4)?.try_into().ok()?;
-    Some(CursorRect {
-        x,
-        y,
-        width,
-        height,
-    })
+    rects_from_floats(floats).into_iter().next()
+}
+
+/// Every `[x, y, width, height]` group `floats` holds, in order. See [`rect_from_floats`]'s own
+/// doc comment for why UIA groups a range's bounding rectangles this way; a flagged span, unlike
+/// a caret, routinely spans more than one visible line, so [`span_rects`] needs every group
+/// rather than only the first.
+fn rects_from_floats(floats: &[f64]) -> Vec<CursorRect> {
+    floats
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[x, y, width, height]| CursorRect {
+            x,
+            y,
+            width,
+            height,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -214,6 +300,70 @@ mod tests {
                 width: 30.0,
                 height: 40.0
             })
+        );
+    }
+
+    #[test]
+    fn empty_input_has_no_groups() {
+        assert_eq!(rects_from_floats(&[]), Vec::new());
+    }
+
+    #[test]
+    fn a_trailing_partial_group_is_dropped_rather_than_panicking() {
+        // `chunks_exact` is the point here: five floats is one whole group plus a stray value
+        // that cannot form a second one, and should simply be ignored, not indexed out of bounds.
+        let floats = [10.0, 20.0, 30.0, 40.0, 999.0];
+        assert_eq!(
+            rects_from_floats(&floats),
+            vec![CursorRect {
+                x: 10.0,
+                y: 20.0,
+                width: 30.0,
+                height: 40.0
+            }]
+        );
+    }
+
+    #[test]
+    fn a_span_wrapping_a_line_break_keeps_every_group() {
+        // The two-rectangle case `rect_from_floats`'s own doc comment describes: a span that
+        // wraps a line break, where `span_rects` needs both groups to underline both visible
+        // pieces, not just the first as `rect_from_floats` keeps for a caret.
+        let floats = [10.0, 20.0, 30.0, 40.0, 0.0, 60.0, 15.0, 40.0];
+        assert_eq!(
+            rects_from_floats(&floats),
+            vec![
+                CursorRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 30.0,
+                    height: 40.0
+                },
+                CursorRect {
+                    x: 0.0,
+                    y: 60.0,
+                    width: 15.0,
+                    height: 40.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rect_from_win32_converts_edges_to_an_origin_and_a_size() {
+        assert_eq!(
+            rect_from_win32(RECT {
+                left: 100,
+                top: 200,
+                right: 500,
+                bottom: 350,
+            }),
+            CursorRect {
+                x: 100.0,
+                y: 200.0,
+                width: 400.0,
+                height: 150.0,
+            }
         );
     }
 

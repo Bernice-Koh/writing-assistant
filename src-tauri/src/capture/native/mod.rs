@@ -120,6 +120,26 @@ impl crate::capture::Capture for NativeCapture {
         })
         .await
     }
+
+    async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+        self.request(Signal::GetDocumentViewRect).await
+    }
+
+    async fn span_rect(
+        &self,
+        anchor: &str,
+        local_start: usize,
+        local_length: usize,
+    ) -> Result<Vec<CursorRect>, CaptureError> {
+        let anchor = anchor.to_owned();
+        self.request(|reply| Signal::GetSpanRects {
+            anchor,
+            local_start,
+            local_length,
+            reply,
+        })
+        .await
+    }
 }
 
 impl Drop for NativeCapture {
@@ -150,6 +170,13 @@ enum Signal {
         replacement: String,
         reply: oneshot::Sender<Result<(), CaptureError>>,
     },
+    GetDocumentViewRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
+    GetSpanRects {
+        anchor: String,
+        local_start: usize,
+        local_length: usize,
+        reply: oneshot::Sender<Result<Vec<CursorRect>, CaptureError>>,
+    },
 }
 
 impl Signal {
@@ -161,6 +188,8 @@ impl Signal {
             Signal::GetText(_) => "GetText",
             Signal::GetCursorRect(_) => "GetCursorRect",
             Signal::Replace { .. } => "Replace",
+            Signal::GetDocumentViewRect(_) => "GetDocumentViewRect",
+            Signal::GetSpanRects { .. } => "GetSpanRects",
         }
     }
 }
@@ -303,6 +332,34 @@ fn run(
                         &replacement,
                     )
                     .map(|method| log::info!("replace succeeded via {method:?}"))
+                    .map_err(CaptureError::from),
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::GetDocumentViewRect(reply) => {
+                let result = match &current_scope {
+                    Some(scope) => {
+                        cursor::document_view_rect(&scope.element).map_err(CaptureError::from)
+                    }
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::GetSpanRects {
+                anchor,
+                local_start,
+                local_length,
+                reply,
+            } => {
+                let result = match &current_scope {
+                    Some(scope) => insert::select::find_within_range(
+                        &scope.element,
+                        &anchor,
+                        local_start,
+                        local_length,
+                    )
+                    .and_then(|range| cursor::span_rects(&range))
                     .map_err(CaptureError::from),
                     None => Err(CaptureError::NoFocus),
                 };

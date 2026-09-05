@@ -51,12 +51,12 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
 
 /// Resolves `flag`'s span to a UTF-16 offset range within `sentence`, the single unit every flag
 /// passed to [`apply`] was computed against. Grammar flags and phrase-based AI-tell flags already
-/// anchor on the sentence itself (see `languagetool::client` and `style::ai_tell`'s own
-/// documentation), so their `local_start`/`local_length` apply directly. Spelling flags anchor on
-/// the misspelled word, and regex-based AI-tell flags anchor on their own matched substring, so
-/// both are resolved by first finding that anchor's own position within `sentence`. Returns
-/// `None` if the anchor cannot be found in `sentence` at all, which should not happen for a flag
-/// genuinely computed from `sentence`, but is treated as unresolvable rather than assumed away.
+/// anchor on the sentence itself (see `languagetool::client`, `spelling` and `style::ai_tell`'s
+/// own documentation), so their `local_start`/`local_length` apply directly. Regex-based AI-tell
+/// flags anchor on their own matched substring, so they are resolved by first finding that
+/// anchor's own position within `sentence`. Returns `None` if the anchor cannot be found in
+/// `sentence` at all, which should not happen for a flag genuinely computed from `sentence`, but
+/// is treated as unresolvable rather than assumed away.
 fn resolve_within_sentence(sentence: &str, flag: &Flag) -> Option<Range<usize>> {
     let anchor_start = if flag.span.anchor == sentence {
         0
@@ -112,7 +112,8 @@ mod tests {
     fn keeps_a_spelling_flag_even_when_it_overlaps_a_grammar_flag() {
         let sentence = "The team recieve praise.";
         let grammar = flag(FlagOrigin::Grammar, sentence, 9, 7); // "recieve"
-        let spelling = flag(FlagOrigin::Spelling, "recieve", 0, 7);
+                                                                 // Sentence-anchored, matching how `spelling::SpellChecker::check` actually builds a span.
+        let spelling = flag(FlagOrigin::Spelling, sentence, 9, 7);
         let result = apply(sentence, vec![grammar.clone(), spelling.clone()]);
         assert_eq!(result, vec![grammar, spelling]);
     }

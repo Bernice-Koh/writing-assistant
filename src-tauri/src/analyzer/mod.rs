@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use lru::LruCache;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
@@ -52,6 +53,13 @@ struct Inner {
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
     flags: RwLock<Vec<Flag>>,
+    /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
+    /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
+    /// this channel via `borrow`, so there is exactly one source of truth, not two that could
+    /// drift apart. Kept separate from `flags` rather than folding it into a single
+    /// `watch`-backed field because `current_flags` is a plain, lock-based read with no
+    /// subscription semantics, a simpler contract for a caller that only wants the value once.
+    flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
     previous_sentences: Mutex<Vec<String>>,
     /// Counts calls into [`check_sentence`], real work a cache hit skips. Per-instance rather
@@ -72,11 +80,13 @@ impl Analyzer {
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
     ) -> Self {
+        let (flags_tx, _) = watch::channel(Vec::new());
         let inner = Arc::new(Inner {
             capture,
             spelling,
             languagetool,
             flags: RwLock::new(Vec::new()),
+            flags_tx,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_CAPACITY)
                     .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
@@ -97,6 +107,17 @@ impl Analyzer {
             .read()
             .expect("a poisoned lock here means another thread already panicked; propagating that panic is correct, not recovering silently")
             .clone()
+    }
+
+    /// Notified with the complete, merged, and deduplicated flag set every time a recheck
+    /// finishes, so a subscriber (the overlay's own flag-positioning task) reacts the moment new
+    /// flags are ready instead of polling [`Self::current_flags`] on its own schedule. Delivers
+    /// only the latest value, not every intermediate one: a subscriber that is mid-reaction to
+    /// one recheck when another completes sees the newer flags next, never a queue of stale ones
+    /// to catch up on, which is the behaviour this receiver needs since only the current flag set
+    /// is ever meaningful to render.
+    pub fn subscribe(&self) -> watch::Receiver<Vec<Flag>> {
+        self.inner.flags_tx.subscribe()
     }
 
     /// How many times [`check_sentence`] actually ran real work, as opposed to a cache hit.
@@ -181,13 +202,39 @@ async fn recheck(inner: &Inner, text: &str) {
                 flags
             }
         };
-        document_flags.extend(sentence_flags);
+        document_flags.extend(
+            sentence_flags
+                .into_iter()
+                .map(|flag| with_document_scope(index, flag)),
+        );
     }
 
     *inner
         .flags
         .write()
-        .expect("a poisoned lock here means another thread already panicked") = document_flags;
+        .expect("a poisoned lock here means another thread already panicked") =
+        document_flags.clone();
+    // A subscriber-free channel (no `overlay::track_flags` task running yet, or the app running
+    // headless in a test) has no receivers left; `send` reporting that is expected, not an error
+    // worth logging.
+    let _ = inner.flags_tx.send(document_flags);
+}
+
+/// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
+/// checking source numbers its flags within the single sentence it was handed, so two sentences
+/// whose flags number the same way arrive with the same id: the same word misspelled in two
+/// sentences produces `spelling:0:recieve` twice. The overlay keys both its rendered underlines
+/// and its hover lookup by id, so a duplicate makes one flag's card open for the other.
+///
+/// The sentence's index, rather than the hash the cache is keyed by, because the index is the
+/// only part of a sentence's identity that separates two textually identical sentences. It shifts
+/// when a sentence is inserted earlier in the document, which re-keys the flags after it; that
+/// costs a remount of those underlines on the next emit, which is already a whole-set emit.
+fn with_document_scope(sentence_index: usize, flag: Flag) -> Flag {
+    Flag {
+        id: format!("{sentence_index}:{}", flag.id),
+        ..flag
+    }
 }
 
 async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
@@ -255,6 +302,19 @@ mod tests {
         ) -> Result<(), CaptureError> {
             Ok(())
         }
+
+        async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+            Err(CaptureError::Unsupported)
+        }
+
+        async fn span_rect(
+            &self,
+            _anchor: &str,
+            _local_start: usize,
+            _local_length: usize,
+        ) -> Result<Vec<CursorRect>, CaptureError> {
+            Err(CaptureError::Unsupported)
+        }
     }
 
     fn resource_path(name: &str) -> PathBuf {
@@ -284,6 +344,14 @@ mod tests {
         }
     }
 
+    /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
+    /// assert on what was flagged without depending on how the span happens to be anchored.
+    fn flagged_text(flag: &Flag) -> String {
+        let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
+        let end = flag.span.local_start + flag.span.local_length;
+        String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
     #[tokio::test(start_paused = true)]
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
@@ -311,7 +379,7 @@ mod tests {
         step(6).await;
         let flags = analyzer.current_flags();
         assert!(
-            flags.iter().any(|flag| flag.span.anchor == "mispelling"),
+            flags.iter().any(|flag| flagged_text(flag) == "mispelling"),
             "expected a recheck to have found the misspelling by now: {flags:#?}"
         );
     }
@@ -327,7 +395,7 @@ mod tests {
         assert!(
             first_pass
                 .iter()
-                .any(|flag| flag.span.anchor == "mispelling"),
+                .any(|flag| flagged_text(flag) == "mispelling"),
             "expected the first recheck to find the misspelling: {first_pass:#?}"
         );
         // Both sentences are new to the cache on this first pass, so both were checked for real.
@@ -341,15 +409,37 @@ mod tests {
         assert!(
             second_pass
                 .iter()
-                .any(|flag| flag.span.anchor == "mispelling"),
+                .any(|flag| flagged_text(flag) == "mispelling"),
             "the unchanged first sentence's flag should still be present: {second_pass:#?}"
         );
         assert!(
-            second_pass.iter().any(|flag| flag.span.anchor == "eror"),
+            second_pass.iter().any(|flag| flagged_text(flag) == "eror"),
             "the changed second sentence's new misspelling should be flagged: {second_pass:#?}"
         );
         // Only the one changed sentence should have gone through a real check this time; the
         // unchanged first sentence should have been served from the LRU cache instead.
         assert_eq!(analyzer.check_sentence_call_count(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_same_misspelling_in_two_sentences_gets_two_distinct_ids() {
+        // Each sentence is checked on its own, so both flags arrive numbered from that
+        // sentence's own start. Without a document-level scope they are both `spelling:2:eror`,
+        // and the overlay keys its underlines and its hover lookup by id.
+        let fake = Arc::new(FakeCapture::new("An eror here. An eror there."));
+        let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None);
+
+        step(6).await;
+        let flags = analyzer.current_flags();
+        let misspellings: Vec<&Flag> = flags
+            .iter()
+            .filter(|flag| flagged_text(flag) == "eror")
+            .collect();
+        assert_eq!(misspellings.len(), 2, "{flags:#?}");
+        assert_ne!(misspellings[0].id, misspellings[1].id, "{flags:#?}");
+        // The two sentences are different text, so each flag also anchors on its own sentence,
+        // which is what lets the overlay resolve them to two different places on screen.
+        assert_ne!(misspellings[0].span.anchor, misspellings[1].span.anchor);
     }
 }

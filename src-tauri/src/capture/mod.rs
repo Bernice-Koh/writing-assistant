@@ -42,8 +42,10 @@ pub use error::CaptureError;
 
 /// Screen-space rectangle for placing UI relative to the cursor. Shape matches
 /// [`native::cursor::CursorRect`] deliberately; #20 reconciles the two into one type when the
-/// native backend conforms to this trait.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// native backend conforms to this trait. `Serialize` so a [`crate::overlay::PositionedFlag`]
+/// carrying one can cross the Tauri IPC boundary to the overlay's own webview.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CursorRect {
     pub x: f64,
     pub y: f64,
@@ -98,4 +100,32 @@ pub trait Capture: Send + Sync {
         local_length: usize,
         replacement: &str,
     ) -> Result<(), CaptureError>;
+
+    /// The on-screen rectangle of the focused editable element, or its containing window when
+    /// the element's own rectangle is unusable, for sizing and positioning the full-viewport
+    /// overlay so every visible flagged span falls inside it, not just the caret's own
+    /// neighbourhood. Native answers this from UI Automation's `BoundingRectangle`
+    /// ([`native::cursor::document_view_rect`]). Web returns [`CaptureError::Unsupported`], the
+    /// same precedent [`Self::cursor_rect`] already sets for the same reason: a browser content
+    /// script cannot convert a DOM position to absolute screen coordinates.
+    async fn document_view_rect(&self) -> Result<CursorRect, CaptureError>;
+
+    /// Every on-screen bounding rectangle the `local_length`-UTF-16-code-unit span starting
+    /// `local_start` code units into the first occurrence of `anchor` produces, for underlining
+    /// a flagged span in place. More than one rectangle comes back when the span wraps a line
+    /// break; [`Self::cursor_rect`]'s single rectangle is not reused here because a flagged span,
+    /// unlike a caret, routinely spans more than one visible line.
+    ///
+    /// Addressed the same way [`Self::replace`] is, for the same reason: a [`crate::flag::Span`]
+    /// is directly usable both to replace its own text and to resolve its on-screen position
+    /// through this one anchor contract. Native answers this from UI Automation's `TextPattern`
+    /// ([`native::cursor::span_rects`]), reusing the anchor-search logic
+    /// [`native::insert::select::find_within_range`] already establishes for `replace`. Web
+    /// returns [`CaptureError::Unsupported`], for the same reason as [`Self::document_view_rect`].
+    async fn span_rect(
+        &self,
+        anchor: &str,
+        local_start: usize,
+        local_length: usize,
+    ) -> Result<Vec<CursorRect>, CaptureError>;
 }

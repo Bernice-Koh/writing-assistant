@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Core permissions granted to the main and overlay windows.",
   "windows": ["main", "overlay"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:event:default", "allow-get-current-flags"]
 }

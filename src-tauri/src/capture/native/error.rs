@@ -34,6 +34,8 @@ pub enum NativeCaptureError {
     InsertionUnverified,
     #[error("target text not found in the element")]
     TextNotFound,
+    #[error("no foreground window to fall back to")]
+    NoForegroundWindow,
 }
 
 /// Maps this backend's own, specific failure modes onto the `Capture` trait's shared
@@ -44,9 +46,11 @@ pub enum NativeCaptureError {
 /// with no TextPattern at all. `SelectionNotCaret` joins them for that same reason; the two
 /// stay separate variants only so a log line can say which of the two happened.
 /// `ImplausibleCaretShape` joins them too: an element whose reported rectangle does not look
-/// like a caret cannot answer a cursor-rect request right now either, and `track_cursor`'s
+/// like a caret cannot answer a cursor-rect request right now either, and `track_document_view`'s
 /// existing handling of an `Err` result, holding the overlay at its last position rather than
-/// moving it, is exactly the behaviour `#28` needs for a fabricated rectangle.
+/// moving it, is exactly the behaviour `#28` needs for a fabricated rectangle. `NoForegroundWindow`
+/// joins the same group for `document_view_rect`'s own fallback: no window to report a rectangle
+/// for is the same practical "cannot answer right now" outcome as the others.
 impl From<NativeCaptureError> for crate::capture::CaptureError {
     fn from(error: NativeCaptureError) -> Self {
         use crate::capture::CaptureError;
@@ -59,7 +63,8 @@ impl From<NativeCaptureError> for crate::capture::CaptureError {
             | NativeCaptureError::SelectionNotCaret
             | NativeCaptureError::ImplausibleCaretShape { .. }
             | NativeCaptureError::NoValuePattern
-            | NativeCaptureError::ReadOnly => CaptureError::Unsupported,
+            | NativeCaptureError::ReadOnly
+            | NativeCaptureError::NoForegroundWindow => CaptureError::Unsupported,
             NativeCaptureError::Com(_)
             | NativeCaptureError::ThreadSpawn(_)
             | NativeCaptureError::ThreadNotReady

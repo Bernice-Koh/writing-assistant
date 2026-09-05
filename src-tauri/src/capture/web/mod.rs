@@ -164,6 +164,19 @@ impl Capture for WebCapture {
             other => Err(unexpected_reply(&other)),
         }
     }
+
+    async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
+
+    async fn span_rect(
+        &self,
+        _anchor: &str,
+        _local_start: usize,
+        _local_length: usize,
+    ) -> Result<Vec<CursorRect>, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
 }
 
 fn unexpected_reply(message: &ClientMessage) -> CaptureError {
@@ -266,6 +279,20 @@ mod tests {
     async fn cursor_rect_is_always_unsupported() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
         let result = capture.cursor_rect().await;
+        assert!(matches!(result, Err(CaptureError::Unsupported)));
+    }
+
+    #[tokio::test]
+    async fn document_view_rect_is_always_unsupported() {
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let result = capture.document_view_rect().await;
+        assert!(matches!(result, Err(CaptureError::Unsupported)));
+    }
+
+    #[tokio::test]
+    async fn span_rect_is_always_unsupported() {
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let result = capture.span_rect("anchor", 0, 1).await;
         assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 
