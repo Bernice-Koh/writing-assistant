@@ -5,8 +5,14 @@
 //! directory of 138 dependency jars, not one fat jar): `languagetool-server.jar`'s own
 //! `META-INF/MANIFEST.MF` declares a `Class-Path` entry naming every jar under `libs/` it needs,
 //! resolved by the JVM relative to `languagetool-server.jar`'s own location regardless of the
-//! subprocess's working directory. `-cp <jar path>` alone is therefore enough as long as `libs/`
-//! sits next to the jar on disk; nothing here builds the classpath by hand.
+//! subprocess's working directory. `-cp <jar path>` alone is therefore enough, and nothing here
+//! builds the classpath by hand, but only when the jar's own directory holds the rest of the
+//! distribution root as well. That `Class-Path` entry begins `./`, and the language modules live
+//! there as loose files, `org/languagetool/language/English.class` among them, rather than inside
+//! any jar under `libs/`. With `libs/` alone beside the jar the server starts and then dies in
+//! `LanguageIdentifier`'s static initialiser, reporting `xx-XX`, LanguageTool's own test fixture
+//! language, as the only language code it knows. `scripts/build-languagetool-jre.ps1` is what
+//! copies `org/` and `META-INF/` across alongside the jar and `libs/`.
 //!
 //! The jlink module list bundled for the trimmed runtime this spawns
 //! (`java.base,java.compiler,java.desktop,java.instrument,java.naming,java.scripting,java.sql,
@@ -126,6 +132,7 @@ pub(crate) async fn warm_up(client: &LanguageToolClient) {
 /// resolved relative to `resources_dir` (the Tauri resource directory at runtime). Kept separate
 /// from [`spawn`] and [`wait_until_ready`] so tests can supply their own paths instead.
 pub fn default_paths(resources_dir: &Path) -> LanguageToolPaths {
+    let resources_dir = without_extended_length_prefix(resources_dir);
     LanguageToolPaths {
         // `.exe` unconditionally: per README's Requirements section this app only ships for
         // Windows, so there is no second platform's binary name to branch on.
@@ -133,6 +140,26 @@ pub fn default_paths(resources_dir: &Path) -> LanguageToolPaths {
         jar: resources_dir
             .join("languagetool")
             .join("languagetool-server.jar"),
+    }
+}
+
+/// Strips a `\\?\` extended-length prefix, which `AppHandle::path().resource_dir()` returns and
+/// the JVM will not accept as a classpath entry. `CreateProcess` does accept the prefixed form,
+/// so `java.exe` launches from it and the rejection surfaces one layer later as
+/// `ClassNotFoundException` on the main class rather than as a spawn failure. Verified side by
+/// side against the bundled 6.6 jar: `-cp C:\...\languagetool-server.jar` loads the server,
+/// `-cp \\?\C:\...\languagetool-server.jar` loads nothing at all.
+///
+/// The prefix is what lifts Windows' 260-character path limit, so a resource directory nested
+/// deeply enough to need it cannot run LanguageTool. Nothing here can recover that case: the JVM
+/// takes neither form of such a path.
+fn without_extended_length_prefix(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    match text.strip_prefix(r"\\?\UNC\") {
+        Some(share) => PathBuf::from(format!(r"\\{share}")),
+        None => PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text)),
     }
 }
 
@@ -161,6 +188,28 @@ mod tests {
         assert!(found > taken);
         // Keep the listener alive for the whole assertion so the port stays genuinely taken.
         drop(listener);
+    }
+
+    #[test]
+    fn default_paths_strip_an_extended_length_prefix_the_jvm_would_reject() {
+        let paths = default_paths(Path::new(r"\\?\C:\Users\b\app\resources"));
+        assert_eq!(
+            paths.jar,
+            Path::new(r"C:\Users\b\app\resources\languagetool\languagetool-server.jar")
+        );
+        assert_eq!(
+            paths.java_bin,
+            Path::new(r"C:\Users\b\app\resources\jre\bin\java.exe")
+        );
+    }
+
+    #[test]
+    fn default_paths_restore_a_unc_share_rather_than_leaving_it_headless() {
+        let paths = default_paths(Path::new(r"\\?\UNC\host\share\resources"));
+        assert_eq!(
+            paths.jar,
+            Path::new(r"\\host\share\resources\languagetool\languagetool-server.jar")
+        );
     }
 
     #[test]
