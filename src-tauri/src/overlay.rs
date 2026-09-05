@@ -39,6 +39,19 @@ const INITIAL_HEIGHT: f64 = 120.0;
 /// backend's own focus/text-change events.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// A [`POLL_INTERVAL`] interval that drops missed ticks instead of firing them back to back.
+/// Tokio's default, `MissedTickBehavior::Burst`, treats a tick whose work overran the interval as
+/// a debt to repay immediately, and every one of these loops spends its tick on UI Automation
+/// calls against one shared capture thread: `track_flags` issues one `span_rect` per flag. A
+/// tick slow enough to be missed would then queue more of exactly the calls that made it slow.
+/// None of these loops needs a fixed number of ticks, only a bounded gap between refreshes, so a
+/// missed one is worth nothing and dropping it is free.
+fn poll_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
         .title("Writing Assistant Overlay")
@@ -135,7 +148,7 @@ unsafe extern "system" fn resume_subclass_proc(
 /// applies unchanged to a whole document-view rectangle.
 pub fn track_document_view(app: AppHandle, capture: Arc<dyn Capture>) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(POLL_INTERVAL);
+        let mut interval = poll_interval();
         loop {
             interval.tick().await;
             let rect = match capture.document_view_rect().await {
@@ -217,7 +230,7 @@ pub fn track_flags(
 ) {
     tauri::async_runtime::spawn(async move {
         let mut updates = analyzer.subscribe();
-        let mut interval = tokio::time::interval(POLL_INTERVAL);
+        let mut interval = poll_interval();
         loop {
             tokio::select! {
                 changed = updates.changed() => {
@@ -368,7 +381,7 @@ fn offset(rect: CursorRect, dx: f64, dy: f64) -> CursorRect {
 /// `flag-unhovered` on leaving it, so the frontend knows which card, if any, to show.
 pub fn track_hover(app: AppHandle, shared: SharedFlags) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(POLL_INTERVAL);
+        let mut interval = poll_interval();
         let mut hovered: Option<String> = None;
         loop {
             interval.tick().await;
