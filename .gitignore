@@ -77,6 +77,11 @@ profiles/
 *.nsis
 bundle/
 
+# --- Local scratch ----------------------------------------------------------
+# `npm run tauri dev` redirected to a file. Debug-level capture logging makes it large
+# fast, and nothing in it belongs in the repository.
+dev.log
+
 # --- Editors and OS --------------------------------------------------------
 .vscode/*
 !.vscode/extensions.json
