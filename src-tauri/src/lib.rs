@@ -37,10 +37,11 @@ const LANGUAGETOOL_PREFERRED_PORT: u16 = 8081;
 // as an empty `Vec`, not a failure, since that is a normal state, not an exceptional one.
 #[tauri::command]
 async fn get_current_flags(
+    app: tauri::AppHandle,
     capture: tauri::State<'_, Arc<dyn Capture>>,
     shared: tauri::State<'_, SharedFlags>,
 ) -> Result<Vec<PositionedFlag>, ()> {
-    Ok(overlay::relative_flags(capture.inner(), shared.inner()).await)
+    Ok(overlay::relative_flags(&app, capture.inner(), shared.inner()).await)
 }
 
 /// Builds and runs the Tauri application.

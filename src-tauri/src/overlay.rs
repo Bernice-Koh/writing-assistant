@@ -175,7 +175,7 @@ fn to_physical(rect: CursorRect) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
 
 /// One flag together with every on-screen rectangle its span currently resolves to. `Clone` so a
 /// snapshot can be taken out from under [`SharedFlags`]'s lock before the (`await`-ing) work of
-/// relativizing it in [`relative_flags`].
+/// relativising it in [`relative_flags`].
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PositionedFlag {
@@ -183,11 +183,13 @@ pub struct PositionedFlag {
     pub rects: Vec<CursorRect>,
 }
 
-/// The latest positioned flags, in absolute screen coordinates, shared between [`track_flags`]
-/// (writer) and [`track_hover`] (reader, hit-testing against a `GetCursorPos` result, itself
-/// absolute). Kept in absolute coordinates rather than pre-relativized to the overlay window's
-/// own origin so the two tasks never need to agree on which document-view snapshot to relativize
-/// against; only the boundary that actually renders ([`relative_flags`]) needs to know that.
+/// The latest positioned flags, in absolute physical screen coordinates, shared between
+/// [`track_flags`] (writer) and [`track_hover`] (reader, hit-testing against a `GetCursorPos`
+/// result, itself absolute and physical). Kept absolute and physical rather than pre-relativised
+/// and converted into the overlay window's own CSS pixel space, so the two tasks never need to
+/// agree on which document-view snapshot to relativise against, and so hit-testing keeps
+/// comparing physical against physical; only the boundary that actually renders
+/// ([`relative_flags`]) needs to know either.
 pub type SharedFlags = Arc<Mutex<Vec<PositionedFlag>>>;
 
 /// Spawns a background task that resolves each of `analyzer`'s current flags' on-screen positions
@@ -233,7 +235,7 @@ pub fn track_flags(
             *shared
                 .lock()
                 .expect("a poisoned lock here means another thread already panicked") = positioned;
-            let relative = relative_flags(&capture, &shared).await;
+            let relative = relative_flags(&app, &capture, &shared).await;
             if let Err(error) = app.emit("flags-updated", &relative) {
                 log::warn!("failed to emit flags-updated: {error}");
             }
@@ -266,15 +268,25 @@ async fn resolve_positions(capture: &Arc<dyn Capture>, flags: Vec<Flag>) -> Vec<
     positioned
 }
 
-/// `shared`'s cached, absolute-screen-coordinate positions, expressed relative to the document
-/// view's current on-screen origin: the coordinate space the overlay window's own webview renders
-/// in, since the window itself sits exactly at that origin (`track_document_view` puts it there).
-/// Used both by [`track_flags`]'s own emit and by the `get_current_flags` Tauri command, so a
-/// freshly mounted frontend and a live update agree on the same coordinate space. Empty when
-/// there is currently no document view to relativize against, since in that case
-/// `track_document_view` has nowhere to have put the window either, and a position relative to an
-/// unknown origin cannot be usefully rendered.
+/// `shared`'s cached, absolute physical positions, expressed relative to the document view's
+/// current on-screen origin and divided down into CSS pixels: the coordinate space the overlay
+/// window's own webview renders in, since the window itself sits exactly at that origin
+/// (`track_document_view` puts it there). Used both by [`track_flags`]'s own emit and by the
+/// `get_current_flags` Tauri command, so a freshly mounted frontend and a live update agree on
+/// the same coordinate space. Empty when there is currently no document view to relativise
+/// against, since in that case `track_document_view` has nowhere to have put the window either,
+/// and a position relative to an unknown origin cannot be usefully rendered.
+///
+/// The division by the overlay window's scale factor is what makes this a function rather than a
+/// subtraction the frontend could do for itself. UI Automation reports physical screen pixels; a
+/// webview lays out in CSS pixels, which are physical pixels divided by the display's scale
+/// factor. Rendering a physical offset as a CSS offset draws every underline at `scale_factor`
+/// times its true distance from the window's origin, so at 200% scaling, twice: the symptom #48's
+/// manual verification found against both Notepad and Word, with the overlay window itself
+/// correctly placed, since `track_document_view` positions that in physical pixels through
+/// `PhysicalPosition`.
 pub async fn relative_flags(
+    app: &AppHandle,
     capture: &Arc<dyn Capture>,
     shared: &SharedFlags,
 ) -> Vec<PositionedFlag> {
@@ -289,10 +301,32 @@ pub async fn relative_flags(
         .lock()
         .expect("a poisoned lock here means another thread already panicked")
         .clone();
-    to_relative(&absolute, origin)
+    to_relative(&absolute, origin, overlay_scale_factor(app))
 }
 
-fn to_relative(flags: &[PositionedFlag], origin: CursorRect) -> Vec<PositionedFlag> {
+/// Physical pixels per CSS pixel on whichever display the overlay window currently sits on, read
+/// per call rather than once at startup so a document dragged to a display at a different scale
+/// converts by that display's own factor. Falls back to 1.0, leaving coordinates in physical
+/// pixels, when the window is gone or reports nothing usable: wrong on a scaled display, and the
+/// only value that is right on an unscaled one.
+fn overlay_scale_factor(app: &AppHandle) -> f64 {
+    let Some(window) = app.get_webview_window("overlay") else {
+        return 1.0;
+    };
+    match window.scale_factor() {
+        Ok(scale) if scale > 0.0 => scale,
+        Ok(scale) => {
+            log::warn!("the overlay window reported a scale factor of {scale}; falling back to 1");
+            1.0
+        }
+        Err(error) => {
+            log::warn!("could not read the overlay window's scale factor: {error}");
+            1.0
+        }
+    }
+}
+
+fn to_relative(flags: &[PositionedFlag], origin: CursorRect, scale: f64) -> Vec<PositionedFlag> {
     flags
         .iter()
         .map(|positioned| PositionedFlag {
@@ -300,10 +334,21 @@ fn to_relative(flags: &[PositionedFlag], origin: CursorRect) -> Vec<PositionedFl
             rects: positioned
                 .rects
                 .iter()
-                .map(|rect| offset(*rect, -origin.x, -origin.y))
+                .map(|rect| to_css_pixels(offset(*rect, -origin.x, -origin.y), scale))
                 .collect(),
         })
         .collect()
+}
+
+/// Applied after [`offset`], not before: `origin` is itself a physical coordinate, so subtracting
+/// it has to happen in the space it is expressed in.
+fn to_css_pixels(rect: CursorRect, scale: f64) -> CursorRect {
+    CursorRect {
+        x: rect.x / scale,
+        y: rect.y / scale,
+        width: rect.width / scale,
+        height: rect.height / scale,
+    }
 }
 
 fn offset(rect: CursorRect, dx: f64, dy: f64) -> CursorRect {
@@ -454,12 +499,26 @@ mod tests {
                 ],
             },
         ];
-        let relative = to_relative(&flags, rect(100.0, 200.0, 900.0, 700.0));
+        let relative = to_relative(&flags, rect(100.0, 200.0, 900.0, 700.0), 1.0);
         assert_eq!(relative[0].rects, vec![rect(50.0, 50.0, 40.0, 20.0)]);
         assert_eq!(
             relative[1].rects,
             vec![rect(60.0, 200.0, 20.0, 20.0), rect(0.0, 220.0, 10.0, 20.0)]
         );
+    }
+
+    #[test]
+    fn to_relative_divides_a_scaled_display_down_into_css_pixels() {
+        // The real Notepad numbers from #48's failed manual verification on a 200%-scaled
+        // display: a span 240 physical pixels right of the document view's origin belongs 120
+        // CSS pixels into the overlay's webview, and rendering it at 240 is what put every
+        // underline at twice its true distance from the caret.
+        let flags = vec![PositionedFlag {
+            flag: test_flag("a"),
+            rects: vec![rect(239.0, 233.0, 336.0, 34.0)],
+        }];
+        let relative = to_relative(&flags, rect(-1.0, 133.0, 3074.0, 1628.0), 2.0);
+        assert_eq!(relative[0].rects, vec![rect(120.0, 50.0, 168.0, 17.0)]);
     }
 
     #[test]
