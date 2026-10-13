@@ -1,41 +1,64 @@
 # Constitution
 
-Durable principles for writing-assistant. These outrank convenience: if a task in progress
-conflicts with one of them, stop and flag it rather than silently working around it.
+Durable principles for writing-assistant. These outrank convenience: a task in progress that
+conflicts with one of them stops and is flagged. It is never silently worked around.
 
-## Audience
+## Principles
+
+### Audience
 
 The owner is the sole intended user of this project. The repository being public does not
-make the audience general. Terminology is never simplified on comprehension grounds; write
-and build for the owner's actual level of understanding, not a hypothetical newcomer.
+make the audience general. Terminology is never simplified on comprehension grounds: the
+project is written and built for the owner's actual level of understanding, not a hypothetical
+newcomer's.
 
-## Verify before building
+### Verify before building
 
-Feasibility is verified from existing repositories, documentation, and shipped products
-before code is written. Throwaway prototypes or mocks built solely to find out whether
-something works are not part of this project's method.
+No design decision rests on an unverified claim. A claim is verified by a primary source or by
+a measurement against the real target.
 
-## Design precedes training
+A spike is a measurement against a real target. It is kept in the repository as a harness that
+runs again on demand, and it is never used as a design argument.
 
-No fine-tuning run resolves a design question. Design decisions for the voice adapter are
-settled before a training job starts, not discovered by running one.
+### Design precedes training
 
-## The archive boundary
+No fine-tuning run resolves a design question. A training run may select among branches
+written before it ran. It never originates one: a branch that was not written down before the
+job started is not adopted on the strength of the job's result.
+
+### Every number carries its interval and its baseline
+
+No comparison is argued from a point estimate. A rate is reported as a count over its n, with
+an interval. A score is reported beside the baseline it has to beat. A comparison's protocol,
+meaning its metric, margin, test, and decision rule, is written before the comparison runs.
+
+### The archive boundary
 
 `_local/` is private working material: early research, draft specifications, decision logs.
 It is never cited from a committed file, its prose is never copied into the repository, and
-its internal paths are never referenced in a committed document. Content leaves `_local/`
-only by being rewritten to this repository's conventions in a committed file.
+its internal paths are never referenced in a committed document, a commit message, an issue,
+or a pull request. Content leaves `_local/` only by being rewritten to this repository's
+conventions in a committed file.
 
-## Architecture invariants
+## Invariants
 
-Three invariants from the design shape every engineering decision. Full context is in
-README's Architecture section; this is the binding statement of each.
+Three invariants bind every engineering decision. The first sentence of each is the binding
+statement.
 
-- Live checking is arithmetic and rules only. A network round trip costs 500 ms or more,
-  which the Tier 0 and Tier 0.5 latency budgets do not have.
-- Adapters carry voice; facts come from the draft and retrieved context. Adapters encode
-  style faithfully and invent details confidently, so a rewrite's factual content is never
-  left to the adapter alone.
-- Only deliberate acts move the target profile. Measured behaviour updates the observed
-  profile only, so habit never drags the target back toward how the user already writes.
+1. Nothing that runs on the owner's typing calls a model or the network. The path from a text
+   change to a flag is deterministic code plus LanguageTool, a subprocess on the same machine
+   reached over the loopback interface. Model calls and network calls belong to work the owner
+   asks for, such as a rewrite, and to background jobs that typing never waits on.
+
+2. Content preservation is checked deterministically on every candidate before it is shown,
+   and a model is never the source of a fact. A candidate is a model's rewrite of a passage.
+   The check compares its numbers, capitalised tokens, negation words, and length against the
+   passage, and a candidate that fails is not shown. A model supplies wording; the facts are
+   the passage's.
+
+3. The Style Card is the only target, and it changes only in response to a preference the
+   owner expresses. An expressed preference is a questionnaire answer, a reaction to a sample,
+   or free-prose feedback. Measured behaviour is a pick between candidates, an edit of a
+   candidate, or a dismissal. It is recorded and never moves the Card. A model writes the
+   Card's clauses, so what separates target from behaviour is the kind of input, an expressed
+   preference or an observed action, and not who wrote the clause.
