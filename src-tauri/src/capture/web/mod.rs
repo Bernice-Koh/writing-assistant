@@ -180,7 +180,7 @@ impl Capture for WebCapture {
 }
 
 fn unexpected_reply(message: &ClientMessage) -> CaptureError {
-    CaptureError::from(WebCaptureError::UnexpectedReply(format!("{message:?}")))
+    CaptureError::from(WebCaptureError::UnexpectedReply(message.kind()))
 }
 
 /// Owns the hub's state: at most one open connection, at most one in-flight request. Runs until
@@ -210,7 +210,7 @@ async fn run_hub(mut events: mpsc::UnboundedReceiver<HubEvent>) {
                 Some(reply) => {
                     let _ = reply.send(Ok(message));
                 }
-                None => log::debug!("unsolicited reply from extension: {message:?}"),
+                None => log::debug!("unsolicited reply from extension: {}", message.kind()),
             },
             HubEvent::Request(message, reply) => {
                 if pending.is_some() {
@@ -363,6 +363,30 @@ mod tests {
 
         let result = call.await.expect("task joins");
         assert!(matches!(result, Err(CaptureError::TextNotFound)));
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_reply_error_names_the_kind_and_not_the_draft() {
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let mut client = connect_test_client(capture.local_addr()).await;
+        let call = tokio::spawn(async move { capture.replace("anchor", 0, 6, "target").await });
+
+        next_server_message(&mut client).await;
+        reply_with(
+            &mut client,
+            ClientMessage::CurrentText {
+                text: "draft text".to_owned(),
+            },
+        )
+        .await;
+
+        let error = call
+            .await
+            .expect("task joins")
+            .expect_err("a text reply does not answer a replace");
+        let rendered = format!("{error} {error:?}");
+        assert!(rendered.contains("current_text"), "{rendered}");
+        assert!(!rendered.contains("draft text"), "{rendered}");
     }
 
     #[tokio::test]
