@@ -63,11 +63,28 @@ fn catalog() -> &'static Vec<CompiledPattern> {
 /// the text as written, so every offset it yields indexes that text. Lowercasing a copy and
 /// searching that instead yields offsets into the copy, which are wrong for the original wherever
 /// lowercasing changes a character's byte length.
+///
+/// An edge of the phrase that is a letter or digit must fall on a word boundary: without one,
+/// "here is a" matches inside "there is a" and "boasts a" inside "boasts about". An edge that is
+/// punctuation or a space carries no such requirement, so a dash is found between two words.
 fn phrase_regex_source(phrase: &str) -> String {
-    format!("(?i){}", regex::escape(phrase))
+    let boundary = |edge: Option<char>| {
+        if edge.is_some_and(char::is_alphanumeric) {
+            r"\b"
+        } else {
+            ""
+        }
+    };
+    format!(
+        "(?i){}{}{}",
+        boundary(phrase.chars().next()),
+        regex::escape(phrase),
+        boundary(phrase.chars().next_back()),
+    )
 }
 
-/// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match.
+/// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match, so a phrase
+/// that occurs twice in a sentence is flagged twice.
 ///
 /// A phrase-based pattern is checked sentence by sentence, so its flags anchor on the sentence
 /// they were found in, the same anchoring [`crate::spelling`] and [`crate::languagetool`] use. A
@@ -88,19 +105,20 @@ pub fn scan(text: &str) -> Vec<Flag> {
 fn scan_with_phrases(compiled: &CompiledPattern, text: &str) -> Vec<Flag> {
     let mut flags = Vec::new();
     for (sentence_index, sentence) in text.unicode_sentences().enumerate() {
-        for (match_index, phrase) in compiled.phrases.iter().enumerate() {
-            let Some(found) = phrase.find(sentence) else {
-                continue;
-            };
-            let local_start = sentence[..found.start()].encode_utf16().count();
-            let local_length = found.as_str().encode_utf16().count();
-            flags.push(build_flag(
-                compiled,
-                &format!("{sentence_index}:{match_index}"),
-                sentence,
-                local_start,
-                local_length,
-            ));
+        for (phrase_index, phrase) in compiled.phrases.iter().enumerate() {
+            for found in phrase.find_iter(sentence) {
+                // The offset closes the id: it is the one thing that differs between two
+                // occurrences of the same phrase in one sentence.
+                let local_start = sentence[..found.start()].encode_utf16().count();
+                let local_length = found.as_str().encode_utf16().count();
+                flags.push(build_flag(
+                    compiled,
+                    &format!("{sentence_index}:{phrase_index}:{local_start}"),
+                    sentence,
+                    local_start,
+                    local_length,
+                ));
+            }
         }
     }
     flags
@@ -208,6 +226,35 @@ mod tests {
         assert!(flags
             .iter()
             .any(|flag| flag.id.starts_with("ai-tell:em-en-dashes")));
+    }
+
+    #[test]
+    fn flags_every_occurrence_of_a_phrase_in_one_sentence() {
+        let flags = scan("The policy\u{2014}announced without warning\u{2014}affects everyone.");
+        let dashes = flags_of(&flags, "em-en-dashes");
+        assert_eq!(dashes.len(), 2, "{flags:#?}");
+        assert_ne!(dashes[0].id, dashes[1].id);
+        assert_ne!(dashes[0].span.local_start, dashes[1].span.local_start);
+        assert!(dashes.iter().all(|flag| flagged_text(flag) == "\u{2014}"));
+    }
+
+    #[test]
+    fn a_phrase_edge_that_is_a_letter_or_digit_matches_only_at_a_word_boundary() {
+        // "here is a" is catalogued, and sits inside "there is a".
+        let flags = scan("There is a cat on the mat.");
+        assert!(flags.is_empty(), "expected no flags: {flags:#?}");
+        let flags = scan("Here is a summary of the meeting.");
+        let artifacts = flags_of(&flags, "collaborative-communication-artifacts");
+        assert_eq!(artifacts.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(artifacts[0]), "Here is a");
+
+        // "boasts a" is catalogued, and sits inside "boasts about".
+        let flags = scan("The author boasts about the prize.");
+        assert!(flags.is_empty(), "expected no flags: {flags:#?}");
+        let flags = scan("The town boasts a harbour.");
+        let copulas = flags_of(&flags, "copula-avoidance");
+        assert_eq!(copulas.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(copulas[0]), "boasts a");
     }
 
     #[test]
