@@ -64,7 +64,6 @@
     "category": "content",
     "description": "Advertisement-like language, especially for places and cultural topics",
     "match_phrases": [
-      "boasts a",
       "nestled in",
       "nestled within",
       "in the heart of",
@@ -181,7 +180,6 @@
       "i hope this helps",
       "of course!",
       "certainly!",
-      "you're absolutely right",
       "would you like me to",
       "let me know if",
       "here is a"

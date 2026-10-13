@@ -120,6 +120,8 @@ pub fn scan(text: &str) -> Vec<Flag> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
@@ -291,6 +293,32 @@ mod tests {
             1,
             "{flags:#?}"
         );
+    }
+
+    #[test]
+    fn every_catalogue_phrase_belongs_to_exactly_one_pattern() {
+        let mut owners: HashMap<String, &str> = HashMap::new();
+        for compiled in catalog() {
+            for phrase in &compiled.pattern.match_phrases {
+                let previous = owners.insert(phrase.to_lowercase(), &compiled.pattern.id);
+                assert!(
+                    previous.is_none(),
+                    "phrase {phrase:?} is listed under {previous:?} and again under {:?}",
+                    compiled.pattern.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_phrase_once_listed_under_two_patterns_raises_one_flag() {
+        let flags = scan("The town boasts a harbour.");
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flags_of(&flags, "copula-avoidance").len(), 1);
+
+        let flags = scan("You're absolutely right about the budget.");
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flags_of(&flags, "sycophantic-tone").len(), 1);
     }
 
     #[test]
