@@ -222,8 +222,8 @@ async fn recheck(inner: &Inner, text: &str) {
 
 /// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
 /// checking source numbers its flags within the single sentence it was handed, so two sentences
-/// whose flags number the same way arrive with the same id: the same word misspelled in two
-/// sentences produces `spelling:0:recieve` twice. The overlay keys both its rendered underlines
+/// whose flags number the same way arrive with the same id: a misspelled first word in two
+/// sentences produces `spelling:0` twice. The overlay keys both its rendered underlines
 /// and its hover lookup by id, so a duplicate makes one flag's card open for the other.
 ///
 /// The sentence's index, rather than the hash the cache is keyed by, because the index is the
@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_same_misspelling_in_two_sentences_gets_two_distinct_ids() {
         // Each sentence is checked on its own, so both flags arrive numbered from that
-        // sentence's own start. Without a document-level scope they are both `spelling:2:eror`,
+        // sentence's own start. Without a document-level scope they are both `spelling:3`,
         // and the overlay keys its underlines and its hover lookup by id.
         let fake = Arc::new(FakeCapture::new("An eror here. An eror there."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;

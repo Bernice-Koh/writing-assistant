@@ -85,14 +85,15 @@ impl SpellChecker {
         flags
     }
 
-    /// `local_start` doubles as the id's discriminator: it is the one thing that differs between
-    /// two occurrences of the same misspelled word in one `text`.
+    /// `local_start` is the id's only discriminator: no two flags in one `text` share an offset.
+    /// The word itself stays out of the id, because ids reach log lines and draft text never
+    /// does.
     fn flag_for(&self, text: &str, word: &str, local_start: usize, local_length: usize) -> Flag {
         let mut suggestions = Vec::new();
         self.dictionary.suggest(word, &mut suggestions);
         suggestions.truncate(MAX_SUGGESTIONS);
         Flag {
-            id: format!("spelling:{local_start}:{word}"),
+            id: format!("spelling:{local_start}"),
             origin: FlagOrigin::Spelling,
             span: Span {
                 anchor: text.to_string(),
@@ -150,6 +151,15 @@ mod tests {
         assert_eq!(flagged_text(&flags[0]), "sentnce");
         assert_eq!(flags[0].origin, FlagOrigin::Spelling);
         assert!(!flags[0].suggestions.is_empty());
+    }
+
+    #[test]
+    fn a_flag_id_carries_the_offset_and_not_the_misspelled_word() {
+        // The overlay logs the id of a flag it cannot position, so a word in the id is a word of
+        // the draft in a log line.
+        let flags = checker().check("This sentnce has a typo.");
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].id, "spelling:5");
     }
 
     #[test]
