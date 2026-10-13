@@ -274,6 +274,26 @@ mod tests {
     }
 
     #[test]
+    fn accepts_the_ise_spelling_wherever_the_catalogue_has_an_ize_form() {
+        let flags = scan("The crest is blue and gold, symbolising its enduring ties to the sea.");
+        assert_eq!(
+            flags_of(&flags, "superficial-ing-endings").len(),
+            1,
+            "{flags:#?}"
+        );
+        let significance = flags_of(&flags, "significance-legacy-emphasis");
+        assert_eq!(significance.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(significance[0]), "symbolising its enduring");
+
+        let flags = scan("The report closes on the budget, emphasising the shortfall.");
+        assert_eq!(
+            flags_of(&flags, "superficial-ing-endings").len(),
+            1,
+            "{flags:#?}"
+        );
+    }
+
+    #[test]
     fn every_catalog_entry_has_at_least_one_match_signal() {
         for compiled in catalog() {
             assert!(

@@ -50,7 +50,8 @@ does not attempt:
 
 Phrase matching in `style::ai_tell` is case-insensitive and flags every occurrence of a phrase. An
 edge of a phrase that is a letter or digit matches only at a word boundary, so `here is a` does not
-match inside "there is a".
+match inside "there is a". A phrase or regex alternative that `SKILL.md` gives in its `-ize`
+spelling is accepted in its `-ise` spelling as well.
 
 Several entries were narrowed from `SKILL.md`'s own longer word lists to reduce false positives on
 ordinary writing in a tool that flags on every keystroke: pattern 7 (AI vocabulary) drops single

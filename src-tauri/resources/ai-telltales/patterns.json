@@ -19,8 +19,11 @@
       "highlights its importance",
       "highlights its significance",
       "reflects broader",
+      "symbolising its ongoing",
       "symbolizing its ongoing",
+      "symbolising its enduring",
       "symbolizing its enduring",
+      "symbolising its lasting",
       "symbolizing its lasting",
       "contributing to the broader",
       "setting the stage for",
@@ -53,7 +56,7 @@
     "id": "superficial-ing-endings",
     "category": "content",
     "description": "Tacks a present-participle clause onto a sentence for fake depth rather than a real point",
-    "match_regex": ",\\s*(highlighting|underscoring|emphasizing|ensuring|reflecting|symbolizing|contributing to|cultivating|fostering|encompassing|showcasing)\\b",
+    "match_regex": ",\\s*(highlighting|underscoring|emphasi[sz]ing|ensuring|reflecting|symboli[sz]ing|contributing to|cultivating|fostering|encompassing|showcasing)\\b",
     "source": "humanizer SKILL.md section 3, Wikipedia:Signs of AI writing"
   },
   {
