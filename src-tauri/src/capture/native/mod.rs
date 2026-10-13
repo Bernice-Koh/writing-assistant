@@ -385,7 +385,8 @@ fn log_caret_rect(
 ) -> Result<CursorRect, NativeCaptureError> {
     let rect = cursor::caret_rect(element);
     match &rect {
-        Ok(rect) => log::info!("{reason}: caret rect {rect:?} on {}", describe(element)),
+        // `debug`, not `info`: the text-changed event calls this once per keystroke.
+        Ok(rect) => log::debug!("{reason}: caret rect {rect:?} on {}", describe(element)),
         Err(error) => {
             log::debug!("{reason}: no caret rect ({error}) on {}", describe(element));
         }
