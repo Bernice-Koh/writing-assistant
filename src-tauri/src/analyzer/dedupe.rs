@@ -8,8 +8,8 @@ use crate::flag::{Flag, FlagOrigin};
 
 /// Applies the suppression rule to `flags`, all computed against the same `sentence`. Every
 /// non-AI-tell flag passes through untouched; an AI-tell flag is dropped only when its span
-/// overlaps a grammar flag's span, both resolved into the same coordinate system first, since
-/// each origin anchors its span differently (see [`resolve_within_sentence`]).
+/// overlaps a grammar flag's span, both as offsets into `sentence` (see
+/// [`resolve_within_sentence`]).
 pub(super) fn apply(sentence: &str, flags: Vec<Flag>) -> Vec<Flag> {
     let resolved: Vec<Option<Range<usize>>> = flags
         .iter()
@@ -50,21 +50,16 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
 }
 
 /// Resolves `flag`'s span to a UTF-16 offset range within `sentence`, the single unit every flag
-/// passed to [`apply`] was computed against. Grammar flags and phrase-based AI-tell flags already
-/// anchor on the sentence itself (see `languagetool::client`, `spelling` and `style::ai_tell`'s
-/// own documentation), so their `local_start`/`local_length` apply directly. Regex-based AI-tell
-/// flags anchor on their own matched substring, so they are resolved by first finding that
-/// anchor's own position within `sentence`. Returns `None` if the anchor cannot be found in
-/// `sentence` at all, which should not happen for a flag genuinely computed from `sentence`, but
-/// is treated as unresolvable rather than assumed away.
+/// passed to [`apply`] was computed against. Every checking source anchors its flags on the text
+/// it was handed (see `languagetool::client`, `spelling` and `style::ai_tell`'s own
+/// documentation), so `local_start` and `local_length` are already offsets into `sentence`.
+/// Returns `None` for a flag anchored on anything else: its offsets belong to another text and
+/// cannot be compared with a grammar flag's.
 fn resolve_within_sentence(sentence: &str, flag: &Flag) -> Option<Range<usize>> {
-    let anchor_start = if flag.span.anchor == sentence {
-        0
-    } else {
-        let byte_index = sentence.find(&flag.span.anchor)?;
-        sentence[..byte_index].encode_utf16().count()
-    };
-    let start = anchor_start + flag.span.local_start;
+    if flag.span.anchor != sentence {
+        return None;
+    }
+    let start = flag.span.local_start;
     Some(start..start + flag.span.local_length)
 }
 
@@ -94,7 +89,7 @@ mod tests {
         // "team b" (indices 4..10) genuinely overlaps "boasts a" (indices 9..17) at index 9,
         // not merely adjacent to it: the overlap this test means to exercise.
         let grammar = flag(FlagOrigin::Grammar, sentence, 4, 6);
-        let ai_tell = flag(FlagOrigin::AiTell, "boasts a", 0, 8);
+        let ai_tell = flag(FlagOrigin::AiTell, sentence, 9, 8);
         let result = apply(sentence, vec![grammar.clone(), ai_tell]);
         assert_eq!(result, vec![grammar]);
     }
@@ -103,7 +98,7 @@ mod tests {
     fn keeps_an_ai_tell_flag_that_does_not_overlap_a_grammar_flag() {
         let sentence = "The team boasts a strong record today.";
         let grammar = flag(FlagOrigin::Grammar, sentence, 4, 4); // "team"
-        let ai_tell = flag(FlagOrigin::AiTell, "boasts a", 0, 8); // elsewhere in the sentence
+        let ai_tell = flag(FlagOrigin::AiTell, sentence, 9, 8); // "boasts a"
         let result = apply(sentence, vec![grammar.clone(), ai_tell.clone()]);
         assert_eq!(result, vec![grammar, ai_tell]);
     }
@@ -116,6 +111,22 @@ mod tests {
         let spelling = flag(FlagOrigin::Spelling, sentence, 9, 7);
         let result = apply(sentence, vec![grammar.clone(), spelling.clone()]);
         assert_eq!(result, vec![grammar, spelling]);
+    }
+
+    #[test]
+    fn suppresses_only_the_overlapped_one_of_two_identical_regex_matches() {
+        // Both tells cover the same text, ", ensuring". Each carries its own offset into the
+        // sentence, so a grammar flag on the second leaves the first standing.
+        let sentence = "The plan grew, ensuring reach, ensuring scale.";
+        let tells = crate::style::ai_tell::scan(sentence);
+        assert_eq!(tells.len(), 2, "{tells:#?}");
+        let second_ensuring = sentence.rfind("ensuring").unwrap();
+        let grammar = flag(FlagOrigin::Grammar, sentence, second_ensuring, 8);
+
+        let mut flags = vec![grammar.clone()];
+        flags.extend(tells.clone());
+        let result = apply(sentence, flags);
+        assert_eq!(result, vec![grammar, tells[0].clone()]);
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::Deserialize;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::flag::{Flag, FlagOrigin, Span};
 
@@ -25,9 +24,8 @@ struct TelltalePattern {
 
 struct CompiledPattern {
     pattern: TelltalePattern,
-    regex: Option<Regex>,
-    /// One per entry of `match_phrases`, in the same order.
-    phrases: Vec<Regex>,
+    /// The pattern's `match_regex` if it has one, then one regex per entry of `match_phrases`.
+    matchers: Vec<Regex>,
 }
 
 fn catalog() -> &'static Vec<CompiledPattern> {
@@ -38,22 +36,22 @@ fn catalog() -> &'static Vec<CompiledPattern> {
         patterns
             .into_iter()
             .map(|pattern| {
-                let compile = |source: &str| {
-                    Regex::new(source).unwrap_or_else(|error| {
-                        panic!("invalid regex in ai-tell pattern {:?}: {error}", pattern.id)
-                    })
-                };
-                let regex = pattern.match_regex.as_deref().map(compile);
-                let phrases = pattern
+                let phrase_sources = pattern
                     .match_phrases
                     .iter()
-                    .map(|phrase| compile(&phrase_regex_source(phrase)))
+                    .map(|phrase| phrase_regex_source(phrase));
+                let matchers = pattern
+                    .match_regex
+                    .iter()
+                    .cloned()
+                    .chain(phrase_sources)
+                    .map(|source| {
+                        Regex::new(&source).unwrap_or_else(|error| {
+                            panic!("invalid regex in ai-tell pattern {:?}: {error}", pattern.id)
+                        })
+                    })
                     .collect();
-                CompiledPattern {
-                    pattern,
-                    regex,
-                    phrases,
-                }
+                CompiledPattern { pattern, matchers }
             })
             .collect()
     })
@@ -84,81 +82,40 @@ fn phrase_regex_source(phrase: &str) -> String {
 }
 
 /// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match, so a phrase
-/// that occurs twice in a sentence is flagged twice.
+/// that occurs twice is flagged twice.
 ///
-/// A phrase-based pattern is checked sentence by sentence, so its flags anchor on the sentence
-/// they were found in, the same anchoring [`crate::spelling`] and [`crate::languagetool`] use. A
-/// regex-based pattern runs against the whole of `text` directly instead: some, such as the
-/// inline-header-list pattern, use multiline anchors that only mean something against the full
-/// text, not one sentence at a time, so its flags anchor on the matched substring itself rather
-/// than a containing sentence.
+/// Every flag anchors on `text` itself and carries the match's own offset into it, the same
+/// anchoring [`crate::spelling`] and [`crate::languagetool`] use. An anchor resolves to its first
+/// occurrence in the document, so a flag anchored on its bare match, a single emoji or a dash,
+/// would address the first identical match in the document instead of its own. The analyzer
+/// hands this function one sentence at a time, so that sentence is the anchor.
 pub fn scan(text: &str) -> Vec<Flag> {
-    catalog()
-        .iter()
-        .flat_map(|compiled| match &compiled.regex {
-            Some(regex) => scan_with_regex(compiled, regex, text),
-            None => scan_with_phrases(compiled, text),
-        })
-        .collect()
-}
-
-fn scan_with_phrases(compiled: &CompiledPattern, text: &str) -> Vec<Flag> {
     let mut flags = Vec::new();
-    for (sentence_index, sentence) in text.unicode_sentences().enumerate() {
-        for (phrase_index, phrase) in compiled.phrases.iter().enumerate() {
-            for found in phrase.find_iter(sentence) {
-                // The offset closes the id: it is the one thing that differs between two
-                // occurrences of the same phrase in one sentence.
-                let local_start = sentence[..found.start()].encode_utf16().count();
-                let local_length = found.as_str().encode_utf16().count();
-                flags.push(build_flag(
-                    compiled,
-                    &format!("{sentence_index}:{phrase_index}:{local_start}"),
-                    sentence,
-                    local_start,
-                    local_length,
-                ));
+    for compiled in catalog() {
+        for (matcher_index, matcher) in compiled.matchers.iter().enumerate() {
+            for found in matcher.find_iter(text) {
+                // The offset closes the id: it is the one thing that differs between two matches
+                // of the same matcher in one `text`.
+                let local_start = text[..found.start()].encode_utf16().count();
+                flags.push(Flag {
+                    id: format!(
+                        "ai-tell:{}:{matcher_index}:{local_start}",
+                        compiled.pattern.id
+                    ),
+                    origin: FlagOrigin::AiTell,
+                    span: Span {
+                        anchor: text.to_string(),
+                        local_start,
+                        local_length: found.as_str().encode_utf16().count(),
+                    },
+                    message: compiled.pattern.description.clone(),
+                    suggestions: Vec::new(),
+                    source_detail: compiled.pattern.source.clone(),
+                });
             }
         }
     }
     flags
-}
-
-fn scan_with_regex(compiled: &CompiledPattern, regex: &Regex, text: &str) -> Vec<Flag> {
-    regex
-        .find_iter(text)
-        .enumerate()
-        .map(|(match_index, found)| {
-            build_flag(
-                compiled,
-                &match_index.to_string(),
-                found.as_str(),
-                0,
-                found.as_str().encode_utf16().count(),
-            )
-        })
-        .collect()
-}
-
-fn build_flag(
-    compiled: &CompiledPattern,
-    id_suffix: &str,
-    anchor: &str,
-    local_start: usize,
-    local_length: usize,
-) -> Flag {
-    Flag {
-        id: format!("ai-tell:{}:{id_suffix}", compiled.pattern.id),
-        origin: FlagOrigin::AiTell,
-        span: Span {
-            anchor: anchor.to_string(),
-            local_start,
-            local_length,
-        },
-        message: compiled.pattern.description.clone(),
-        suggestions: Vec::new(),
-        source_detail: compiled.pattern.source.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -266,6 +223,26 @@ mod tests {
     }
 
     #[test]
+    fn two_identical_regex_matches_anchor_on_the_scanned_text_at_their_own_offsets() {
+        // Anchored on the bare match, both flags would resolve to the first rocket in the
+        // document, since an anchor resolves to its first occurrence.
+        let text = "Launch 🚀 today, then launch 🚀 again.";
+        let flags = scan(text);
+        let emojis = flags_of(&flags, "emojis");
+        assert_eq!(emojis.len(), 2, "{flags:#?}");
+        assert_ne!(emojis[0].id, emojis[1].id);
+        assert!(emojis.iter().all(|flag| flag.span.anchor == text));
+        assert!(emojis.iter().all(|flag| flagged_text(flag) == "🚀"));
+        // In UTF-16 code units: the first rocket is two of them, and the second offset counts
+        // both.
+        let second = text.rfind('🚀').unwrap();
+        assert_eq!(
+            emojis[1].span.local_start,
+            text[..second].encode_utf16().count()
+        );
+    }
+
+    #[test]
     fn flags_an_inline_header_list_item_across_the_whole_text() {
         let text = "Update notes:\n- **Performance:** Faster load times.\n- **Security:** Encrypted end to end.";
         let flags = scan(text);
@@ -300,7 +277,7 @@ mod tests {
     fn every_catalog_entry_has_at_least_one_match_signal() {
         for compiled in catalog() {
             assert!(
-                compiled.regex.is_some() || !compiled.pattern.match_phrases.is_empty(),
+                !compiled.matchers.is_empty(),
                 "pattern {:?} has neither match_phrases nor match_regex",
                 compiled.pattern.id
             );
