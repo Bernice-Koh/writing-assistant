@@ -26,6 +26,8 @@ struct TelltalePattern {
 struct CompiledPattern {
     pattern: TelltalePattern,
     regex: Option<Regex>,
+    /// One per entry of `match_phrases`, in the same order.
+    phrases: Vec<Regex>,
 }
 
 fn catalog() -> &'static Vec<CompiledPattern> {
@@ -36,15 +38,33 @@ fn catalog() -> &'static Vec<CompiledPattern> {
         patterns
             .into_iter()
             .map(|pattern| {
-                let regex = pattern.match_regex.as_deref().map(|source| {
+                let compile = |source: &str| {
                     Regex::new(source).unwrap_or_else(|error| {
                         panic!("invalid regex in ai-tell pattern {:?}: {error}", pattern.id)
                     })
-                });
-                CompiledPattern { pattern, regex }
+                };
+                let regex = pattern.match_regex.as_deref().map(compile);
+                let phrases = pattern
+                    .match_phrases
+                    .iter()
+                    .map(|phrase| compile(&phrase_regex_source(phrase)))
+                    .collect();
+                CompiledPattern {
+                    pattern,
+                    regex,
+                    phrases,
+                }
             })
             .collect()
     })
+}
+
+/// The regex source for one catalogued phrase. The match is case-insensitive and runs against
+/// the text as written, so every offset it yields indexes that text. Lowercasing a copy and
+/// searching that instead yields offsets into the copy, which are wrong for the original wherever
+/// lowercasing changes a character's byte length.
+fn phrase_regex_source(phrase: &str) -> String {
+    format!("(?i){}", regex::escape(phrase))
 }
 
 /// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match.
@@ -68,17 +88,12 @@ pub fn scan(text: &str) -> Vec<Flag> {
 fn scan_with_phrases(compiled: &CompiledPattern, text: &str) -> Vec<Flag> {
     let mut flags = Vec::new();
     for (sentence_index, sentence) in text.unicode_sentences().enumerate() {
-        // Lowercasing both sides for a case-insensitive match assumes case folding does not
-        // change a string's byte length, true for the plain ASCII phrases and English sentences
-        // this catalog deals in, so the byte offset found below still indexes correctly into the
-        // original, not lowercased, `sentence`.
-        let lower_sentence = sentence.to_lowercase();
-        for (match_index, phrase) in compiled.pattern.match_phrases.iter().enumerate() {
-            let Some(byte_start) = lower_sentence.find(&phrase.to_lowercase()) else {
+        for (match_index, phrase) in compiled.phrases.iter().enumerate() {
+            let Some(found) = phrase.find(sentence) else {
                 continue;
             };
-            let local_start = sentence[..byte_start].encode_utf16().count();
-            let local_length = phrase.encode_utf16().count();
+            let local_start = sentence[..found.start()].encode_utf16().count();
+            let local_length = found.as_str().encode_utf16().count();
             flags.push(build_flag(
                 compiled,
                 &format!("{sentence_index}:{match_index}"),
@@ -131,6 +146,39 @@ fn build_flag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
+    /// assert on what was flagged without depending on how the span happens to be anchored.
+    fn flagged_text(flag: &Flag) -> String {
+        let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
+        let end = flag.span.local_start + flag.span.local_length;
+        String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
+    fn flags_of<'a>(flags: &'a [Flag], pattern_id: &str) -> Vec<&'a Flag> {
+        let prefix = format!("ai-tell:{pattern_id}:");
+        flags
+            .iter()
+            .filter(|flag| flag.id.starts_with(&prefix))
+            .collect()
+    }
+
+    #[test]
+    fn a_character_that_changes_byte_length_when_lowercased_does_not_shift_the_span() {
+        // A capital dotted I is two bytes and lowercases to three, and the Kelvin sign is three
+        // and lowercases to one, so an offset found in a lowercased copy of either sentence
+        // indexes the original one or two bytes off. In the first sentence that lands inside the
+        // em dash, which is not a character boundary.
+        let flags = scan("In İzmir\u{2014}a port city, trade grew.");
+        let dashes = flags_of(&flags, "em-en-dashes");
+        assert_eq!(dashes.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(dashes[0]), "\u{2014}");
+
+        let flags = scan("At 300 \u{212A} the alloy boasts a low resistance.");
+        let copulas = flags_of(&flags, "copula-avoidance");
+        assert_eq!(copulas.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(copulas[0]), "boasts a");
+    }
 
     #[test]
     fn flags_a_catalogued_phrase() {
