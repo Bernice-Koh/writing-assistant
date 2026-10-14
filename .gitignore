@@ -1,5 +1,6 @@
 # --- Secrets ---------------------------------------------------------------
-# Anthropic and AWS credentials
+# Runtime credentials live in the Windows credential manager. A dotenv file is read by
+# development builds only.
 .env
 .env.*
 !.env.example
@@ -42,40 +43,40 @@ pnpm-debug.log*
 extension/dist/
 extension/*.zip
 
-# --- Adapter training ---------------------------------------------
+# --- Python (adapter/, a uv project) -----------------------------------------
 __pycache__/
 *.py[cod]
 .venv/
-venv/
 .ipynb_checkpoints/
 
 # --- Large binaries: fetched or generated, never committed -----------------
-src-tauri/resources/languagetool-server.jar
 # Contents only: both directories stay tracked, because tauri.conf.json lists them as bundled
 # resources and a resource path missing at build time fails the build outright. A fresh checkout
-# gets them empty, and LanguageTool degrades to spelling and AI-tell flags until
-# scripts/build-languagetool-jre.ps1 fills them.
+# gets them empty, and checking runs on spelling and telltale flags alone until
+# src-tauri/scripts/build-languagetool-jre.ps1 fills them.
 src-tauri/resources/languagetool/*
 !src-tauri/resources/languagetool/.gitkeep
 # Bundled Java runtime produced by jlink
 src-tauri/resources/jre/*
 !src-tauri/resources/jre/.gitkeep
-# Model weights, quantizations, and trained adapters
+# Model weights, quantisations, and trained adapters
 *.gguf
-*.onnx
 *.safetensors
 *.bin
 adapter/artifacts/
 adapter/data/*.jsonl
 
-# --- User data (lives in the per-user config dir, not the repo) -------
-# Style Card, profiles, exemplar corpus, and training pairs are personal.
-*.sqlite
-*.sqlite3
+# --- User data (lives under the data root, not the repo) ---------------------
+# The store, the Style Card's renderings, candidates, the judgement log, and adapters are
+# personal. The store is one SQLite file in write-ahead mode, with candidates and the judgement
+# log as tables in it; the patterns below cover the file and its write-ahead sidecars. Adapters
+# fall under the model-weight patterns above.
+*.sqlite*
 *.db
-style-card.md
-corpus/
-profiles/
+*.db-wal
+*.db-shm
+# The Style Card's Markdown renderings
+style-card*.md
 
 # --- Installer output ------------------------------------------------------
 *.msi

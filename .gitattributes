@@ -1,7 +1,7 @@
-# Normalize to LF in the repo, check out native on Windows.
+# Normalise to LF in the repo, check out native on Windows.
 * text=auto
 
-# Always LF: consumed by Linux tooling (SageMaker training jobs, CI).
+# Always LF: consumed by CI.
 *.rs      text eol=lf
 *.toml    text eol=lf
 *.ts      text eol=lf
@@ -15,6 +15,10 @@
 *.yml     text eol=lf
 *.yaml    text eol=lf
 *.md      text eol=lf
+# The dictionary pair and the Singapore supplement, which the spelling tests read.
+*.aff     text eol=lf
+*.dic     text eol=lf
+src-tauri/resources/dictionaries/*.txt text eol=lf
 
 # Always CRLF: Windows-native build inputs.
 *.bat     text eol=crlf
@@ -28,5 +32,4 @@
 *.ico     binary
 *.jar     binary
 *.gguf    binary
-*.onnx    binary
 *.safetensors binary

@@ -3,64 +3,111 @@
 Engineering conventions for writing-assistant: how the project is organised and operated,
 not how code reads (`CODE_STYLE.md`) or how prose reads (`style-guide.md`).
 
-Project shape: a Tauri v2 desktop app, Rust core in `src-tauri/`, React and TypeScript
-frontend at the repo root under `src/`, a browser extension in `extension/`, an Office
-add-in in `word-addin/`, and a Python adapter-training pipeline in `adapter/` that runs on
-Amazon SageMaker. Solo developer, public repo, MIT licensed, single intended user.
+Project shape: a Tauri v2 desktop app for Windows, with the Rust code in `src-tauri/`, the
+React and TypeScript frontend under `src/`, a browser extension in `extension/`, and a Python
+project in `adapter/` for the bench and the adapter training jobs. Solo developer, public
+repo, MIT licensed, single intended user.
 
 ## Folder structure
 
-See README's Repository structure section for the full tree and CLAUDE.md's Repo layout for
-the top-level index. Create a folder when there is code to put in it, not before; update
-CLAUDE.md's Repo layout in the same change that adds a new top-level folder.
+CLAUDE.md's Repo layout is the top-level index. A folder is created when there is code to put
+in it, not before. The Repo layout is updated in the same change that adds a top-level folder.
+
+The Rust code is designed as a Cargo workspace of three crates:
+
+- The engine library: capture, the analyzer, the rule layer, the screen, the store, the
+  clients for the local model server and the frontier API, and the flag types.
+- The Tauri app: commands, the overlay, and the windows.
+- `wa`, the command-line binary.
+
+The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app,
+for the app's scheduler, the Python project, and the owner by hand. Its subcommands cover the
+screen, generation, embedding, synthesis, export, ingest, and backup.
+
+The split has not landed. Today one crate under `src-tauri/` holds the engine modules, the
+overlay, and the Tauri entry point, and `wa` and `adapter/` do not exist.
+
+Two rules follow from the split:
+
+- A checker has one implementation, in the engine. The app calls it in process, and the bench
+  calls it through `wa`, so what the bench measures is what ships.
+- The engine is the only writer to the store. The Python project opens the store read-only,
+  and its results enter through `wa ingest`.
+
+A spike is kept as a harness under `src-tauri/examples/`, with a module comment that states
+what it measures.
 
 ## Dependencies and tooling
 
-- Rust: `cargo`, `Cargo.lock` committed; this is a binary, not a library.
-- Frontend (`src/`, `extension/`, `word-addin/`): `npm`, lockfile committed.
-- Python (`adapter/`): package manager not yet pinned. Decide before the training pipeline is
-  implemented; `.gitignore` already expects a `.venv/` or `venv/` directory either way.
-- Rust lint/format: `rustfmt` and `clippy`.
-- Frontend lint/format: ESLint (flat config) for logic, Prettier for formatting. Never
+- Rust: `cargo`, with `Cargo.lock` committed.
+- Frontend (`src/`): `npm`, with `package-lock.json` committed. `extension/` is plain
+  JavaScript with no `package.json` of its own, linted from the root config.
+- Python (`adapter/`): `uv`, with `pyproject.toml` and `uv.lock` committed and the environment
+  in `.venv/`. Not yet decided: the Python linter, formatter, and test runner.
+- Rust lint and format: `clippy` and `rustfmt`.
+- Frontend lint and format: ESLint (flat config) for logic, Prettier for formatting. Never
   ESLint rules for formatting; `eslint-config-prettier` last in the chain.
+- Prettier does not format Markdown. `.prettierignore` excludes `*.md`, and prose layout
+  follows `style-guide.md`.
 - Frontend types: `tsc --noEmit`.
-- CI: not yet configured. `.gitattributes` already assumes a Linux CI runner exists
-  (`text eol=lf` for tooling "consumed by Linux tooling (SageMaker training jobs, CI)");
-  set it up before the adapter pipeline ships.
+- Line endings: `.gitattributes` sets LF on every file type CI consumes and CRLF on
+  Windows-native build inputs.
+
+## CI
+
+One GitHub Actions workflow, `.github/workflows/ci.yml`, runs on every pull request and on
+every push to `main`. It has three jobs.
+
+| Job | Runner | Steps |
+|---|---|---|
+| Rust | `windows-latest` | `cargo fmt --check`, `cargo clippy` on all targets with warnings denied, and `cargo test`, each against `src-tauri/Cargo.toml` |
+| Frontend | `ubuntu-latest`, Node 22 | `npm ci --ignore-scripts`, `npm run lint`, `npm run format:check`, and `npm run typecheck` |
+| SonarQube Cloud | `ubuntu-latest` | Defined and disabled. #50 enables it with Rust coverage |
+
+The Rust job runs on Windows because the crate links the Windows API and builds nowhere else.
+Clippy's `--all-targets` flag compiles the harnesses under `src-tauri/examples/`; CI does not
+run them. Third-party actions are pinned to a commit hash, and GitHub's own actions to a major
+version.
+
+No Python job exists; one arrives with `adapter/`. The Rust and Frontend jobs hold no
+credentials.
 
 ## Testing
 
-- Rust: `cargo test`. In-module `#[cfg(test)] mod tests` for unit tests; `src-tauri/tests/`
-  for integration tests against the public API only.
-- Frontend: not yet pinned. Vitest fits the existing Vite build and is the default choice;
-  pin it when the first test file is written.
-- The deterministic stages (style feature extraction, the hard critic's count-based rule
-  checks, span verification against the source text) get thorough unit tests: they carry the
-  correctness guarantees and are cheap to test.
-- Mock the Anthropic API and the LanguageTool subprocess in tests. Tests never hit the live
-  API or a live subprocess.
+- Rust: `cargo test`. In-module `#[cfg(test)] mod tests` for unit tests; a crate's `tests/`
+  directory for integration tests against the public API only.
+- Frontend: Vitest. No test file exists yet; the dependency and its CI step arrive with the
+  first one.
+- The deterministic code gets thorough unit tests: spelling, the telltale matcher, span
+  resolution through an anchor, and the rule layer and the screen as they land. It carries
+  the correctness guarantees and is cheap to test.
+- Tests never reach a live service. The Anthropic API, the training service, the LanguageTool
+  subprocess, and llama-server are mocked.
+- A harness under `src-tauri/examples/` is a measurement against a real application, run by
+  hand. It is not a test.
 
 ## Logging
 
 `log` and `env_logger` in Rust; see `CODE_STYLE.md` for levels and the no-draft-text rule.
-Frontend logging conventions are not yet pinned.
+Not yet decided: frontend logging conventions.
 
 ## Error handling
 
-Typed errors with `thiserror` at the module level in `src-tauri/`; `anyhow` at the Tauri
-command layer. A capture backend or the LanguageTool subprocess failing degrades that one
-source rather than crashing the app; the Tier 0 pipeline runs on spelling and style flags
-alone if LanguageTool is down. Never swallow an error silently; if it's genuinely ignorable,
-log it at `debug` and say why in the log line, not in a comment.
+Typed errors with `thiserror` at the module level in the Rust code; `anyhow` at the Tauri
+command layer. One checking source failing degrades that source and never ends checking: with
+LanguageTool down, spelling and telltale flags continue. LanguageTool runs as a supervised
+subprocess for the same reason, so a fault in it stays out of the app's process, and
+llama-server is supervised the same way once it is bundled. Never swallow an error silently;
+if it is ignorable, log it at `debug` and say why in the log line, not in a comment.
 
 ## Git
 
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `ci:`.
-- One-line commit subject, imperative mood, no body paragraph unless the why genuinely needs
-  one. Subject under 72 characters.
+- One-line commit subject, imperative mood, no body paragraph unless the why needs one.
+  Subject under 72 characters.
 - One concern per commit. Stage explicit paths; never `git add .` or `git add -A`.
-- Never commit `.env` or anything that looks like a secret. `.env.example` (names only) is
-  committed; see `.gitignore`'s Secrets section.
+- Never commit `.env` or anything that looks like a secret; see Secrets and personal data
+  below.
 - Never append a "co-authored with Claude Code" trailer, or any Claude/Anthropic
   attribution, to a commit, pull request, or issue.
 - Don't skip hooks (`--no-verify`) once hooks exist, unless explicitly asked.
@@ -83,13 +130,21 @@ local run of the same checks. Merge with a merge commit; delete the branch after
   distinct behaviour. This is the spec; there is no separate spec document.
 - No fixed template beyond that; write what the issue needs, no longer.
 
-## Secrets
+## Secrets and personal data
 
-- Never commit secrets, even temporarily. `.env` is gitignored; `.env.example` (names only)
-  is committed.
-- The Anthropic API key and any AWS credentials for the SageMaker training job exist only in
-  `.env` locally and in whatever secret store CI or deployment eventually uses, never in
-  code, issues, comments, or logs.
-- Style Card, profiles, exemplar corpus, and training pairs are personal data (see
-  `.gitignore`'s User data section) and never enter the repository. There is no synthetic
-  demo dataset to substitute; this is a single-user tool with no shared data to mock.
+- Never commit secrets, even temporarily.
+- At runtime every credential lives in the Windows credential manager: the Anthropic API key,
+  the AWS access pair for the model customisation jobs and their bucket, and any later
+  provider key. Each is entered once in settings and read through the `keyring` crate in Rust
+  and the `keyring` package in Python. Not yet built: no code reads a credential today.
+- A dotenv file is permitted in development builds only. A release build never reads one.
+  `.env` is gitignored. A names-only `.env.example` may be committed; none exists yet.
+- A credential never appears in the config file, the store, a log line, an issue, a comment,
+  or code.
+- The store, the Style Card and its renderings, candidates, the judgement log, and adapters
+  are personal data. They live under the data root and never enter the repository;
+  `.gitignore`'s User data section is the backstop.
+- The data root is one folder under the local, non-roaming application-data directory, named
+  by the bundle identifier and resolved by one engine function that the app and `wa` share.
+  It holds the config, the store, model files, adapters, and Card renderings. Not yet built:
+  the config module resolves its own path today, and nothing in the app loads or saves it.
