@@ -43,7 +43,8 @@ what it measures.
 - Frontend (`src/`): `npm`, with `package-lock.json` committed. `extension/` is plain
   JavaScript with no `package.json` of its own, linted from the root config.
 - Python (`adapter/`): `uv`, with `pyproject.toml` and `uv.lock` committed and the environment
-  in `.venv/`. Not yet decided: the Python linter, formatter, and test runner.
+  in `.venv/`. `ruff` lints and formats, and `pytest` runs the tests. Both are CI gates in the
+  Python job that arrives with `adapter/`.
 - Rust lint and format: `clippy` and `rustfmt`.
 - Frontend lint and format: ESLint (flat config) for logic, Prettier for formatting. Never
   ESLint rules for formatting; `eslint-config-prettier` last in the chain.
