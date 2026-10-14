@@ -1,4 +1,4 @@
-//! Errors from resolving the config directory and reading or writing the config file within it.
+//! Errors from resolving the data root and reading or writing the config file under it.
 
 use std::path::PathBuf;
 
@@ -6,9 +6,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("could not determine the OS config directory for this app")]
-    NoConfigDir,
-
     #[error("could not determine the local application-data directory that holds the data root")]
     NoDataRoot,
 

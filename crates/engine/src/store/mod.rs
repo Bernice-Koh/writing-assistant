@@ -1,6 +1,7 @@
-//! Local persistence, and the data root that [`data_root`] resolves for the app and `wa` alike.
-//! Today only [`config`], the JSON settings file. The SQLite store for Card versions, rulesets,
-//! passages, candidates and events is not yet implemented; the engine's code is its only writer.
+//! Local persistence, under the one data root that [`data_root`] resolves for the app and `wa`
+//! alike. Today the root holds only [`config`], the JSON settings file. The SQLite store for Card
+//! versions, rulesets, passages, candidates and events is not yet implemented; the engine's code is
+//! its only writer.
 
 pub mod config;
 pub mod error;
