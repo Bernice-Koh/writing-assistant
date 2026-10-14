@@ -176,7 +176,7 @@ WebView2 renders the frontend in a child process with its own process id.
 | Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. A plausibility check on the caret rectangle rejects it |
-| Gmail compose, GitHub comment box | Covered today only by the web backend. Verification through native capture: planned, Phase 2 |
+| Gmail compose, GitHub comment box | Neither is verified through native capture, the backend the app starts. The web backend's content script covers both hosts, and the app does not start it. Verification through native capture: planned, Phase 2 |
 
 Planned for Phase 2: surface identity on the trait, the process name with an optional page URL,
 mapped to a register through a map in settings.
@@ -610,11 +610,10 @@ linked, and the dictionary is vendored unmodified as data beside its notice.
 | Telltale catalogue | Hand-encoded for this project from a Wikipedia page that is CC BY-SA | Read through an MIT-licensed intermediary. Provenance in `src-tauri/resources/ai-telltales/NOTICE.md` |
 | llama.cpp | MIT | Planned, Phase 3 |
 | Qwen3.5-4B, the provisional base model | Apache-2.0 | Planned, Phase 4 |
-| Embedding model | Not yet decided | Planned, Phase 7 |
+| [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5), the embedding model | Apache-2.0 | Served as GGUF through a second llama-server instance. Planned, Phase 7 |
 | Tauri and the Rust crates | MIT or Apache-2.0 for most. MPL-2.0, Unicode-3.0, BSD-3-Clause, and Zlib for the rest | Read from `cargo metadata` for the Windows target. The frontend packages that ship, React and the Tauri API, are MIT and MIT or Apache-2.0 |
 
-Not yet decided: the local decision model. Its licence, and the embedding model's, are recorded
-here when each model is chosen.
+Not yet decided: the local decision model. Its licence is recorded here when that model is chosen.
 
 No notices file is assembled, since no build is distributed. The two committed notices sit beside
 the files they cover.
