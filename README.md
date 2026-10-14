@@ -444,9 +444,12 @@ questionnaire answer, and Card publish, each stamped with the Card version and t
 it happened under. A passage is assigned to a split by content hash at insert and is never
 reassigned.
 
-The data root is one folder under the local, non-roaming application-data directory, named by the
-bundle identifier. Settings stay in a JSON config file there. The config module exists today, and
-nothing in the app loads or saves it yet. Credentials are in neither file.
+Built ahead of the store, the data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one
+folder under the local, non-roaming application-data directory, named by the bundle identifier,
+since a store with model files does not belong in a roaming profile. One engine function resolves
+it for the app and `wa` alike. Settings stay in a JSON config file there, `config.json` directly
+under the root. Nothing in the app loads or saves that file yet; loading it at startup is planned
+for Phase 1. Credentials are in neither file.
 
 ### Model roles
 
@@ -547,7 +550,7 @@ candidates over fresh items, with its size set by a power calculation written be
 | Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
 | Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
-| Settings | A JSON config file through `serde_json`, located by `directories` |
+| Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories` |
 | CI | GitHub Actions: `rustfmt`, `clippy`, and `cargo test` on Windows; ESLint, Prettier, and `tsc` on Linux |
 | Planned | SQLite (Phase 1). llama-server and the Anthropic API (Phase 3). Python with `uv`, `ruff`, and `pytest` (Phase 5). Amazon SageMaker AI (Phase 6) |
 
