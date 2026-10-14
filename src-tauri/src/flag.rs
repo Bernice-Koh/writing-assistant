@@ -24,8 +24,8 @@ pub struct Span {
 }
 
 /// Which checking source produced a [`Flag`]. The overlay renders each origin with its own
-/// visual treatment; the analyzer's dedup rule ranks grammar and spelling above AI-tell on an
-/// overlapping span.
+/// visual treatment, and the analyzer's suppression rule reads it: a grammar flag suppresses an
+/// AI-tell flag on an overlapping span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FlagOrigin {
