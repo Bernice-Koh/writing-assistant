@@ -33,10 +33,9 @@ const INITIAL_WIDTH: f64 = 360.0;
 const INITIAL_HEIGHT: f64 = 120.0;
 
 /// How often `track_document_view`, `track_hover`, and `track_flags`'s own position refresh each
-/// poll. Not the real Tier 0 pipeline's event-driven push for cursor and document-view tracking,
-/// out of scope for this phase (see #18), a polling bridge good enough to prove the overlay can
-/// reflect live capture data at all; a later phase replaces this with a push from the capture
-/// backend's own focus/text-change events.
+/// poll. The three loops poll by design: scrolling and window movement raise no dependable event,
+/// so a position is known only by asking for it. They are throttled only if measured CPU calls
+/// for it.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A [`POLL_INTERVAL`] interval that drops missed ticks instead of firing them back to back.

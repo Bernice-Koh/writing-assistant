@@ -47,8 +47,8 @@ async fn get_current_flags(
 /// Builds and runs the Tauri application.
 pub fn run() {
     // `info` rather than `env_logger`'s own `error` default, so a normal run shows the capture
-    // backend's flow without the caller having to know to set `RUST_LOG`. The Tier 0 path's
-    // per-keystroke lines stay at `debug` and so stay off until asked for.
+    // backend's flow without the caller having to know to set `RUST_LOG`. The capture backend's
+    // high-frequency lines stay at `debug` and so stay off until asked for.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
@@ -56,9 +56,9 @@ pub fn run() {
         .setup(|app| {
             overlay::create(app.handle())?;
             let backend: Arc<dyn Capture> = Arc::new(capture::native::NativeCapture::start()?);
-            // Managed as well as tracked: the overlay only needs the document-view rect, but the
-            // commands that will serve the Style Card and the rewrite orchestrator need the same
-            // backend, and the trait object is what keeps them from naming a surface.
+            // Managed as well as tracked: `get_current_flags` reads the backend from managed
+            // state, and the working card's commands, not yet built, need the same backend. The
+            // trait object is what keeps a command from naming a surface.
             app.manage(Arc::clone(&backend));
             overlay::track_document_view(app.handle().clone(), Arc::clone(&backend));
 
