@@ -1,22 +1,23 @@
-//! Manual verification harness for issue #12: starts the web capture bridge server and logs
-//! connection and message activity so the browser extension side can be exercised against it.
+//! Harness for the web capture bridge: starts the bridge server and logs connection activity
+//! while the browser extension connects to it. It exercises the WebSocket handshake, the origin
+//! check, and the heartbeat. The bridge's protocol is a request from the core and a reply from
+//! the extension, and this harness never issues a request, so it reads no text and replaces
+//! none.
 //!
-//! Before running: load `extension/` unpacked in Chrome, copy its ID from `chrome://extensions`,
-//! and pass it as the one argument, for example `cargo run --example browser_bridge_spike --
-//! chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef`. Run with `RUST_LOG=debug` to see
-//! rejected handshakes and message sizes, never message content.
+//! The one argument is the extension's origin, built from the ID that `chrome://extensions`
+//! shows once `extension/` is loaded unpacked in Chrome, for example `cargo run --example
+//! browser_bridge_spike -- chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef`.
 //!
-//! With the extension loaded and this running, type into the GitHub comment box and Gmail
-//! compose targets and confirm the round trip: the content script should read the typed text,
-//! this server should log an accepted connection and a received-bytes line per message, and the
-//! page should show the `[core] ...`-prefixed echo written back by the content script.
+//! The log is off unless `RUST_LOG` sets a level. At `debug` a pass shows an accepted connection
+//! from the extension, a rejected handshake for a connection from any other origin, and a
+//! received-bytes line with a heartbeat line each time the extension's keep-alive alarm fires.
 
 use std::io::IsTerminal;
 use std::time::Duration;
 
 use writing_assistant::capture::web::WebCapture;
 
-/// Generous enough to load the extension, switch to each target site, and type a few messages.
+/// Generous enough to load the extension and watch several heartbeats arrive.
 const MAX_RUNTIME: Duration = Duration::from_secs(600);
 
 #[tokio::main]
