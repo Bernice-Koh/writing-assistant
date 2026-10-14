@@ -5,8 +5,9 @@
 //! none.
 //!
 //! The one argument is the extension's origin, built from the ID that `chrome://extensions`
-//! shows once `extension/` is loaded unpacked in Chrome, for example `cargo run --example
-//! browser_bridge_spike -- chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef`.
+//! shows once `extension/` is loaded unpacked in Chrome. Run from the repository root, for
+//! example `cargo run -p wa-engine --example browser_bridge_spike --
+//! chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef`.
 //!
 //! The log is off unless `RUST_LOG` sets a level. At `debug` a pass shows an accepted connection
 //! from the extension, a rejected handshake for a connection from any other origin, and a
@@ -15,7 +16,7 @@
 use std::io::IsTerminal;
 use std::time::Duration;
 
-use writing_assistant::capture::web::WebCapture;
+use wa_engine::capture::web::WebCapture;
 
 /// Generous enough to load the extension and watch several heartbeats arrive.
 const MAX_RUNTIME: Duration = Duration::from_secs(600);
@@ -31,12 +32,12 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let capture = WebCapture::start(writing_assistant::capture::web::PORT, &allowed_origin)
+    let capture = WebCapture::start(wa_engine::capture::web::PORT, &allowed_origin)
         .await
         .expect("failed to start the web capture bridge server");
     println!(
         "Web capture bridge listening on 127.0.0.1:{}, accepting only {allowed_origin}.",
-        writing_assistant::capture::web::PORT
+        wa_engine::capture::web::PORT
     );
 
     if std::io::stdin().is_terminal() {
