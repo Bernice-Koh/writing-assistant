@@ -159,7 +159,11 @@ local run of the same checks. Merge with a merge commit; delete the branch after
 - The store, the Style Card and its renderings, candidates, the judgement log, and adapters
   are personal data. They live under the data root and never enter the repository;
   `.gitignore`'s User data section is the backstop.
-- The data root is one folder under the local, non-roaming application-data directory, named
-  by the bundle identifier and resolved by one engine function that the app and `wa` share.
-  It holds the config, the store, model files, adapters, and Card renderings. Not yet built:
-  the config module resolves its own path today, and nothing in the app loads or saves it.
+- The data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one folder under the
+  local, non-roaming application-data directory, named by the bundle identifier, and resolved
+  by one engine function, `store::data_root`, that the app and `wa` share. It holds the config
+  as `config.json` directly under it, and the store, model files, adapters, and Card
+  renderings as each is built. A test keeps the engine's identifier equal to the one in
+  `tauri.conf.json`, and a test that reads or writes under the root is handed a temporary
+  directory, never the real one. Not yet built: nothing in the app loads or saves the config;
+  #80 loads it at startup.
