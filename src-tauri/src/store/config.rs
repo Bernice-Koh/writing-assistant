@@ -18,9 +18,9 @@ const APPLICATION: &str = "writing-assistant";
 
 const CONFIG_FILE_NAME: &str = "config.json";
 
-/// Settings the user changes through the tray or settings window. `checking_enabled` backs
-/// `src/stores/shell-store.ts`'s existing `isCheckingEnabled` flag, today session-only; wiring
-/// that store to load and save through this config is later work, not this module's own.
+/// Settings the user changes through the tray or settings window. No control sets
+/// `checking_enabled` today: the one for it arrives with the settings shell, wired to this
+/// config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_checking_enabled")]
