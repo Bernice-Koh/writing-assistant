@@ -1,6 +1,5 @@
-//! Signal logging and the batch scheduler: rolling-average updates, corpus pruning, and
-//! Style Card regeneration on idle mains power. The split that matters here is which profile
-//! a signal moves. Measured behaviour updates the observed profile only, so habit never drags
-//! the target back toward how the user already writes.
+//! The app-side learning loop: the habit ledger's per-clause counts and daily rollup, the idle
+//! scheduler for overnight synthesis, and the triggers that notify when a rebuild is due.
+//! Measured behaviour is recorded here and never moves the Style Card.
 //!
 //! Not yet implemented.

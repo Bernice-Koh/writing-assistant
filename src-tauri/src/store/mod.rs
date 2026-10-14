@@ -1,10 +1,6 @@
-//! The local store: profiles, exemplar corpus and its index, Style Card, training pairs,
-//! adapters, and config. Everything here stays on the machine as files the user can open,
-//! edit, or delete.
-//!
-//! Only [`config`] is implemented so far, scoped to settings only. Profiles, the corpus, the
-//! Style Card, and training pairs all need onboarding to produce them, and SQLite is deferred to
-//! that phase too.
+//! Local persistence. Today only [`config`], the JSON settings file. The SQLite store for Card
+//! versions, rulesets, passages, candidates and events is not yet implemented; the app is its
+//! only writer.
 
 pub mod config;
 pub mod error;

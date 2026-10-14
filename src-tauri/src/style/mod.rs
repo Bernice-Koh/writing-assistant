@@ -1,10 +1,6 @@
-//! Tier 0 style engine: deterministic feature extraction, the target and observed profiles,
-//! form-mode detection, AI-telltale matching, and the drift flags that name which Style Card
-//! rule a sentence missed. Arithmetic and rules only, since the Tier 0 budget has no room for
-//! a network round trip.
-//!
-//! Only [`ai_tell`] is implemented so far. Feature extraction, the target and observed profiles,
-//! drift scoring, and form-mode detection all need a target profile that does not exist until the
-//! phase that builds onboarding.
+//! The rule layer. Today it holds the AI-telltale catalogue matcher in [`ai_tell`]. The Style
+//! Card's checkers, each a matcher, a unit and a band, form-mode classification, and the style
+//! flags that cite a Card clause are not yet implemented. Everything here is deterministic:
+//! nothing in this module calls a model or the network.
 
 pub mod ai_tell;
