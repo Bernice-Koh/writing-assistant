@@ -4,8 +4,8 @@
 //! others reach sideways across the crate for it, so it lives here instead.
 //!
 //! Every type here derives `Serialize` (camelCase on the wire, per this repo's TypeScript naming
-//! convention) so a [`crate::overlay::PositionedFlag`] carrying one can cross the Tauri IPC
-//! boundary to the overlay's own webview unchanged. Nothing here needs `Deserialize`: a `Flag`
+//! convention) so the app's positioned flag, which carries one, can cross the Tauri IPC boundary
+//! to the overlay's own webview unchanged. Nothing here needs `Deserialize`: a `Flag`
 //! only ever travels from the engine to the frontend, never back.
 
 /// Addresses a span of text the same way [`crate::capture::Capture::replace`] does: an anchor

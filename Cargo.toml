@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri"]
+members = ["crates/engine", "src-tauri"]
 resolver = "2"
 
 [workspace.package]
@@ -7,3 +7,11 @@ rust-version = "1.88"
 edition = "2021"
 license = "MIT"
 authors = ["Bernice Koh"]
+
+[workspace.dependencies]
+wa-engine = { path = "crates/engine" }
+windows = "0.62"
+log = "0.4"
+env_logger = "0.11"
+tokio = "1"
+serde = { version = "1", features = ["derive"] }

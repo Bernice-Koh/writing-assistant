@@ -1,26 +1,18 @@
-//! Library entry point for the Rust core. The engine modules hang off this crate so the
-//! checking engine stays usable as one crate inside a larger desktop assistant later.
+//! The Tauri app: the overlay, the commands, and the setup that starts the engine against the
+//! native capture backend. The checking itself lives in `wa_engine`, which `wa` also calls.
 
-pub mod analyzer;
-pub mod capture;
-pub mod flag;
-pub mod languagetool;
-pub mod learning;
 pub mod overlay;
-pub mod rewrite;
-pub mod spelling;
-pub mod store;
-pub mod style;
 
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
-use analyzer::Analyzer;
-use capture::Capture;
-use languagetool::LanguageToolSupervisor;
+use wa_engine::analyzer::Analyzer;
+use wa_engine::capture::{self, Capture};
+use wa_engine::languagetool::{self, LanguageToolSupervisor};
+use wa_engine::spelling::SpellChecker;
+
 use overlay::{PositionedFlag, SharedFlags};
-use spelling::SpellChecker;
 
 /// Where `LanguageToolSupervisor::start` starts scanning for a free port. LanguageTool's own
 /// conventional default when run standalone, kept here rather than picked arbitrarily so a

@@ -4026,6 +4026,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "wa-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "directories",
+ "env_logger",
+ "futures-util",
+ "log",
+ "lru",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "similar",
+ "spellbook",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "unicode-segmentation",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4681,26 +4705,14 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 name = "writing-assistant"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "directories",
  "env_logger",
- "futures-util",
  "log",
- "lru",
- "regex",
- "reqwest",
  "serde",
- "serde_json",
- "similar",
- "spellbook",
  "tauri",
  "tauri-build",
- "thiserror 2.0.19",
  "tokio",
- "tokio-tungstenite",
- "unicode-segmentation",
+ "wa-engine",
  "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]

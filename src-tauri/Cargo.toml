@@ -12,37 +12,14 @@ repository = "https://github.com/Bernice-Koh/writing-assistant"
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
+wa-engine.workspace = true
 tauri = { version = "2.11", features = [] }
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
-    "Win32_System_Com",
-    "Win32_System_DataExchange",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Memory",
-    "Win32_System_Ole",
-    "Win32_System_Variant",
-    "Win32_UI_Accessibility",
-    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-windows-core = "0.62"
-thiserror = "2"
-log = "0.4"
-env_logger = "0.11"
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "process", "sync"] }
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-spellbook = "0.4"
-unicode-segmentation = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "query"] }
-regex = "1"
-similar = "2"
-lru = "0.12"
-directories = "6"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["test-util"] }
+log.workspace = true
+env_logger.workspace = true
+tokio = { workspace = true, features = ["macros", "time"] }
+serde.workspace = true

@@ -210,8 +210,8 @@ async fn recheck(inner: &Inner, text: &str) {
         .write()
         .expect("a poisoned lock here means another thread already panicked") =
         document_flags.clone();
-    // A subscriber-free channel (no `overlay::track_flags` task running yet, or the app running
-    // headless in a test) has no receivers left; `send` reporting that is expected, not an error
+    // A subscriber-free channel (the overlay's flag-tracking task not running yet, or the engine
+    // running headless in a test) has no receivers left; `send` reporting that is expected, not an error
     // worth logging.
     let _ = inner.flags_tx.send(document_flags);
 }
@@ -258,10 +258,10 @@ fn hash_text(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;
 
     use crate::capture::{CaptureError, CursorRect};
+    use crate::test_support::dictionary_path;
 
     struct FakeCapture {
         text: StdMutex<String>,
@@ -313,18 +313,11 @@ mod tests {
         }
     }
 
-    fn resource_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("dictionaries")
-            .join(name)
-    }
-
     fn test_spell_checker() -> SpellChecker {
         SpellChecker::load(
-            &resource_path("en_GB.aff"),
-            &resource_path("en_GB.dic"),
-            &resource_path("en_sg_supplement.txt"),
+            &dictionary_path("en_GB.aff"),
+            &dictionary_path("en_GB.dic"),
+            &dictionary_path("en_sg_supplement.txt"),
         )
         .expect("the vendored dictionary pair and supplement are well-formed, checked in CI")
     }

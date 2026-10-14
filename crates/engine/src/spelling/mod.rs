@@ -1,7 +1,7 @@
 //! Spelling checks through spellbook, which reads the vendored Hunspell-format dictionary pair:
 //! `en_GB` in its `-ise` form, with a Singapore word list on top. The word list is plain words
 //! merged into the same dictionary, with no affix file of its own. Provenance and licensing for
-//! the vendored dictionary pair are recorded in `resources/dictionaries/NOTICE.md`.
+//! the vendored dictionary pair are recorded in `src-tauri/resources/dictionaries/NOTICE.md`.
 
 pub mod error;
 
@@ -117,19 +117,13 @@ fn read_to_string(path: &Path) -> Result<String, SpellingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn resource_path(name: &str) -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("dictionaries")
-            .join(name)
-    }
+    use crate::test_support::dictionary_path;
 
     fn checker() -> SpellChecker {
         SpellChecker::load(
-            &resource_path("en_GB.aff"),
-            &resource_path("en_GB.dic"),
-            &resource_path("en_sg_supplement.txt"),
+            &dictionary_path("en_GB.aff"),
+            &dictionary_path("en_GB.dic"),
+            &dictionary_path("en_sg_supplement.txt"),
         )
         .expect("the vendored dictionary pair and supplement are well-formed, checked in CI")
     }

@@ -1,7 +1,7 @@
 //! Matches text against the hand-encoded AI-telltale catalog vendored at
-//! `resources/ai-telltales/patterns.json`. Provenance, licensing, and the reasoning behind every
-//! narrowed or dropped pattern are recorded in `resources/ai-telltales/NOTICE.md`, not repeated
-//! here.
+//! `src-tauri/resources/ai-telltales/patterns.json`. Provenance, licensing, and the reasoning
+//! behind every narrowed or dropped pattern are recorded in
+//! `src-tauri/resources/ai-telltales/NOTICE.md`, not repeated here.
 
 use std::sync::OnceLock;
 
@@ -10,7 +10,10 @@ use serde::Deserialize;
 
 use crate::flag::{Flag, FlagOrigin, Span};
 
-const CATALOG_JSON: &str = include_str!("../../resources/ai-telltales/patterns.json");
+// Compiled in rather than read from the resource directory at run time, so the app and `wa`
+// always match against the same catalogue, and one fewer file can be missing at startup.
+const CATALOG_JSON: &str =
+    include_str!("../../../../src-tauri/resources/ai-telltales/patterns.json");
 
 #[derive(Debug, Deserialize)]
 struct TelltalePattern {
@@ -31,8 +34,9 @@ struct CompiledPattern {
 fn catalog() -> &'static Vec<CompiledPattern> {
     static CATALOG: OnceLock<Vec<CompiledPattern>> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let patterns: Vec<TelltalePattern> = serde_json::from_str(CATALOG_JSON)
-            .expect("resources/ai-telltales/patterns.json is committed and checked in CI");
+        let patterns: Vec<TelltalePattern> = serde_json::from_str(CATALOG_JSON).expect(
+            "src-tauri/resources/ai-telltales/patterns.json is committed and checked in CI",
+        );
         patterns
             .into_iter()
             .map(|pattern| {
