@@ -212,8 +212,8 @@ overlay calls it yet: the working card's Accept is planned for Phase 4. Syntheti
 whichever window holds keyboard focus, so a check that the target is the foreground window, with a
 refocus when it is not, is planned for Phase 2.
 
-Three harnesses under `src-tauri/examples/` measure native capture, the insertion cascade, and the
-web bridge against real applications. They are run by hand and are not tests.
+Three harnesses under `crates/engine/examples/` measure native capture, the insertion cascade, and
+the web bridge against real applications. They are run by hand and are not tests.
 
 ### Overlay
 
@@ -367,7 +367,7 @@ flowchart LR
         LT[["LanguageTool<br/>supervised subprocess"]]
         Store[("Store<br/>SQLite, planned")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
-        WA["wa<br/>command-line binary, planned"]
+        WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
     end
 
@@ -391,8 +391,11 @@ flowchart LR
 
 ### Crates
 
-The Rust code is designed as a Cargo workspace of three crates (planned, Phase 1). Today one crate
-under `src-tauri/` holds the engine modules, the overlay, and the Tauri entry point.
+The Rust code is a Cargo workspace of three crates, with a virtual manifest and the lockfile at the
+repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
+package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
+`crates/wa`. Of the engine's contents in the table, the rule layer, the screen, and the store are
+planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -410,7 +413,7 @@ the app's scheduler, the Python project, and the owner by hand.
 | The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the analyzer, the overlay, and the main window | Runs today |
 | LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
 | llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
-| `wa` | The engine on the command line | Planned, Phase 1 |
+| `wa` | The engine on the command line | Built, with no subcommands yet. `wa screen` and `wa backup` are planned for Phase 1 |
 | `adapter/` | A Python `uv` project: the bench, and job submission, polling, download, and conversion | Planned, Phase 5 |
 
 LanguageTool's supervision is the pattern for both subprocesses. A free port is probed upward from

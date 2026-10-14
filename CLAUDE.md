@@ -24,23 +24,27 @@ Current top level:
 - `LICENSE`: MIT. Third-party components keep their own licences, listed in README.md.
 - `docs/`: committed engineering and prose documentation. Start here for conventions.
 - `.github/`: the CI workflow.
-- `src-tauri/`: the Rust code, one crate today. `src-tauri/src/` holds capture, spelling,
-  LanguageTool subprocess management, the telltale matcher, the analyzer, the settings file,
-  and the overlay. The rewriter, the learning loop, and the SQLite store are not yet
-  implemented. `src-tauri/examples/` holds the spike harnesses. `src-tauri/resources/` holds
-  the committed dictionaries and telltale catalogue; the LanguageTool distribution and its
-  Java runtime are gitignored there and built by `src-tauri/scripts/build-languagetool-jre.ps1`.
-  The designed shape is a Cargo workspace of an engine library, the Tauri app, and the `wa`
-  command-line binary; see `docs/CONVENTIONS.md`.
+- `crates/`: two of the three members of the Cargo workspace; see `docs/CONVENTIONS.md`.
+  `crates/engine` is the engine library, `wa-engine`: capture, spelling, LanguageTool
+  subprocess management, the telltale matcher, the analyzer, the flag types, and the settings
+  file. The rewriter, the learning loop, and the SQLite store are not yet implemented.
+  `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
+  binary, with no subcommands yet.
+- `src-tauri/`: the Tauri app, the workspace's third member, kept at the path the Tauri CLI
+  expects: the overlay, the commands, and the setup that starts the engine.
+  `src-tauri/resources/` holds the committed dictionaries and telltale catalogue, which the
+  engine also reads from there; the LanguageTool distribution and its Java runtime are
+  gitignored there and built by `src-tauri/scripts/build-languagetool-jre.ps1`.
 - `src/`: the React and TypeScript frontend: the overlay and the main window.
 - `extension/`: the browser extension behind the web capture backend, which the app does not
-  start today. Microsoft Word is captured natively (see `src-tauri/src/capture/native/`). Not
-  yet decided: whether the extension stays, which rests on verifying Gmail and GitHub through
-  native capture.
+  start today. Microsoft Word is captured natively (see
+  `crates/engine/src/capture/native/`). Not yet decided: whether the extension stays, which
+  rests on verifying Gmail and GitHub through native capture.
 - `adapter/`: not yet created. A Python `uv` project with a committed lockfile: the bench,
   and the training-job scripts for submission, polling, download, and conversion.
-- Root files: the `npm` manifest and lockfile, the Vite entry page, and the configuration for
-  Vite, TypeScript, ESLint, Prettier, rustfmt, and SonarQube.
+- Root files: the Cargo workspace manifest and lockfile, the `npm` manifest and lockfile, the
+  Vite entry page, and the configuration for Vite, TypeScript, ESLint, Prettier, rustfmt, and
+  SonarQube.
 - `_local/`: private working material: early research, draft specifications, decision logs.
   Gitignored. See the archive boundary in `docs/constitution.md`.
 
@@ -69,8 +73,9 @@ the file says otherwise.
 - The owner is the sole intended user of this project. The repository being public does not
   make the audience general. Never simplify terminology on comprehension grounds.
 - Verify a claim from a primary source or a measurement against the real target before a
-  design decision rests on it. A spike is such a measurement: keep it as a harness under
-  `src-tauri/examples/`, and never use it as a design argument.
+  design decision rests on it. A spike is such a measurement: keep it as a harness under the
+  `examples/` folder of the crate whose code it exercises, `crates/engine/examples/` today, and
+  never use it as a design argument.
 - No fine-tuning run may be used to resolve a design question. A training run may select
   among branches written before it ran, and never originates one.
 - Report every number with its n, its interval, and the baseline it has to beat. Write a

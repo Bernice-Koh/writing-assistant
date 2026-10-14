@@ -44,7 +44,7 @@ logic they're guarding.
 
 ## Rust
 
-`src-tauri/`. Formatting is `rustfmt`, linting is `clippy` with warnings denied; both are CI
+`crates/` and `src-tauri/`. Formatting is `rustfmt`, linting is `clippy` with warnings denied; both are CI
 gates (see `CONVENTIONS.md`), not suggestions.
 
 ### No unwrap in production paths

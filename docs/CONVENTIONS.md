@@ -3,29 +3,41 @@
 Engineering conventions for writing-assistant: how the project is organised and operated,
 not how code reads (`CODE_STYLE.md`) or how prose reads (`style-guide.md`).
 
-Project shape: a Tauri v2 desktop app for Windows, with the Rust code in `src-tauri/`, the
-React and TypeScript frontend under `src/`, a browser extension in `extension/`, and a Python
-project in `adapter/` for the bench and the adapter training jobs. Solo developer, public
-repo, MIT licensed, single intended user.
+Project shape: a Tauri v2 desktop app for Windows, with the Rust code in a Cargo workspace of
+`crates/engine`, `crates/wa`, and `src-tauri/`, the React and TypeScript frontend under `src/`,
+a browser extension in `extension/`, and a Python project in `adapter/` for the bench and the
+adapter training jobs. Solo developer, public repo, MIT licensed, single intended user.
 
 ## Folder structure
 
 CLAUDE.md's Repo layout is the top-level index. A folder is created when there is code to put
 in it, not before. The Repo layout is updated in the same change that adds a top-level folder.
 
-The Rust code is designed as a Cargo workspace of three crates:
+The Rust code is a Cargo workspace of three crates, with a virtual manifest and the one
+`Cargo.lock` at the repository root:
 
-- The engine library: capture, the analyzer, the rule layer, the screen, the store, the
-  clients for the local model server and the frontier API, and the flag types.
-- The Tauri app: commands, the overlay, and the windows.
-- `wa`, the command-line binary.
+- The engine library, `wa-engine` in `crates/engine`: capture, the analyzer, the rule layer,
+  the screen, the store, the clients for the local model server and the frontier API, and the
+  flag types.
+- The Tauri app, `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it: commands,
+  the overlay, and the windows.
+- `wa`, the command-line binary, in `crates/wa`.
+
+`rust-version`, the edition, the licence, and the authors are declared once, in the workspace
+manifest, and each member inherits them. A dependency two members share has its version
+declared once there too.
 
 The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app,
 for the app's scheduler, the Python project, and the owner by hand. Its subcommands cover the
 screen, generation, embedding, synthesis, export, ingest, and backup.
 
-The split has not landed. Today one crate under `src-tauri/` holds the engine modules, the
-overlay, and the Tauri entry point, and `wa` and `adapter/` do not exist.
+Built today: in the engine, capture, spelling, LanguageTool, the telltale matcher, the
+analyzer, the flag types, and the settings file; in the app, the overlay and one command. `wa`
+has no subcommands yet; each arrives with its own issue. `adapter/` does not exist.
+
+The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file
+exists once in the repository. The engine reaches them by relative path: its tests read the
+dictionary pair, and the telltale catalogue is compiled in with `include_str!`.
 
 Two rules follow from the split:
 
@@ -34,8 +46,9 @@ Two rules follow from the split:
 - The engine is the only writer to the store. The Python project opens the store read-only,
   and its results enter through `wa ingest`.
 
-A spike is kept as a harness under `src-tauri/examples/`, with a module comment that states
-what it measures.
+A spike is kept as a harness under the `examples/` folder of the crate whose code it
+exercises, `crates/engine/examples/` today, with a module comment that states what it measures
+and the command that runs it.
 
 ## Dependencies and tooling
 
@@ -61,22 +74,23 @@ every push to `main`. It has three jobs.
 
 | Job | Runner | Steps |
 |---|---|---|
-| Rust | `windows-latest` | `cargo fmt --check`, `cargo clippy` on all targets with warnings denied, and `cargo test`, each against `src-tauri/Cargo.toml` |
+| Rust | `windows-latest` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`, each from the repository root |
 | Frontend | `ubuntu-latest`, Node 22 | `npm ci --ignore-scripts`, `npm run lint`, `npm run format:check`, and `npm run typecheck` |
 | SonarQube Cloud | `ubuntu-latest` | Defined and disabled. #50 enables it with Rust coverage |
 
-The Rust job runs on Windows because the crate links the Windows API and builds nowhere else.
-Clippy's `--all-targets` flag compiles the harnesses under `src-tauri/examples/`; CI does not
-run them. Third-party actions are pinned to a commit hash, and GitHub's own actions to a major
-version.
+The Rust job runs on Windows because the engine and the app link the Windows API and build
+nowhere else. Clippy's `--all-targets` flag compiles the harnesses under
+`crates/engine/examples/`; CI does not run them. Third-party actions are pinned to a commit
+hash, and GitHub's own actions to a major version.
 
 No Python job exists; one arrives with `adapter/`. The Rust and Frontend jobs hold no
 credentials.
 
 ## Testing
 
-- Rust: `cargo test`. In-module `#[cfg(test)] mod tests` for unit tests; a crate's `tests/`
-  directory for integration tests against the public API only.
+- Rust: `cargo test --workspace` from the repository root, or `cargo test -p <package>` for
+  one crate. In-module `#[cfg(test)] mod tests` for unit tests; a crate's `tests/` directory
+  for integration tests against the public API only.
 - Frontend: Vitest. No test file exists yet; the dependency and its CI step arrive with the
   first one.
 - The deterministic code gets thorough unit tests: spelling, the telltale matcher, span
@@ -84,7 +98,7 @@ credentials.
   the correctness guarantees and is cheap to test.
 - Tests never reach a live service. The Anthropic API, the training service, the LanguageTool
   subprocess, and llama-server are mocked.
-- A harness under `src-tauri/examples/` is a measurement against a real application, run by
+- A harness under `crates/engine/examples/` is a measurement against a real application, run by
   hand. It is not a test.
 
 ## Logging
