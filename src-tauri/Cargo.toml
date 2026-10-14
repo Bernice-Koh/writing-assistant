@@ -2,9 +2,10 @@
 name = "writing-assistant"
 version = "0.1.0"
 description = "Windows writing assistant for spelling, grammar, and target-voice style"
-authors = ["Bernice Koh"]
-edition = "2021"
-license = "MIT"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 repository = "https://github.com/Bernice-Koh/writing-assistant"
 
 [build-dependencies]
