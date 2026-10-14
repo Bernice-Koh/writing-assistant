@@ -26,6 +26,20 @@ pub enum ClientMessage {
     Heartbeat,
 }
 
+impl ClientMessage {
+    /// The variant's wire tag, which is all of a message that a log line or an error string may
+    /// carry: a `CurrentText` holds the draft itself, so the whole message is never formatted
+    /// into either.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::CurrentText { .. } => "current_text",
+            Self::NoFocus => "no_focus",
+            Self::ReplaceResult { .. } => "replace_result",
+            Self::Heartbeat => "heartbeat",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +93,22 @@ mod tests {
     fn heartbeat_tags_its_variant() {
         let json = serde_json::to_string(&ClientMessage::Heartbeat).expect("serializes");
         assert!(json.contains("\"type\":\"heartbeat\""));
+    }
+
+    #[test]
+    fn kind_is_the_wire_tag_of_every_variant() {
+        let messages = [
+            ClientMessage::CurrentText {
+                text: "sentence at the cursor".to_owned(),
+            },
+            ClientMessage::NoFocus,
+            ClientMessage::ReplaceResult { found: true },
+            ClientMessage::Heartbeat,
+        ];
+        for message in messages {
+            let json = serde_json::to_value(&message).expect("serializes");
+            assert_eq!(json["type"], message.kind());
+        }
     }
 
     #[test]

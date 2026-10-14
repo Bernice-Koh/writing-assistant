@@ -13,8 +13,10 @@ pub enum WebCaptureError {
     Disconnected,
     #[error("the request hub is not running")]
     HubStopped,
+    /// Holds the reply's kind alone. This error's text is logged by whatever called the trait,
+    /// and a reply's body can be the draft.
     #[error("the extension sent an unexpected reply: {0}")]
-    UnexpectedReply(String),
+    UnexpectedReply(&'static str),
 }
 
 /// Maps this backend's own, specific failure modes onto the `Capture` trait's shared
