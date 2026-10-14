@@ -17,6 +17,6 @@ These two files are LGPL, not MIT: this project's own source stays MIT, and thes
 as separate, unmodified, clearly attributed data, matching the vendoring approach already used for
 the LanguageTool JAR and the AI-telltale catalog.
 
-`en_sg_supplement.dic` is not vendored. It is a plain word list written for this project, one word
+`en_sg_supplement.txt` is not vendored. It is a plain word list written for this project, one word
 per line, no affix rules, checked in addition to `en_GB.dic` before a word is flagged as
 misspelled.
