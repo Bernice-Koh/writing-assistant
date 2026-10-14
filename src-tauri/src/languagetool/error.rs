@@ -21,7 +21,4 @@ pub enum LanguageToolError {
 
     #[error("request to LanguageTool failed: {0}")]
     Request(#[from] reqwest::Error),
-
-    #[error("could not parse LanguageTool's response: {0}")]
-    Parse(#[from] serde_json::Error),
 }

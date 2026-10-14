@@ -1,6 +1,5 @@
 //! Manual verification harness for issue #11: exercises value-set, synthetic input, and
-//! clipboard paste independently (not the early-stopping `insert()` cascade, which would only
-//! ever exercise value-set if it succeeds) against whatever currently has focus.
+//! clipboard paste independently, each against whatever currently has focus.
 //!
 //! Paced with a fixed delay rather than stdin, per the lesson from issue #10's harness: a
 //! backgrounded run's stdin is not reliably distinguishable from a real Enter press. Focus the
@@ -125,7 +124,7 @@ fn run_live_replace_test(also_test_last_typed: bool) {
     // (below) only tests the just-typed word, selecting backward from the live cursor, so it
     // cannot stand in for a flagged word no longer under the cursor. Uses replace_within
     // (anchor-relative), not replace_span (content-search based, which can match the wrong
-    // occurrence of a short target) or replace_at (document-absolute, which drifts near
+    // occurrence of a short target) or a document-absolute offset (which drifts near
     // auto-numbered list items, since TextUnit_Character-based Move() does not advance through
     // a list marker the same number of units GetText() counts it as). Anchoring on `typed` and
     // moving a short local distance avoids both problems. Uses the 2nd word, not the target's
@@ -189,7 +188,7 @@ fn run_live_replace_test(also_test_last_typed: bool) {
 /// Non-destructive counterpart to `run_live_replace_test`: selects a just-typed word by both
 /// techniques (`synthetic::select_left`, cursor-relative; `select::select_range`,
 /// position-based) and reads the resulting selection straight back via UIA, without ever typing
-/// or pasting over it. Exists because `replace_last_typed`/`replace_at` reporting "no
+/// or pasting over it. Exists because `replace_last_typed` reporting "no
 /// verifiable effect" is ambiguous between several distinct causes: the selection itself never
 /// landed, or it landed correctly but the subsequent type or paste call is what failed.
 /// Distinguishing those needs to observe the selection in isolation, not infer it from the

@@ -35,66 +35,15 @@ const SELECTION_SETTLE_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InsertionMethod {
-    ValueSet,
     SyntheticInput,
     ClipboardPaste,
 }
 
-/// Tries each stage in degrading order, stopping at the first one whose effect is confirmed by
-/// reading the element's text back. Returns which stage worked, or the last stage's error if
-/// none did.
-///
-/// A naive "does the text now contain what we tried to insert" check is not safe to reuse
-/// across stages unmodified: `value::set_value` *replaces* the element's entire value, so a
-/// verification failure there does not guarantee the field is back to its original state
-/// before the next stage runs, and a bare containment check on the next stage could then
-/// false-positive on residue left behind by the failed attempt rather than on that stage's own
-/// effect. Capturing the text immediately before each append-style stage and requiring it to
-/// have actually changed, not just to contain the target text, closes that gap without needing
-/// full rollback machinery.
-pub fn insert(
-    element: &IUIAutomationElement,
-    text: &str,
-) -> Result<InsertionMethod, NativeCaptureError> {
-    let value_result = value::set_value(element, text);
-    sleep(SETTLE_DELAY);
-    if value_result.is_ok()
-        && current_text(element)
-            .map(|now| now == text)
-            .unwrap_or(false)
-    {
-        return Ok(InsertionMethod::ValueSet);
-    }
-
-    let before_synthetic = current_text(element).unwrap_or_default();
-    let synthetic_result = synthetic::type_text(text);
-    sleep(SETTLE_DELAY);
-    if synthetic_result.is_ok() && changed_and_contains(element, &before_synthetic, text) {
-        return Ok(InsertionMethod::SyntheticInput);
-    }
-    restore_after_failed_attempt(element, &before_synthetic);
-
-    let before_clipboard = current_text(element).unwrap_or_default();
-    let clipboard_result = clipboard::paste_text(text);
-    sleep(SETTLE_DELAY);
-    if clipboard_result.is_ok() && changed_and_contains(element, &before_clipboard, text) {
-        return Ok(InsertionMethod::ClipboardPaste);
-    }
-
-    // Every stage either errored outright or completed without its effect being verifiable;
-    // surface whichever concrete error is most relevant, falling back to a dedicated variant
-    // when every call technically succeeded but none could be confirmed.
-    clipboard_result?;
-    synthetic_result?;
-    Err(NativeCaptureError::InsertionUnverified)
-}
-
-/// Replaces the first occurrence of `target` with `replacement`, rather than `insert`'s
-/// whole-field-replace or insert-at-cursor behaviour. `value::set_value` is deliberately not
-/// part of this cascade: it replaces an element's entire value, so it cannot target a specific
-/// selection at all. Selecting `target` first via `select::select_text`, then typing or pasting
-/// over that selection, is what makes a real correction possible: replace this specific span,
-/// leave the rest of the document untouched.
+/// Replaces the first occurrence of `target` with `replacement`. `value::set_value` is
+/// deliberately not part of this cascade: it replaces an element's entire value, so it cannot
+/// target a specific selection at all. Selecting `target` first via `select::select_text`, then
+/// typing or pasting over that selection, is what makes a real correction possible: replace
+/// this specific span, leave the rest of the document untouched.
 ///
 /// Verification here checks that `target` is no longer present and `replacement` now is. That
 /// is not a fully precise "did this exact span change" check: if `target` occurs more than
@@ -221,7 +170,7 @@ const FALLBACK_ANCHOR_BYTES: usize = 64;
 /// correction is applied. A trailing window of `before` ending at `target` is therefore both
 /// guaranteed present and, being much longer than `target` alone, far less likely to collide
 /// with unrelated text elsewhere: the same anchor-over-bare-search reasoning `select_within`
-/// already establishes for `replace_at`'s list-marker-drift problem, applied here to a
+/// already establishes for `select_range`'s list-marker-drift problem, applied here to a
 /// non-uniqueness problem instead of a counting-drift one.
 ///
 /// Falls back to `replace_span` itself, inheriting its non-uniqueness risk, only in the
@@ -267,56 +216,12 @@ fn replace_last_typed_by_anchor(
     )
 }
 
-/// Replaces the exact `[start, start + length)` character span with `replacement`, identified
-/// by position via `select::select_range` rather than by content via `replace_span`'s
-/// `select::select_text`. The robust choice whenever the caller already knows where the target
-/// text lives, as a real correction-applying caller always would, from whatever diagnostic
-/// flagged the span in the first place, since it has no search step to land on the wrong
-/// occurrence, unlike `replace_span`, which can mismatch on non-unique or substring-contained
-/// targets. `start` and `length` are UTF-16 code units; see `select::select_range`'s
-/// documentation for why.
-pub fn replace_at(
-    element: &IUIAutomationElement,
-    start: usize,
-    length: usize,
-    replacement: &str,
-) -> Result<InsertionMethod, NativeCaptureError> {
-    select::select_range(element, start, length)?;
-    sleep(SELECTION_SETTLE_DELAY);
-    let before = current_text(element).unwrap_or_default();
-
-    let synthetic_result = synthetic::type_text(replacement);
-    sleep(SETTLE_DELAY);
-    if synthetic_result.is_ok() && changed_and_contains(element, &before, replacement) {
-        return Ok(InsertionMethod::SyntheticInput);
-    }
-
-    // Same re-select-before-retry reasoning as replace_span, and the same
-    // restore_after_failed_attempt cleanup: a prior attempt that actually landed a fragment
-    // shifts the document, so re-selecting the same `[start, start + length)` is only correct
-    // once that fragment has been cleaned up; when cleanup ran, the cursor it leaves behind
-    // already sits where the fragment was.
-    if !restore_after_failed_attempt(element, &before) {
-        select::select_range(element, start, length)?;
-        sleep(SELECTION_SETTLE_DELAY);
-    }
-    let clipboard_result = clipboard::paste_text(replacement);
-    sleep(SETTLE_DELAY);
-    if clipboard_result.is_ok() && changed_and_contains(element, &before, replacement) {
-        return Ok(InsertionMethod::ClipboardPaste);
-    }
-
-    clipboard_result?;
-    synthetic_result?;
-    Err(NativeCaptureError::InsertionUnverified)
-}
-
 /// Replaces the exact `[local_start, local_start + local_length)` character span measured from
 /// the start of the first occurrence of `anchor` with `replacement`, via
-/// `select::select_within` rather than `replace_at`'s document-absolute `select::select_range`.
-/// The robust choice whenever a suitable anchor is available. See `select_within`'s
-/// documentation for why `replace_at`'s absolute counting drifts near Word's auto-numbered list
-/// items, and why anchoring locally avoids the problem.
+/// `select::select_within` rather than the document-absolute `select::select_range`. The robust
+/// choice whenever a suitable anchor is available. See `select_within`'s documentation for why
+/// `select_range`'s absolute counting drifts near Word's auto-numbered list items, and why
+/// anchoring locally avoids the problem.
 pub fn replace_within(
     element: &IUIAutomationElement,
     anchor: &str,
@@ -334,7 +239,7 @@ pub fn replace_within(
         return Ok(InsertionMethod::SyntheticInput);
     }
 
-    // Same re-select-before-retry reasoning as replace_span and replace_at, and the same
+    // Same re-select-before-retry reasoning as replace_span, and the same
     // restore_after_failed_attempt cleanup. A landed fragment changes the characters inside
     // `anchor` itself, so a fresh `select_within` search for `anchor` would then, correctly,
     // fail to find it. Skip re-selecting in that case and paste straight into the gap the
