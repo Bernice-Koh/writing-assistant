@@ -60,7 +60,7 @@ under pattern 22 (sycophantic tone) and dropped from pattern 20 (collaborative c
 artifacts).
 
 Several entries were narrowed from `SKILL.md`'s own longer word lists to reduce false positives on
-ordinary writing in a tool that flags on every keystroke: pattern 7 (AI vocabulary) drops single
+ordinary writing in a tool that flags as the owner types: pattern 7 (AI vocabulary) drops single
 very common words such as "actually", "crucial", and "valuable" that would fire on completely
 ordinary prose, keeping only the more distinctive words and phrases; pattern 3 (superficial -ing
 endings) is matched by regex, requiring a preceding comma, rather than by the bare gerund words

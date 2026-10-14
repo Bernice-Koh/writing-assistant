@@ -1,7 +1,7 @@
 //! Manages the LanguageTool subprocess (launch, readiness, bounded restart on an unexpected
-//! exit) and runs Tier 0.5 grammar checking against it, set to the `en-GB` variant per README's
-//! Language convention section. `process` covers the subprocess itself; `client` covers the HTTP
-//! API and the mapping into this crate's [`crate::flag::Flag`].
+//! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant.
+//! `process` covers the subprocess itself; `client` covers the HTTP API and the mapping into
+//! this crate's [`crate::flag::Flag`].
 
 mod client;
 pub mod error;
@@ -71,7 +71,7 @@ impl LanguageToolSupervisor {
         Ok(Self { inner })
     }
 
-    /// Runs a Tier 0.5 grammar check against `text`, which should be exactly one sentence: see
+    /// Runs the grammar stage's check against `text`, which should be exactly one sentence: see
     /// [`LanguageToolClient::check`]'s own documentation for why. Returns `None`, never an error,
     /// whenever the subprocess is degraded or a single request fails, so a caller can treat a
     /// down or unreachable LanguageTool the same way as "no grammar flags this time" and keep

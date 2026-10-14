@@ -1,10 +1,11 @@
-//! Value-set: the cheapest insertion path, replacing an element's entire value via
-//! `IUIAutomationValuePattern`. Works only on simple controls that expose the pattern and
-//! aren't read-only; the caller degrades to synthetic input when this fails.
+//! Value-set: replaces an element's entire value via `IUIAutomationValuePattern`. Works only on
+//! simple controls that expose the pattern and aren't read-only. It is not a stage of the
+//! insertion cascade, since a whole-value write cannot target a span, and the insertion harness
+//! is its only caller.
 //!
-//! `SetValue` fully replaces the element's value. If verification elsewhere finds this didn't
-//! land correctly, the field's prior content is not guaranteed to still be there: an accepted
-//! risk for a spike run against scratch documents, not something solved here with a rollback.
+//! `SetValue` fully replaces the element's value. If a read-back finds the write did not land,
+//! the field's prior content is not guaranteed to still be there. No rollback covers that gap. It
+//! is accepted because the harness runs against scratch documents.
 
 use windows::core::BSTR;
 use windows::Win32::UI::Accessibility::{

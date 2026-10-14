@@ -117,9 +117,9 @@ pub fn select_within(
 
 /// The same `[local_start, local_start + local_length)` range `select_within` selects, without
 /// selecting it: `span_rect` (`cursor::span_rects`) needs a span's on-screen rectangles to
-/// underline it, on every analyzer poll cycle, and calling `Select` there would repeatedly steal
-/// the user's own selection out from under them just to compute where to draw an underline.
-/// `select_within` itself now delegates here, so the two never drift apart.
+/// underline it, on every tick of the overlay's position refresh, and calling `Select` there
+/// would repeatedly steal the user's own selection out from under them just to compute where to
+/// draw an underline. `select_within` itself now delegates here, so the two never drift apart.
 ///
 /// `anchor` still goes through `FindText` under the hood, so it inherits that method's
 /// first-occurrence behaviour; it must be specific enough to be effectively unique, a full

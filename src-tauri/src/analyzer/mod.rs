@@ -1,12 +1,12 @@
-//! The analyzer pipeline that sits between capture and the overlay: debounce, incremental
-//! diffing, merge and dedupe by span, ranking, and an LRU cache. Style flags are suppressed
-//! on spans that already carry a hard grammar error.
+//! The analyzer, between capture and the overlay. It polls the document's text, waits for the
+//! typing pause, splits the text into sentences, and checks the changed ones against spelling,
+//! the telltale catalogue, and LanguageTool. The suppression rule is applied to each sentence's
+//! flags, the result is cached per sentence, and every recheck publishes the whole document's
+//! flags on the watch channel the overlay subscribes to. Checking keys to the pause because a
+//! flag on a half-typed word is noise.
 //!
-//! `sentences` covers the incremental diffing, `dedupe` the span-overlap suppression rule; both
-//! are private, this module's own [`Analyzer`] is the only public surface.
-//!
-//! Not wired into the running app yet: that is #42's job, once the overlay has something to
-//! render this pipeline's output into.
+//! `sentences` covers the split and the diff, `dedupe` the suppression rule. Both are private:
+//! [`Analyzer`] is the only public surface.
 
 mod dedupe;
 mod sentences;
@@ -27,10 +27,8 @@ use crate::languagetool::LanguageToolSupervisor;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell;
 
-/// How often the debounce loop polls the capture backend's current text for a change. Matches
-/// `overlay.rs`'s `track_cursor` cadence, the established polling interval elsewhere in this
-/// layer, itself a bridge until a later phase replaces polling with a push from the capture
-/// backend's own text-change events (see that constant's own doc comment for why).
+/// How often the debounce loop reads the capture backend's current text to look for a change.
+/// The 200 ms poll stands until the capture backend's text-changed event triggers the recheck.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// How long the document must sit unchanged before a recheck fires, so a burst of keystrokes
@@ -62,10 +60,8 @@ struct Inner {
     flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
     previous_sentences: Mutex<Vec<String>>,
-    /// Counts calls into [`check_sentence`], real work a cache hit skips. Per-instance rather
-    /// than a global counter so concurrently running tests never contaminate each other's count;
-    /// only ever read in tests, but kept outside `#[cfg(test)]` so it costs nothing to leave
-    /// wired through the one non-test call site rather than feature-gating that call site too.
+    /// Counts calls into [`check_sentence`], the work a cache hit skips. Test-only, and held per
+    /// instance rather than in a global, so tests running in parallel never share a count.
     #[cfg(test)]
     check_sentence_calls: std::sync::atomic::AtomicUsize,
 }
@@ -335,9 +331,9 @@ mod tests {
 
     /// Advances the paused clock in `POLL_INTERVAL` steps rather than one combined-duration
     /// jump. A single large `tokio::time::advance` call was found not to reliably let a spawned
-    /// task observe every intermediate `tokio::time::interval` tick within it (the debounce
-    /// loop's own polling relies on seeing each one); stepping matches how `overlay.rs`'s
-    /// `track_cursor` polling actually runs in production too, one tick at a time.
+    /// task observe every intermediate `tokio::time::interval` tick within it, and the debounce
+    /// loop relies on seeing each one. Stepping is also how the loop's 200 ms poll runs outside a
+    /// test, one tick at a time.
     async fn step(steps: u32) {
         for _ in 0..steps {
             tokio::time::advance(POLL_INTERVAL).await;

@@ -1,9 +1,9 @@
 //! Synthetic input: keystroke simulation via `SendInput` with `KEYEVENTF_UNICODE`, injecting
 //! into the real system input queue rather than posting window messages. Modern XAML/UWP-hosted
 //! controls, Windows 11's Notepad among them, require this, since their input dispatcher only
-//! consumes the system queue, not posted messages. Delivers to whichever element currently
-//! holds real OS keyboard focus, matching this project's case, where the user is always
-//! actively focused on the target when a correction is applied.
+//! consumes the system queue, not posted messages. `SendInput` reaches whichever window holds
+//! keyboard focus, so the caller must make the target the foreground window first. Nothing in
+//! this module checks that it is.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,

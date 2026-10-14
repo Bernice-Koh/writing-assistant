@@ -39,11 +39,10 @@ instruction to Claude Code; that is a different genre from documentation prose.
 
 ## Dogfooding
 
-Committed prose holds itself to the same standard the product enforces on a user's draft.
-Once the AI-tell detector exists, committed docs are checked against it like any other text.
-Until then, the check is manual: avoid the patterns catalogued in the vendored
-signs-of-ai-writing data (`src-tauri/resources/ai-telltales/`) the same way the product would
-flag them in a user's writing. In particular: no throat-clearing openers, no "it's not just X,
+Committed prose holds itself to the same standard the product enforces on a user's draft. It
+is checked by hand against the telltale catalogue under `src-tauri/resources/ai-telltales/`
+until the engine's deterministic screen has a command-line entry point, and by that entry
+point afterwards. In particular: no throat-clearing openers, no "it's not just X,
 it's Y" parallelism, no summary paragraph that restates what was just said, no reflexive
 rule-of-three lists, no "leverage", "utilise", "delve into", "robust", or "seamless" reached
 for out of habit rather than accuracy.

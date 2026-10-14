@@ -1,6 +1,5 @@
-//! Settings and configuration, persisted as JSON in the OS-appropriate config directory. Profiles,
-//! the exemplar corpus, the Style Card, and training pairs stay out of this module until
-//! onboarding exists to produce them; SQLite is deferred to that phase too.
+//! Settings, persisted as one JSON file in the OS-appropriate config directory. This module holds
+//! settings only, and nothing in the app loads or saves it yet.
 
 use std::path::{Path, PathBuf};
 
@@ -9,9 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use super::error::StoreError;
 
-/// Decomposes the identifier already declared in `tauri.conf.json`
-/// (`com.bernicekoh.writing-assistant`), so the config directory this resolves to and the app's
-/// own bundle identifier agree, rather than picking a separate, unrelated triple.
+/// The three parts of the identifier declared in `tauri.conf.json`,
+/// `com.bernicekoh.writing-assistant`. The `directories` crate and Tauri's path resolver disagree
+/// today: the crate resolves these parts to `bernicekoh\writing-assistant\config`, and Tauri's
+/// resolver names its folder by the whole identifier.
 const QUALIFIER: &str = "com";
 const ORGANIZATION: &str = "bernicekoh";
 const APPLICATION: &str = "writing-assistant";

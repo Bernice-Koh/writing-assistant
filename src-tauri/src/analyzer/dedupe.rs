@@ -1,6 +1,5 @@
-//! Suppresses AI-tell flags on a span that already carries a hard grammar error, the rule this
-//! module's parent already documented before any of it was implemented: style flags are
-//! suppressed on spans that already carry a hard grammar error.
+//! The suppression rule: a grammar flag suppresses an AI-tell flag on an overlapping span. A
+//! spelling flag neither suppresses a flag nor is suppressed.
 
 use std::ops::Range;
 

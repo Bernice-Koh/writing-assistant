@@ -23,5 +23,5 @@ SOFTWARE.
 ---
 
 This project bundles and depends on third-party components under their own
-licenses. See the "License" section of README.md for the summary, and
-THIRD-PARTY-NOTICES.md in a release build for the full texts.
+licences. See the "Licence" section of README.md for the summary. Full licence
+texts accompany a release build when one exists; none is distributed.

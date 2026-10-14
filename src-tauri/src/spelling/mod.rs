@@ -1,8 +1,7 @@
-//! Spelling checks against the vendored `en_GB` dictionary plus a Singapore English supplement,
-//! per README's Language convention section: `en_GB` in its `-ise` form, with local vocabulary
-//! layered on top as a plain word list rather than its own hunspell affix file. Provenance and
-//! licensing for the vendored dictionary pair are recorded in
-//! `resources/dictionaries/NOTICE.md`.
+//! Spelling checks through spellbook, which reads the vendored Hunspell-format dictionary pair:
+//! `en_GB` in its `-ise` form, with a Singapore word list on top. The word list is plain words
+//! merged into the same dictionary, with no affix file of its own. Provenance and licensing for
+//! the vendored dictionary pair are recorded in `resources/dictionaries/NOTICE.md`.
 
 pub mod error;
 
@@ -15,9 +14,10 @@ pub use error::SpellingError;
 
 use crate::flag::{Flag, FlagOrigin, Span};
 
-/// Corrections offered for a single misspelling, short of hunspell's full suggestion list: past
-/// a handful, later suggestions are rarely the one the user meant, and every extra one costs
-/// Tier 0's latency budget to compute.
+/// Corrections kept for a single misspelling, out of spellbook's full suggestion list: past a
+/// handful, later suggestions are rarely the one the owner meant. Spellbook has computed the
+/// whole list by the time it is cut, so the cap bounds what a flag carries to the hover card and
+/// saves the deterministic stage no time.
 const MAX_SUGGESTIONS: usize = 5;
 
 /// Wraps a loaded `en_GB` dictionary with the Singapore supplement merged in through
@@ -58,8 +58,8 @@ impl SpellChecker {
     }
 
     /// Checks every alphabetic word in `text` against the dictionary, returning one [`Flag`] per
-    /// word absent from both `en_GB` and the Singapore supplement, each carrying whatever
-    /// corrections hunspell's suggestion algorithm offers.
+    /// word absent from both `en_GB` and the Singapore supplement, each carrying the corrections
+    /// spellbook suggests, up to `MAX_SUGGESTIONS`.
     ///
     /// Each flag anchors on `text` itself, carrying the word's own offset into it, rather than on
     /// the bare misspelled word. [`crate::capture::Capture::span_rect`] and

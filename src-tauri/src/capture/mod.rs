@@ -40,10 +40,10 @@ pub mod web;
 
 pub use error::CaptureError;
 
-/// Screen-space rectangle for placing UI relative to the cursor. Shape matches
-/// [`native::cursor::CursorRect`] deliberately; #20 reconciles the two into one type when the
-/// native backend conforms to this trait. `Serialize` so a [`crate::overlay::PositionedFlag`]
-/// carrying one can cross the Tauri IPC boundary to the overlay's own webview.
+/// Screen-space rectangle for placing UI relative to the cursor. The capture module's one
+/// rectangle type: [`native::cursor`] re-exports it and keeps none of its own. `Serialize` so a
+/// [`crate::overlay::PositionedFlag`] carrying one can cross the Tauri IPC boundary to the
+/// overlay's own webview.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorRect {
@@ -86,13 +86,12 @@ pub trait Capture: Send + Sync {
     /// strings are natively: a genuine convergence across both backends, not a
     /// Windows-specific artifact.
     ///
-    /// Native's spike also has `replace_at` (absolute offset), `replace_span` and
-    /// `replace_last_typed` (content search without a caller-supplied anchor), and bare
-    /// `insert`. Those exist for the spike's own manual test harness, which has no diagnostic
-    /// supplying an anchor; a real caller (the analyzer or rewrite orchestrator) already knows
-    /// the span from whatever flagged it, so only the anchor-based shape becomes this trait's
-    /// method. The other functions stay as native-internal helpers `replace`'s implementation
-    /// can still use.
+    /// The working card is the caller this is shaped for: it holds the span of the flag it acts
+    /// on, so the anchor-based shape is this trait's only replacement method. The card's actions
+    /// are not yet built, and nothing in the app calls this today. Native also has
+    /// [`native::insert::replace_span`] and [`native::insert::replace_last_typed`], which search
+    /// by content without a caller-supplied anchor. Both exist for the insertion harness, which
+    /// has no flag to take an anchor from.
     async fn replace(
         &self,
         anchor: &str,
@@ -101,7 +100,7 @@ pub trait Capture: Send + Sync {
         replacement: &str,
     ) -> Result<(), CaptureError>;
 
-    /// The on-screen rectangle of the focused editable element, or its containing window when
+    /// The on-screen rectangle of the focused editable element, or the foreground window when
     /// the element's own rectangle is unusable, for sizing and positioning the full-viewport
     /// overlay so every visible flagged span falls inside it, not just the caret's own
     /// neighbourhood. Native answers this from UI Automation's `BoundingRectangle`
