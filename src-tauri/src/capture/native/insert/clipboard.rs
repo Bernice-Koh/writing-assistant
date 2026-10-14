@@ -51,8 +51,9 @@ fn write_clipboard_data(text: &str) -> Result<(), NativeCaptureError> {
     let _ = unsafe { GlobalUnlock(handle) };
 
     // SAFETY: `handle` is a valid GMEM_MOVEABLE allocation; ownership passes to the OS on
-    // success. On failure here, `handle` leaks, a small, bounded, rare-path leak rather than a
-    // double free, out of scope to fully close for this spike.
+    // success. On failure here, `handle` leaks, for the same reason as the early return above.
+    // The leak is accepted: it is one allocation the size of the replacement text, on a path
+    // that fails rarely.
     unsafe { SetClipboardData(CF_UNICODETEXT.0.into(), Some(HANDLE(handle.0))) }?;
     Ok(())
 }

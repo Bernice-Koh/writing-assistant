@@ -54,15 +54,18 @@ pub fn caret_rect(element: &IUIAutomationElement) -> Result<CursorRect, NativeCa
     Ok(rect)
 }
 
-/// The on-screen rectangle of `element`'s own bounds, or its containing window's when the
+/// The on-screen rectangle of `element`'s own bounds, or the foreground window's when the
 /// element cannot usefully answer for itself, for sizing and positioning the full-viewport
 /// overlay. Tried in that order: `element`'s own `BoundingRectangle` is the more precise answer
 /// when it is usable, since it is Word's actual document pane rather than the whole application
 /// window ribbon and all, but some accessibility implementations report it as an empty rectangle
 /// (no width or height) for elements that do not carry a meaningful bounds of their own, which is
-/// what the fallback exists for. `element` is always the same one `caret_rect` was just able to
-/// read a caret from, so its containing window is, by construction, the foreground window: the
-/// one the user is actually typing into.
+/// what the fallback exists for.
+///
+/// `element` is whichever element holds the capture thread's text-change scope, with or without
+/// a caret, and the thread keeps that scope while one of the app's own windows has focus. The
+/// fallback returns the foreground window, which is `element`'s window only while the target has
+/// focus.
 pub fn document_view_rect(
     element: &IUIAutomationElement,
 ) -> Result<CursorRect, NativeCaptureError> {
@@ -73,8 +76,8 @@ pub fn document_view_rect(
 }
 
 /// `element`'s own `BoundingRectangle`, or `None` when the call fails or reports an empty
-/// rectangle: either way, not a usable answer for [`document_view_rect`], which should fall back
-/// to the containing window instead of handing the overlay a zero-sized target.
+/// rectangle: either way, not a usable answer for [`document_view_rect`], which falls back to the
+/// foreground window instead of handing the overlay a zero-sized target.
 fn element_bounding_rect(element: &IUIAutomationElement) -> Option<CursorRect> {
     // SAFETY: `element` is live; CurrentBoundingRectangle fails safely (Err) when the property
     // is unavailable rather than trapping.
@@ -84,10 +87,9 @@ fn element_bounding_rect(element: &IUIAutomationElement) -> Option<CursorRect> {
 }
 
 /// The foreground window's own rectangle, via plain Win32 rather than a UI Automation tree walk
-/// up from `element` to its nearest window ancestor: `element` already has focus by the time
-/// [`document_view_rect`] is ever called (the capture thread only reads it once a focus-changed
-/// signal has landed), so the foreground window and `element`'s containing window are the same
-/// window, and asking for it directly is simpler than a walk that would land on the same answer.
+/// up from the scoped element to its nearest window ancestor. The foreground window is that
+/// element's window only while the target has focus: the capture thread keeps its scope while one
+/// of the app's own windows is in the foreground, and this then returns that window's rectangle.
 fn foreground_window_rect() -> Result<CursorRect, NativeCaptureError> {
     // SAFETY: GetForegroundWindow takes no arguments; it can return a null handle when no window
     // currently has focus at all, checked below before the handle is used for anything.
@@ -310,7 +312,7 @@ mod tests {
 
     #[test]
     fn a_trailing_partial_group_is_dropped_rather_than_panicking() {
-        // `chunks_exact` is the point here: five floats is one whole group plus a stray value
+        // `as_chunks` is the point here: five floats is one whole group plus a stray value
         // that cannot form a second one, and should simply be ignored, not indexed out of bounds.
         let floats = [10.0, 20.0, 30.0, 40.0, 999.0];
         assert_eq!(

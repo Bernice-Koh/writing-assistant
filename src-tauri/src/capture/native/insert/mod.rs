@@ -1,6 +1,8 @@
-//! The insertion cascade: value-set, then synthetic input, then clipboard paste, stopping at
-//! the first stage whose result is verified against the element's own reported text rather
-//! than assumed from the underlying call's exit status.
+//! The insertion cascade: select the span, type the replacement over it as synthetic
+//! keystrokes, and read the element's text back. On a failed read-back, any fragment the attempt
+//! left is removed and the replacement is pasted from the clipboard, then read back the same
+//! way. A stage counts only when its result is verified against the element's own reported text
+//! rather than assumed from the underlying call's exit status.
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -48,9 +50,10 @@ pub enum InsertionMethod {
 /// Verification here checks that `target` is no longer present and `replacement` now is. That
 /// is not a fully precise "did this exact span change" check: if `target` occurs more than
 /// once, a correct replacement of the first occurrence still leaves later occurrences matching
-/// `target`, which this check would misreport as a failure. Fine for this spike, where the
-/// target text is a marker chosen to be unique; a real correction-application caller would need
-/// range-identity tracking across the operation instead, which is out of scope here.
+/// `target`, which this check would misreport as a failure. The gap is accepted because every
+/// call starts in the insertion harness, directly or as [`replace_last_typed`]'s last resort, and
+/// the harness's target is a marker chosen to be unique. [`replace_within`], which serves the
+/// `Capture` trait's `replace`, addresses its span through an anchor and does not share the gap.
 pub fn replace_span(
     element: &IUIAutomationElement,
     target: &str,
