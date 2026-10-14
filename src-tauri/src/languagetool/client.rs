@@ -15,8 +15,8 @@ use super::error::LanguageToolError;
 /// the warm-up check in [`super::process::warm_up`], not steady-state traffic: LanguageTool
 /// lazily loads its `en-GB` rule set on the first real check rather than at startup, measured
 /// directly at 5.5 seconds cold against well under 100 ms once warm, and the warm-up call pays
-/// that cost with this same timeout applied. Every check after warm-up stays far inside Tier
-/// 0.5's hundreds-of-milliseconds budget; this is a last-resort ceiling, not the target latency.
+/// that cost with this same timeout applied. The grammar stage's checks after warm-up run far
+/// inside it; this is a last-resort ceiling, not the target latency.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// LanguageTool's own category for rules that flag a misspelling (for example
@@ -44,8 +44,10 @@ impl LanguageToolClient {
         }
     }
 
-    /// True if `/v2/languages` answers at all, regardless of its content. Used only for startup
-    /// and health-check readiness polling, never as a substitute for [`Self::check`].
+    /// True if `/v2/languages` answers at all, regardless of its content. Used only by the
+    /// readiness poll that follows a spawn, at startup and after a restart, never as a substitute
+    /// for [`Self::check`]. Nothing polls a server that has already answered: supervision waits on
+    /// the process exiting.
     pub(crate) async fn languages_reachable(&self) -> bool {
         self.http
             .get(format!("{}/v2/languages", self.base_url))

@@ -1,5 +1,6 @@
-//! Spawns and supervises the LanguageTool subprocess: launch, readiness poll, and a background
-//! health check that restarts it a bounded number of times before giving up.
+//! Spawns the LanguageTool subprocess and brings it to a usable state: the free-port probe, the
+//! launch, the readiness poll, and the warm-up check. Supervision is in the parent module: it
+//! waits on the process exiting and restarts it a bounded number of times before giving up.
 //!
 //! Verified directly against LanguageTool 6.6's official server distribution (jar plus a `libs/`
 //! directory of 138 dependency jars, not one fat jar): `languagetool-server.jar`'s own
@@ -111,8 +112,8 @@ pub(crate) async fn wait_until_ready(client: &LanguageToolClient) -> Result<(), 
 /// startup, rather than on whichever real check happens to run first. Verified directly against a
 /// running server: LanguageTool loads rules lazily, so a cold first check took 5.5 seconds against
 /// well under 100 ms once warm, an entirely one-time cost with no per-request work in it. Paying
-/// that cost here, once, keeps every check a real caller makes afterward inside Tier 0.5's
-/// hundreds-of-milliseconds budget instead of one unlucky keystroke absorbing it.
+/// that cost here, once, keeps it out of the grammar stage, where the first real check would
+/// otherwise absorb it.
 const WARM_UP_TEXT: &str = "Hello.";
 
 /// Sends [`WARM_UP_TEXT`] through `client` and discards the result. A failure here is logged, not
@@ -134,8 +135,8 @@ pub(crate) async fn warm_up(client: &LanguageToolClient) {
 pub fn default_paths(resources_dir: &Path) -> LanguageToolPaths {
     let resources_dir = without_extended_length_prefix(resources_dir);
     LanguageToolPaths {
-        // `.exe` unconditionally: per README's Requirements section this app only ships for
-        // Windows, so there is no second platform's binary name to branch on.
+        // `.exe` unconditionally: the app is Windows only, so there is no second platform's
+        // binary name to branch on.
         java_bin: resources_dir.join("jre").join("bin").join("java.exe"),
         jar: resources_dir
             .join("languagetool")
