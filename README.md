@@ -1,465 +1,620 @@
 # Writing Assistant
 
-A Windows writing assistant that checks spelling, grammar, and style as you type, across the browser, Microsoft Word, and native desktop apps.
+A Windows writing tool built for one person, its owner. It checks spelling, grammar, and style as
+the owner types, across the browser, Microsoft Word, and native desktop applications.
 
-You declare the voice you want during onboarding. The assistant then flags sentences that drift from it, rewrites passages into it, and underlines the phrasing habits that make prose read as LLM-generated.
+The tool coaches toward a declared voice. The voice is held in a Style Card: a list of clauses
+that a model maintains from the preferences the owner expresses. The tool flags text that drifts
+from the Card's clauses, rewrites passages on request with a local model, and underlines phrasing
+that reads as LLM-generated. The owner's present habits are counted and are never a target.
 
-> **Status:** early development. No released build yet.
+> **Status:** early development. No released build exists. Capture, spelling, grammar, telltale
+> underlines, and the overlay run today from a local build. A component that does not exist yet
+> is marked planned, with the number of the phase that builds it.
 
 ## How it works
 
 ```mermaid
 flowchart TD
-    Install(["Install"]) --> Onboard["User style onboarding process"]
-    Onboard -->|"generates"| Card[("Style Card<br/>plain-English rules describing<br/>the voice you want to write in")]
+    Pref[/"Expressed preferences<br/>questionnaire answers, feedback,<br/>reactions to samples"/]
+    Pref -->|"a model maintains"| Card[("Style Card<br/>clauses")]
+    Card --> Rules["Ruleset<br/>a checker for each clause that has one"]
 
-    Card --> Write[/"User types<br/>browser, Word, native app"/]
+    Type[/"The owner types<br/>browser, Word, native application"/]
+    Type -->|"typing pause"| Det["Deterministic stage<br/>spelling, telltales, Card checkers"]
+    Type -->|"typing pause"| Gram["Grammar stage<br/>LanguageTool"]
+    Rules --> Det
+    Det --> Flags[/"Underlines in place"/]
+    Gram --> Flags
 
-    Write --> Check["Live check<br/>spelling, grammar, AI tells, and drift from the target voice on the Style Card"]
-    Check --> Flag[/"Underline on anything off-target"/]
-
-    Flag --> Open[/"User opens the suggestion card"/]
-    Open --> Rewrite
-
-    Write --> Select[/"User selects a passage<br/>and asks for the target voice"/]
-    Select --> Rewrite[["Rewrite in target voice"]]
-
-    Rewrite --> Show[/"Suggested wording in the card"/]
-
-    Show --> React{"Accept, reject,<br/>or hand-edit?"}
-    React -->|"keep writing"| Write
-    React -->|"every reaction is a signal"| Learn["Update the voice model"]
-    Learn --> Card
+    Flags -->|"rewrite requested on a flag"| Rewrite[["Local rewrite<br/>base model, Card in the prompt"]]
+    Type -->|"rewrite requested on a selection"| Rewrite
+    Card --> Rewrite
+    Rewrite --> Screen["Screen<br/>deterministic checks on each candidate"]
+    Screen --> Act{"Accept, edit,<br/>or dismiss"}
+    Act -->|"recorded, never moves the Card"| Events[("Events")]
 ```
 
-Detail on the two boxes above: [onboarding](#onboarding) and [the Style Card](#the-style-card).
+The path from typing to underlines runs today, without the Card's checkers. The Card, the ruleset,
+the rewrite, the screen, and the event record are planned, and the sections below give the phase
+for each.
 
-### Vocabulary
+Two kinds of input are kept apart. An expressed preference is a questionnaire answer, a reaction
+to a sample, or free-prose feedback, and it is the only thing that changes the Card. Measured
+behaviour is a pick between candidates, an edit of a candidate, or a dismissal. It is recorded and
+never moves the Card.
+
+### Terms
 
 | Term | Meaning |
 |---|---|
-| **Style Card** | Plain-English rules describing the target voice. Produced by onboarding, editable any time, conditions every rewrite |
-| **Target voice** | The way the user says they want to write. Held numerically as the target profile and in words as the Style Card |
-| **Target profile** | Numeric vector of the target voice. Changes only on users' deliberate changes |
-| **Observed profile** | Numeric vector of how the user writes today. Measured, decays over time |
-| **Drift** | Distance between a sentence and the target profile. |
-| **AI tells** | Catalogued phrasings that mark text as model-written |
+| Style Card | The declared voice: clauses a model maintains from the owner's expressed preferences. The only target |
+| Clause | One behaviour, stated so that it can be inverted, with a register scope |
+| Twin | A clause's negation, written by a model once the clause exists |
+| Checker | An executable test of one clause: a matcher, a unit, and a band |
+| Ruleset | The versioned set of checkers |
+| Residual | What the Card asks for that no checker expresses: a clause with no checker |
+| Candidate | A model's rewrite of a passage |
+| Screen | The deterministic checks every candidate passes before it is shown |
+| Telltale | A catalogued phrasing that marks text as LLM-generated |
+| Habit ledger | Daily counts of clause violations in the owner's typing, shown to the owner and never written to the Card. Planned, Phase 9 |
 
-### Latency tiers
+## Checking
 
-Work is assigned to a tier by how fast it has to answer, and stays there.
+Checking keys to the typing pause. A recheck fires once the document has sat unchanged for
+500 ms, and it covers the sentences that changed. No stage runs per keystroke: a flag on a
+half-typed word is noise.
 
-| Tier | Trigger | Budget | Work |
-|---|---|---|---|
-| **0** | Every keystroke | < 50 ms | Spelling, deterministic grammar, drift from the target profile, AI tells |
-| **0.5** | 500 ms after typing stops | 200 to 300 ms | Full [LanguageTool](https://languagetool.org) rule set on changed sentences |
-| **1** | On request | Seconds | Rewrite plus two-stage critic. The only tier that calls a cloud model |
+| Stage | Work | State |
+|---|---|---|
+| Deterministic | Spelling, the telltale catalogue, and the Card's checkers. Publishes first | Spelling and telltales run today. Card checkers: planned, Phase 3 |
+| Grammar | LanguageTool on the same sentences. Publishes second, with suppression applied | Runs today |
+| Rewrite | On request only: the local base model with the Card in its prompt, each candidate screened before it is shown | Planned, Phase 4 |
 
-## Core features
+Neither checking stage calls a model or the network. LanguageTool is a subprocess on the same
+machine, reached over the loopback interface. The rewrite is local as well, and it runs only when
+the owner asks for one.
 
-| Feature | Detail |
+Today both stages publish together at the end of a recheck, and the analyzer finds a change by
+polling the document every 200 ms. Separate publishes are planned for Phase 1, so that spelling
+and telltale flags stop waiting on LanguageTool. An event-driven trigger is planned for Phase 2:
+the capture backend's text-changed event marks the document as changed, and a slow safety poll
+covers controls that never raise the event.
+
+Flags are cached per sentence by hash, which limits a recheck to the sentences that changed. One
+source failing degrades that source and never ends checking: with LanguageTool down, spelling and
+telltale flags continue.
+
+### Severity and suppression
+
+Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft. A
+hard flag suppresses a soft flag on an overlapping span, and a style flag takes precedence over a
+telltale on the same span (planned, Phase 1). The rule implemented today is one case of that
+model: a grammar flag suppresses a telltale flag.
+
+### The rule layer
+
+Planned, Phase 1. A checker is a matcher, a unit, and a band.
+
+| Part | Values |
 |---|---|
-| Two capture surfaces | Browser extension and UI Automation client, all behind one interface |
-| Declared target voice | Flagging scores against the voice the user chose, kept separate from measured habit |
-| Live style flagging | Per-sentence drift at Tier 0. Each flag names the target it missed and by how much |
-| Editable Style Card | Any line editable, pinned lines survive regeneration, every rewrite traces back to a rule |
-| Grammar and spelling | [hunspell](https://github.com/hunspell/hunspell) at Tier 0, LanguageTool at Tier 0.5, both set to Singapore English |
-| AI-tell detection | Deterministic matching against a vendored pattern catalog |
-| Rewrites attached to flags | Flagged spans carry replacement wording in the card. Manual selection covers anything unflagged |
-| Grounded rewrites | Style Card plus retrieved passages of the user's own writing condition each rewrite, checked against the Card before display |
-| Form modes and register | Prose, Fragments, or Off, detected from structure. Formality inferred per document |
-| Local and inspectable | Corpus, profiles, Style Card, and adapters are files the user can open, edit, or delete |
-| Bounded learning | Rolling averages, capped corpus, batch work on idle AC power |
+| Matcher | Phrase list, regex, LanguageTool rule id, spelling variant, word count |
+| Unit | Span, sentence, paragraph, document |
+| Band | Forbidden, a minimum and maximum count, a rate per hundred words |
+
+A ban on em dashes is a regex over spans with a band of zero. A limit on hedging is a phrase list
+per paragraph with a maximum. A band violation flags the matches beyond the limit, with the count
+in the message, so the flag marks what to cut. A style flag carries the text of its clause, and
+the hover card cites the clause the text broke.
+
+Rulesets are versioned. Every flag and every candidate records the ruleset version it was checked
+under, and retiring a checker publishes a new version without rewriting the past.
+
+Form mode is classified per paragraph from its structure: prose, fragment, or code (planned,
+Phase 1). Bands apply to prose, phrase bans to prose and fragments, and nothing runs on code.
+Today no form mode exists and all text is checked alike.
+
+### Grammar
+
+LanguageTool 6.6 checks one sentence per request. Its spelling category is dropped, since
+spelling has one source. Today requests use LanguageTool's default level, and every other category
+surfaces as a grammar flag. Planned for Phase 1: picky mode, with grammar categories kept as
+grammar flags, a rule the owner endorsed in the questionnaire routed to a style flag that cites
+its clause, and every other picky rule dropped.
+
+### Telltales
+
+Underlining LLM phrasing is independent of the Card. The catalogue ships with the tool and keeps
+its own flag origin. It holds 21 patterns as phrase lists and regexes, hand-encoded from
+Wikipedia's Signs of AI writing page as read through an intermediary's skill file.
+`src-tauri/resources/ai-telltales/NOTICE.md` records the provenance and the nine patterns left
+unencoded.
+
+Phrase matching is case-insensitive and flags every occurrence. A phrase edge that is a letter or
+digit matches only at a word boundary. Both the `-ise` and the `-ize` spelling of a phrase are
+accepted. A phrase belongs to exactly one pattern, which a test on the catalogue enforces.
+
+Planned for Phase 1: a toggle per pattern in settings, and the count-shaped structural patterns,
+among them rule-of-three lists and boldface overuse, encoded as count checkers on the rule layer.
 
 ### Language convention
 
-Singapore English, which follows British spelling and grammar with local vocabulary on top.
+Singapore English: British spelling and grammar with local vocabulary on top.
 
 | Layer | Setting |
 |---|---|
-| hunspell | `en_GB` in its `-ise` form rather than Oxford `-ize`, since Singapore usage is "organise" and "realise". A supplementary word list covers local terms, and the user dictionary sits on top of both |
-| LanguageTool | The `en-GB` variant, which changes grammar rules and not only spelling: plural agreement on collective nouns, and punctuation outside quotation marks unless it belongs to the quote |
-| Style engine | Spelling convention is a Style Card rule, so a draft mixing conventions flags as drift instead of passing silently |
+| Spelling | [spellbook](https://github.com/helix-editor/spellbook) reading the LibreOffice `en_GB` dictionary, which is the `-ise` form and not Oxford `-ize`: Singapore usage is "organise" and "realise". A Singapore word list is merged into the same dictionary |
+| Grammar | LanguageTool's `en-GB` variant, which carries its own grammar and style rule files on top of the shared English rules |
+| Style Card | The questionnaire confirms the convention once, and a spelling-variant checker flags a draft that mixes conventions (planned, Phase 3) |
 
-Neither project ships an `en_SG` dictionary, so `en_GB` is the base and the Singapore supplement is a plain word list that grows without touching the engine.
+Neither the LibreOffice dictionary set nor LanguageTool has a Singapore variant. `en_GB` is the
+base, and the Singapore supplement is a plain word list that grows without a change to the engine.
 
-## User Onboarding
+## Capture and overlay
 
-Three phases. Each phase produces data used by a different part of the running product.
+One trait, `Capture`, covers text delivery, span positioning, and replacement. The rest of the
+engine does not know which backend served a request.
 
-| Phase | What the user does | Format | Produces |
-|---|---|---|---|
-| **1. Preference quiz** | Answers ~30 short rounds about how they want to write | ~25 A/B choices between two sentences differing on one trait, plus ~5 sliders for traits that are continuous rather than binary | Target profile v1 |
-| **2. Paste past writing** | Pastes 2,000 to 5,000 words of their own writing they are happy with | One plain-text box | Observed profile v1, exemplar corpus |
-| **3. Edit loop** | Edits a generated paragraph until it sounds right, up to 4 rounds | Free-text editing of a short sample paragraph written in the target voice | Style Card, edit pairs |
+A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
+code units, never as an absolute offset. UI Automation's character counting drifts across Word's
+auto-numbered list markers, and a short move from a freshly found anchor never crosses one. The
+same span positions an underline and replaces text. An anchor resolves to its first occurrence, so
+two identical sentences in one document resolve to the same place today; an occurrence index is
+planned for Phase 1.
 
-### Phase 1: preference quiz
+### Native capture
 
-Two question formats, chosen per trait.
+One dedicated thread owns the UI Automation client. It follows focus across the desktop and reads
+the focused element's text from its value where it has one, and from its `TextPattern` document
+range otherwise. It ignores the tool's own windows by walking the process parent chain, since
+WebView2 renders the frontend in a child process with its own process id.
 
-| Format | Used for | Example |
-|---|---|---|
-| A/B choice | Traits with a clear either/or reading: contractions, hedging, passive voice, list versus prose, jargon tolerance | "Two sentences, same meaning. Which reads better?" |
-| Slider | Traits that are a dial rather than a switch: average sentence length, formality, technical density, directness | "How long should a typical sentence run?" with live example text updating as the slider moves |
-
-Answers set the **target profile** directly. Nothing here is measured from the user's writing, which is the point: the quiz runs before the paste so the stated aspiration is fixed before the user re-reads their own habits.
-
-### Phase 2: paste past writing
-
-One text box. The paste does two separate jobs.
-
-| Output | Built by | Later used for |
-|---|---|---|
-| Observed profile | Measuring the same 50 to 200 features that Tier 0 computes live | Coaching messages that report the gap between habit and target |
-| Exemplar corpus | Splitting the text into passages of roughly 60 words | Retrieval that grounds every rewrite in real sentences the user wrote, and raw material for adapter training pairs |
-
-### Phase 3: edit loop
-
-The system writes a short paragraph in the target voice, using the quiz answers, the measured habits, and retrieved passages from the corpus. The user edits it. The system rewrites from the edits and tries again. The loop ends when edits stop shrinking, or after four rounds.
-
-The final agreed paragraph is turned into the **Style Card**, and every round of edits is kept as a training pair.
-
-```mermaid
-flowchart TD
-    Start(["First run"]) --> Quiz
-
-    Quiz[/"Phase 1. Preference quiz<br/>~25 A/B sentence choices<br/>+ ~5 trait sliders"/]
-    Quiz --> Prior["Target profile v1<br/>declared, never measured"]
-
-    Prior --> Paste[/"Phase 2. Paste 2,000-5,000 words<br/>of past writing"/]
-
-    Paste --> Measure["Observed profile v1<br/>measured from the paste"]
-    Paste --> Seg["Split into ~60-word passages"]
-    Seg --> Corpus[("Exemplar corpus")]
-
-    Prior --> Gen
-    Measure --> Gen
-    Corpus --> Gen
-    Gen[["Phase 3. Generate a sample paragraph<br/>in the target voice"]]
-    Gen --> Edit[/"User edits it until it sounds right"/]
-
-    Edit --> Conv{"Edits shrinking<br/>each round?"}
-    Conv -->|"no, under 4 rounds"| Gen
-    Conv -->|"yes, or 4 rounds"| Card[["Write the Style Card"]]
-    Card --> Done(["Ready to write"])
-
-    Edit -->|"draft vs user's wording"| Pairs[("Edit pairs")]
-    Corpus --> Pairs
-```
-
-### The Style Card
-
-The Style Card is the target voice written as ordinary rules a person can read and disagree with, for example "sentences average around 14 words", "no hedging verbs", "contractions are fine". It is the one artifact the user edits directly.
-
-| Role | Where it is used |
+| Surface | Finding |
 |---|---|
-| Conditions rewrites | Sent with every Tier 1 prompt, alongside retrieved examples |
-| Backs the hard critic | Rules stated as counts are checked deterministically before a rewrite is shown |
-| Defines what "generic" means | Drives the de-styling step that manufactures adapter training pairs |
-| Explains a flag | A style underline cites the Card line it missed |
+| Microsoft Word, desktop | Read through `TextPattern` like any rich-text control, with no Word-specific code. An Office.js backend was scoped and dropped once this was verified |
+| Word for the web | Read through native capture. Chromium bridges the page's accessibility tree to UI Automation, and Word for the web backs that tree with the real document |
+| Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
+| Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
+| VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. A plausibility check on the caret rectangle rejects it |
+| Gmail compose, GitHub comment box | Covered today only by the web backend. Verification through native capture: planned, Phase 2 |
 
-Lines the user pins survive regeneration when the Card is rewritten from newer data.
+Planned for Phase 2: surface identity on the trait, the process name with an optional page URL,
+mapped to a register through a map in settings.
 
-### What each artifact is used for
+### Web capture
 
-| Artifact | Written by | Read by |
-|---|---|---|
-| Target profile | Quiz answers, Style Card edits, rejected suggestions | Tier 0 drift flagging, rewrite prompts |
-| Observed profile | Accepted suggestions, sentences the user keeps | Coaching messages only, never flagging |
-| Style Card | Phase 3, then batch regeneration | Rewrite prompt, hard critic, flag explanations |
-| Exemplar corpus | Phase 2 paste, then ongoing writing | Retrieval for rewrites, source text for training pairs |
-| Training pairs | De-styling the corpus, user edits, accepted rewrites | Voice adapter training |
+The web backend is a WebSocket server that a Manifest V3 browser extension connects to. The
+server accepts one extension origin. The extension's content script reads and replaces the text
+of the focused editable element on `github.com` and `mail.google.com`. The backend answers every
+positioning call as unsupported, since a content script cannot convert a DOM position to screen
+coordinates. The app does not start it today.
 
-## Architecture
+Not yet decided: whether the web backend stays. Phase 2 verifies Gmail compose and a GitHub
+comment box through native capture. On a pass, the web backend and the extension are deleted.
 
-Three invariants shape everything below.
+### Insertion cascade
 
-| Invariant | Reason |
-|---|---|
-| Live checking is arithmetic and rules only | A network round trip costs 500 ms or more |
-| Adapters carry voice, facts come from the draft and retrieved context | Adapters encode style faithfully and invent details confidently |
-| Only deliberate acts move the target profile | Measured behavior updates the observed profile, so habit never drags the target back |
+A replacement is written through a cascade. A stage counts only when its effect is confirmed by
+reading the element's text back, never on the return status of the call that made it.
+
+1. The span is found through its anchor and selected.
+2. The replacement is typed over the selection as synthetic keystrokes.
+3. The element's text is read back. The attempt counts only if the text changed and now holds the
+   replacement.
+4. On a failed read-back, any fragment the attempt left is found by comparing the text before and
+   after, and removed.
+5. The replacement is pasted from the clipboard as the fallback, and read back the same way.
+
+Setting an element's whole value is not a stage, since it cannot target a span.
+
+The cascade is implemented behind `Capture::replace` and exercised by its harness. Nothing in the
+overlay calls it yet: the working card's Accept is planned for Phase 4. Synthetic keystrokes reach
+whichever window holds keyboard focus, so a check that the target is the foreground window, with a
+refocus when it is not, is planned for Phase 2.
+
+Three harnesses under `src-tauri/examples/` measure native capture, the insertion cascade, and the
+web bridge against real applications. They are run by hand and are not tests.
+
+### Overlay
+
+A transparent, always-on-top window laid over the focused document's on-screen area. It passes
+clicks through to the document except over an underline. Each flag is underlined in place, with a
+line style per origin, and hovering an underline shows a card with the flag's message and
+suggestions.
+
+Three loops poll every 100 ms, for the document's rectangle, the flags' positions, and the
+pointer. Polling is the design here: scrolling and window movement raise no dependable event.
+
+The card has no actions today. Planned for Phase 2: a non-activating window, so that a click on
+the card never takes keyboard focus from the document. Planned for Phase 4: the working card.
+
+## The Style Card
+
+Planned, Phase 3.
+
+The Card is a list of clauses. A clause has an id that the app assigns and never reuses, a text
+that states one behaviour and not an adjective, a twin that is its negation, and a register scope.
+
+A model maintains the Card. A named questionnaire answer maps to a template clause by lookup, with
+no model in the path. Free-prose feedback and reactions to samples pass through the pre-sort and
+the router described under [Onboarding and feedback](#onboarding-and-feedback). A new version
+publishes without a confirmation step. In ordinary use the owner sees no clause id and no editor:
+an inspection view with an editor exists as an escape hatch, and it is not the writing surface.
+
+The store holds the canonical Card. Each published version is also rendered to Markdown,
+byte-stable per version, for inspection and as the exact text that prompts use. A hand-edited file
+was rejected: a mistyped id would detach checkers, candidates, and judgements from their clause
+without an error.
+
+Whether a clause has a checker is read from the ruleset. A clause with none is residual.
+Observations derived from the owner's picks never enter the Card.
+
+## Onboarding and feedback
+
+Planned, Phase 3.
 
 ```mermaid
 flowchart LR
-    App[/"Browser, Word,<br/>native apps"/]
-
-    subgraph Device["On the user's machine"]
-        direction TB
-        Cap["Capture layer"]
-        Fast["Fast path<br/>Tier 0 and 0.5"]
-        Slow["Rewrite orchestrator<br/>Tier 1"]
-        UI["Overlay, tray, settings,<br/>Style Card editor"]
-        LT[["LanguageTool<br/>Java subprocess"]]
-        Enc[["Formality classifier<br/>ONNX Runtime"]]
-        Ada[["Voice adapter, optional<br/>Qwen3 8B + QLoRA"]]
-        Store[("Local store<br/>profiles, corpus, Style Card")]
-    end
-
-    Cloud[["Rewrite and voice judge<br/>Claude Sonnet 5"]]
-
-    App --> Cap --> Fast --> UI
-    UI -->|"apply correction"| App
-    Fast <--> LT
-    Fast <--> Store
-    Fast <--> Enc
-    UI -->|"rewrite requested"| Slow
-    Slow <--> Store
-    Slow -->|"default"| Cloud
-    Slow -.->|"once trained"| Ada
+    Ans[/"Questionnaire answer"/] -->|"lookup, no model"| Draft["Draft"]
+    Fb[/"Feedback box,<br/>reaction to a sample"/] --> Sort{"Pre-sort<br/>local decision model"}
+    Sort -->|"menu feature, or<br/>new preference"| Router[["Router<br/>frontier model"]]
+    Sort -->|"not a preference"| Log["Logged, nothing changes"]
+    Router --> Lint["Lint"]
+    Lint --> Draft
+    Draft -->|"session closes"| Version[("Card version")]
+    Version --> Note[/"Change note in plain language,<br/>with undo"/]
 ```
 
-### While the user types
+### The questionnaire
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Cap as Capture
-    participant T0 as Tier 0
-    participant Reg as Formality classifier
-    participant LT as LanguageTool
-    participant UI as Overlay
+Onboarding is a questionnaire of named features. A question names what it sets, for example
+"hedging words: allow, limit, or forbid", so the answer records what the owner wants. A blind
+choice between two generated sentences would record taste under the influence of those two
+sentences. An illustration beside a question is static data, never generated at run time.
 
-    User->>Cap: Types a character
-    Cap->>T0: Sentence at the cursor
-    Note over T0: Under 50 ms, no model call
-    T0->>UI: First-pass flags
-
-    opt First edit in an unseen document
-        Cap->>Reg: Sample of surrounding text
-        Reg-->>T0: Formality, cached per document
-    end
-
-    Note over User,Cap: Pause of 500 ms
-    Cap->>LT: Changed sentences only
-    LT-->>Cap: Full grammar matches
-    Cap->>UI: Merge and drop duplicate spans
-
-    UI-->>User: Underlines
-    User->>UI: Accepts, rejects, or edits
-    UI->>T0: Record as learning signal
-```
-
-Style flags are suppressed on spans that already carry a hard grammar error. Losing LanguageTool degrades the pipeline to spelling plus style flags.
-
-### When a rewrite is requested
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant App as Writing Assistant
-    participant Store as Local store
-    participant Model as Claude Sonnet 5
-
-    alt Sentence already flagged
-        User->>App: Opens the card on an underline
-        Note over App: Wording is fetched on card open
-    else Passage not flagged
-        User->>App: Selects text, requests target voice
-    end
-
-    App->>App: Resolve form mode and formality
-    App->>Store: Retrieve 3 closest past sentences
-    Store-->>App: Examples of this person's phrasing
-
-    loop Up to 3 attempts
-        App->>Model: Style Card + examples + draft
-        Model-->>App: Candidate rewrite
-        App->>App: Hard check against Style Card rules<br/>deterministic, no model
-        App->>Model: Soft check, does it read as the target voice?
-        Model-->>App: Verdict with reason
-    end
-
-    App-->>User: Surviving candidate in the card
-    User->>App: Accepts, rejects, or edits
-    App->>Store: Save reaction and before/after pair
-```
-
-The critic is split because the halves need different machinery. Rules the Style Card states as counts are checked by counting, which is instant and produces an explanation the user can argue with. Judging whether a draft reads right needs a frontier-class model.
-
-### How the style model learns
-
-```mermaid
-flowchart TD
-    Sig[/"User accepts, rejects, edits,<br/>or keeps their own sentence"/] --> Split{"Deliberate choice<br/>or ordinary habit?"}
-
-    Split -->|"kept own text, accepted a suggestion"| Obs[("Observed profile<br/>rolling average, decays")]
-    Split -->|"rejected a suggestion, edited the Card,<br/>answered the quiz"| Tgt[("Target profile<br/>no decay")]
-
-    Tgt --> Flag["Flagging and rewrites score<br/>against TARGET only"]
-    Obs --> Gap["Distance between profiles<br/>drives coaching messages"]
-    Tgt --> Gap
-
-    Sig --> Q["Batch queue"]
-    Q --> Idle{"Idle and on<br/>mains power?"}
-    Idle -->|"no"| Q
-    Idle -->|"yes"| Batch["Prune corpus,<br/>re-rank retrieval"]
-    Batch --> CardGen[["Regenerate Style Card,<br/>pinned lines untouched"]]
-    CardGen --> Store[("Local store")]
-    Store --> Flag
-    Batch -.->|"enough pairs"| Train(["Adapter training"])
-```
-
-Passive behavior is evidence about where somebody currently writes. Only deliberate acts are evidence about where they want to write.
-
-## Personalization
-
-Two paths, live at the same time and directly comparable.
-
-| | Path A: prompt conditioning | Path B: voice adapter |
-|---|---|---|
-| Model | [Claude Sonnet 5](https://docs.claude.com/en/api/overview) | Qwen3 8B, quantized |
-| Mechanism | Style Card plus 3 retrieved examples in the prompt | [QLoRA](https://arxiv.org/abs/2305.14314), rank 8, query and value projections |
-| Available | Day one, from one writing sample | Once enough training pairs exist |
-| Trains | Not applicable | [Amazon SageMaker](https://aws.amazon.com/sagemaker/) training job |
-| Runs | Anthropic API | Locally, via [llama.cpp](https://github.com/ggml-org/llama.cpp) or [ONNX Runtime](https://onnxruntime.ai) |
-
-The base model is pinned to an open-weight instruct model small enough to run on a desktop and cheap enough to fine-tune, and is swappable as better candidates appear.
-
-### Training data
-
-The adapter learns one direction: generic prose in, target voice out. Training consumes **pairs**, and every pair is (input draft, target-voice output).
-
-| Source | How a pair is made | Volume |
-|---|---|---|
-| Exemplar corpus | Each passage is rewritten into flat generic prose three times, with the Style Card defining exactly which stylistic traits to strip. Each generic variant becomes an input, and the user's original passage is the target output | 3 pairs per passage. A 3,000-word paste yields roughly 50 passages, so roughly 150 pairs on day one |
-| Onboarding edits | The generated paragraph is the input, the user's edited version is the target | A handful, weighted highest because the user chose the wording |
-| Ongoing use | Every rewrite the user accepts or edits pairs with the draft it replaced | Grows continuously, so the pair count is not fixed at onboarding |
-
-Three de-styled variants per passage is deliberate: several different flat inputs mapping to one target voice is the signal a style adapter needs to generalize.
-
-### Training pipeline
-
-```mermaid
-flowchart TD
-    Pairs[("Training pairs<br/>onboarding + ongoing use")] --> Enough{"Pair threshold met?"}
-
-    Enough -->|"no"| More["Collect more signal:<br/>extra quiz rounds, another edit round,<br/>or another paste"]
-    More --> Pairs
-
-    Enough -->|"yes"| Idle{"Machine idle and<br/>on mains power?"}
-    Idle -->|"no"| Idle
-    Idle -->|"yes"| Pack["Package pairs as JSONL"]
-
-    subgraph Cloud["Amazon SageMaker"]
-        Pack --> Job[["QLoRA training job<br/>rank 8, query and value projections"]]
-        Job --> Art[("Adapter file, a few MB")]
-    end
-
-    Art --> Pull["Download to the machine"]
-    Pull --> Swap["Attach to local base model"]
-    Swap --> EvalCall[["Blind comparison on held-back drafts<br/>adapter vs Sonnet, same Style Card"]]
-    EvalCall --> Keep{"Adapter better?"}
-
-    Keep -->|"yes"| Local["Route rewrites locally"]
-    Keep -->|"no"| Cloudy["Stay on cloud path,<br/>retain adapter for next run"]
-```
-
-Falling short of the threshold prompts the user for more signal rather than silently waiting. Only the idle and power check is a wait, and it gates when the job runs, not whether there is enough data.
-
-Both paths staying live is what makes the comparison honest: same drafts, same Style Card, one variable.
-
-## Repository structure
-
-```
-writing-assistant/
-├── src-tauri/                    # Rust core
-│   ├── src/
-│   │   ├── capture/              # Capture trait, native UIA backend, insertion cascade
-│   │   ├── languagetool/         # Subprocess lifecycle, HTTP client
-│   │   ├── style/                # Features, profiles, form modes, telltales, flags
-│   │   ├── store/                # Corpus index, Style Card, config
-│   │   ├── rewrite/              # Orchestrator, Anthropic client, critic
-│   │   ├── analyzer.rs           # Merge, dedupe, rank
-│   │   └── learning.rs           # Signal logging, batch scheduler
-│   └── resources/
-│       ├── languagetool-server.jar
-│       └── ai-telltales/         # Vendored catalog, CC BY-SA, kept separate
-├── src/                          # React + TypeScript frontend
-│   └── components/               # Overlay, Style Card editor, onboarding, settings, tray
-├── extension/                    # Browser extension, web capture backend
-└── adapter/                      # Pair synthesis, QLoRA training job
-```
-
-The style and checking engine is a library crate with a clean public API, so it can later fold into a larger desktop assistant as one crate among several.
-
-## Components
-
-| Component | Responsibility |
+| Section | Content |
 |---|---|
-| Capture interface | One contract for text delivery, cursor reporting, and replacement. The engine never learns which backend served a request |
-| Web backend | Reads and writes in the DOM, covering browser-based editors with real DOM text content. Canvas-rendered editors defeat this read; see the native backend row and Capture interface's own module documentation for which of those are covered another way |
-| Native backend | Focus and text-change subscriptions, sentence expansion, cursor rectangle for overlay placement. Also the path for Microsoft Word's desktop document surface and, it turns out, Word for the web's, both exposing UI Automation's `TextPattern` like any other rich-text control. Google Docs' canvas-rendered surface needs its own screen reader support and braille support turned on, in Google Docs' own accessibility settings, before this backend can read it the same way; see the Capture interface's own module documentation for what was verified |
-| Insertion cascade | Writes corrections into native apps, degrading per application through value-set, synthetic input, then clipboard paste |
-| Analyzer pipeline | Debounce, incremental diffing, merge and dedupe by span, ranking, LRU cache |
-| Grammar engine | Tier 0.5 rule set, subprocess lifecycle, health checks, bounded restart |
-| Style engine | Feature extraction, portability weighting, drift flags, AI-telltale matching, form-mode detection |
-| Register inference | Document context to formality, audience, and purpose. One cached call per document |
-| Store | Profiles, exemplar corpus, Style Card, training pairs, adapters, config |
-| Rewrite orchestrator | Router, retriever, writer, two-stage critic, onboarding loop |
-| Adapter pipeline | Pair collection, synthetic pair generation, QLoRA training, versioning, hot-swap |
-| Learning scheduler | Signal logging, rolling-average updates, corpus pruning, Style Card regeneration |
-| Shell and UI | Overlay, tray, settings, Style Card editor, onboarding flow, register indicator |
-| Distribution | Signed installers, verified auto-update, accessibility-permission flow, API key entry |
+| Registers | The registers the owner writes in |
+| Spelling convention | One confirmation, since UK forms are the default |
+| LanguageTool style rules | The endorsable rules with their descriptions. An endorsed rule becomes a clause whose checker is the rule id |
+| Feature menu | Named features, with a continuous trait answered as a concrete band such as a maximum sentence length in words |
+| Free clauses | Preferences the menu lacks, in the owner's words |
 
-## Tech Stack
+The feature menu is a static artefact in the repository, versioned with the tool like the telltale
+catalogue. Each feature carries its question, its answer type, and a template clause, twin, and
+checker for each answer value.
+
+Card v1 is published by lookup from the answers. No model writes it and no editor step follows.
+The owner sees a plain-language summary of the voice. The questionnaire can be re-entered at any
+time: answering an item again proposes a fresh template into the draft. The questionnaire and the
+template path need no network.
+
+### Feedback
+
+After onboarding, the standing input is a feedback box. A comment, or a reaction to a sample, is a
+statement. A choice between candidates is never a reaction.
+
+Each comment goes first to the pre-sort, a local decision model served through llama-server. It
+sorts the comment into one of three buckets: it maps to a feature on the menu, it is a new
+preference outside the menu, or it is not a preference. The third is logged and changes nothing.
+
+The router runs on the first two when clause text has to be written. It is one structured-output
+call to a frontier model with the current Card, the menu, and the preference history in context,
+instructed to edit an existing clause before adding one. A deterministic lint rejects a duplicate
+feature or a contradiction before publish.
+
+A router-written clause gets a model-drafted checker. A different model translates the checker's
+code back into a plain statement in a separate conversation, and the checker is tested on
+sentences built from the clause's twin, where the right answer is known. A template checker is
+admitted on its static test cases.
+
+Every routed preference is a frontier call, so free-prose feedback needs the network.
+
+### Change notes
+
+Feedback accumulates in a draft and publishes when the feedback session closes. Every published
+version records which clauses changed and carries a change note in the owner's terms, for example
+"from 'too many hedges': the hedging limit is now two per paragraph". The note is shown as a
+notification with an undo that republishes the previous version.
+
+## Rewriting
+
+Planned, Phase 4.
+
+The rewriter is the local base model with the Card in its prompt, at no marginal cost per rewrite.
+The working card calls it through one interface. A frontier-backed implementation fits behind the
+same interface without a change to the card, the logging, or the store. No such swap is planned:
+it would be decided on measured latency and the owner's own use.
+
+The prompt puts the Card first, rendered for the passage's register, so that the server's prefix
+cache holds it across rewrites within one Card version.
+
+Every candidate passes the screen before it is shown. The screen (planned, Phase 1) is the
+deterministic layer applied to a candidate, with a content-preservation check: the candidate's
+numbers, capitalised tokens, negation words, and length are compared with the passage's, and a
+candidate that fails is not shown. A model supplies wording; the facts are the passage's. The
+screen has one implementation, in the engine. The app calls it in process and the bench calls it
+through `wa screen`, so what the bench measures is what ships.
+
+The working card offers Rewrite on a flag's card and on a selection, which is reached from a
+marker at the selection's tail or a global hotkey. Accept finds the anchor again and runs the
+insertion cascade. When the text has changed underneath it, the card says so and inserts nothing.
+Edit opens the candidate for inline editing. Dismiss closes the card. Each action is recorded as
+an event. The card has two candidate slots, filled from two different generators and never from
+two decodes of one model.
+
+The provisional base model is [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B), from a
+published Q5_K_M file pinned by hash, with thinking switched off. Phase 6 chooses the base by
+comparing five candidates under a protocol written before any run.
+
+## Architecture
+
+Three invariants from [`docs/constitution.md`](docs/constitution.md) bind every decision below.
+
+1. Nothing that runs on the owner's typing calls a model or the network.
+2. Content preservation is checked deterministically on every candidate before it is shown, and a
+   model is never the source of a fact.
+3. The Style Card is the only target, and it changes only in response to a preference the owner
+   expresses.
+
+```mermaid
+flowchart LR
+    Apps[/"Browser, Word,<br/>native applications"/]
+
+    subgraph Machine["The owner's machine"]
+        direction TB
+        App["The app<br/>capture, analyzer, overlay, main window"]
+        LT[["LanguageTool<br/>supervised subprocess"]]
+        Store[("Store<br/>SQLite, planned")]
+        LS[["llama-server<br/>supervised subprocess, planned"]]
+        WA["wa<br/>command-line binary, planned"]
+        Py["adapter/<br/>bench and job scripts, planned"]
+    end
+
+    Api[["Anthropic API<br/>frontier roles, planned"]]
+    Sage[["Amazon SageMaker AI<br/>training jobs, planned"]]
+
+    Apps -->|"text and positions"| App
+    App -->|"replacement"| Apps
+    App <-->|"grammar"| LT
+    App <--> Store
+    App -->|"rewrite, pre-sort"| LS
+    WA <--> Store
+    WA --> LS
+    Py -->|"wa screen, wa ingest"| WA
+    Py -.->|"read-only"| Store
+    App -->|"feedback routing"| Api
+    WA -->|"synthesis"| Api
+    Py -->|"judge, comparisons"| Api
+    Py -->|"submit, poll, download"| Sage
+```
+
+### Crates
+
+The Rust code is designed as a Cargo workspace of three crates (planned, Phase 1). Today one crate
+under `src-tauri/` holds the engine modules, the overlay, and the Tauri entry point.
+
+| Crate | Holds |
+|---|---|
+| Engine library | Capture, the analyzer, the rule layer, the screen, the store, the clients for llama-server and the frontier API, and the flag types |
+| Tauri app | Commands, the overlay, and the windows |
+| `wa` | The command-line binary: screen, generate, embed, synth, export, ingest, and backup |
+
+The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app, for
+the app's scheduler, the Python project, and the owner by hand.
+
+### Processes
+
+| Process | Role | State |
+|---|---|---|
+| The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the analyzer, the overlay, and the main window | Runs today |
+| LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
+| llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
+| `wa` | The engine on the command line | Planned, Phase 1 |
+| `adapter/` | A Python `uv` project: the bench, and job submission, polling, download, and conversion | Planned, Phase 5 |
+
+LanguageTool's supervision is the pattern for both subprocesses. A free port is probed upward from
+8081, readiness is polled, and a warm-up check loads the `en-GB` rules before the first real
+check. An unexpected exit is answered with a restart, up to three in a session. After that,
+grammar checking stays off for the session and the other sources continue.
+
+The model runs in a subprocess for the same reason LanguageTool does: a graphics driver fault or
+an out-of-memory in the model runtime stays out of the app's process and never takes live checking
+down. llama-server starts on the first rewrite, stays warm for ten minutes, and stops on idle or
+under memory pressure.
+
+### The store
+
+Planned, Phase 1.
+
+One SQLite file in write-ahead mode under the data root. One store thread owns the connection, and
+the rest of the app sends it requests over a channel, the shape the UI Automation thread already
+has. Migrations are numbered SQL files embedded in the engine and applied at open.
+
+Artefact tables are insert-only: triggers raise on update or delete. Mutable state is append-only
+too. The serving adapter is the latest row of a promotions table, so a rollback is one inserted
+row. The engine is the only writer. The Python project opens the file read-only, and its results
+enter through `wa ingest`.
+
+Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
+questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version
+it happened under. A passage is assigned to a split by content hash at insert and is never
+reassigned.
+
+The data root is one folder under the local, non-roaming application-data directory, named by the
+bundle identifier. Settings stay in a JSON config file there. The config module exists today, and
+nothing in the app loads or saves it yet. Credentials are in neither file.
+
+### Model roles
+
+Planned, from the phase in the last column. Frontier models are Anthropic's, reached through the
+API. The diversity rule: where one role checks another, the two run on different models. Opus
+alone is allowed only in a role that nothing checks.
+
+| Role | Model | Mode | Phase |
+|---|---|---|---|
+| Pre-sort of feedback into three buckets | A local open decision model through llama-server, with JEV as the hosted fallback | Interactive | 3 |
+| Router: clause diffs with twins and rationales | Opus 5.5 | Interactive, structured output | 3 |
+| Checker drafting and test cases for free clauses | Opus 5.5 | Interactive | 3 |
+| Back-translation of checker code | Sonnet 5.5, in a separate conversation that sees the code only | Interactive | 3 |
+| Synthesis teacher, and teacher-written corruptions | The winner of the teacher comparison, and Opus 5.5 until it has run | Batch | 5 |
+| Judge | The calibrated decision model. Opus 5.5 only on a clause where the decision model fails calibration, reported as an exception | Batch | 5 |
+| Observation descriptions | Sonnet 5.5 | Batch | 7 |
+
+Two clients share one contract: a Rust client in the engine for the app and `wa`, and the official
+Python SDK for the bench. Each records a usage line per call and asserts that the served model is
+the requested one.
+
+### Training and serving
+
+Planned: the first job in Phase 6, the first adapter in Phase 8.
+
+An adapter is trained on the serverless model customisation path of
+[Amazon SageMaker AI](https://aws.amazon.com/sagemaker/): a LoRA job on a catalogue model, with no
+instance to manage. The method is plain LoRA, and the adapter weights come back unmerged. Full
+fine-tuning is rejected. It returns a whole model to quantise and serve on every rebuild, and two
+adapters under comparison would be two full models where LoRA gives two adapters on one base.
+
+Rust owns the data side. `wa export` writes the training files with a manifest and runs the leak
+checks, and `wa ingest` registers a returned adapter. Python under `adapter/` owns the service
+side: submission, polling, download, and conversion to GGUF with llama.cpp's script at a pinned
+release.
+
+A returned adapter is validated, converted, and proven before it is registered. Loaded beside the
+base in llama-server, it has to reproduce the base's tokens exactly at scale zero and differ at
+scale one.
+
+Serving stays local. llama-server attaches an adapter to the base and scales it per request, so
+the serving adapter and one under test share a single base.
+
+## Product and skills project
+
+The work has two parts, built in this order.
+
+The product is usable and measurable with no adapter. It is the rule layer, the Card, onboarding
+and feedback, local serving of a base model with the Card in its prompt, and the working card.
+
+The skills project exists to produce an adapter and to evaluate it. Fine-tuning is a goal of the
+owner's in its own right. The skill being built is the engineering pipeline around a managed
+training service: exporting data with a manifest and leak checks, running a job, validating and
+converting the returned adapter, attaching it to the local base, and measuring it against
+baselines.
+
+No evidence shows an adapter beating the Card in the prompt on conformance to a declared voice.
+The adapter is a hypothesis, and the first Gate tests it: adapter one against the base with the
+Card, which is the product's own rewriter. If the adapter loses, the product stands as it is.
+
+| Phase | Name | Part |
+|---|---|---|
+| 0 | Review | Product |
+| 1 | Engine | Product |
+| 2 | Capture and overlay | Product |
+| 3 | Target | Product |
+| 4 | Rewrite | Product |
+| 5 | Scoreboard | Skills project |
+| 6 | Model selection and B0 | Skills project |
+| 7 | Instrument | Skills project |
+| 8 | Adapter | Skills project |
+| 9 | Loop | Skills project |
+
+| Skills project part | What it is for | Phase |
+|---|---|---|
+| Bench | Frozen sets held out by split, protocols written before a run, and every score beside its baselines | 5 |
+| Synthesis | Candidates from the frontier teacher and from the local base, screened and filtered, as training rows and bench material | 5 |
+| Model selection and baselines | The base chosen on measurement, and the baselines recorded before any training counts | 6 |
+| Judgement instrument | The owner's blind picks between two candidates, with anchor and repeat items that measure the owner's own reliability | 7 |
+| Training job | A LoRA adapter from the serverless customisation path, validated and converted for local serving | 8 |
+| Loop | Triggers that notify, rebuilds the owner starts, and monitors that are never targets | 9 |
+
+Every rate on the bench is a count over its n with a Wilson interval. Every score sits beside four
+baselines: the unchanged input, the base without the Card, the base with the Card, and the teacher
+with the Card. A comparison's protocol is written before the comparison runs. The headline is gap
+closed, the share of the teacher-minus-base difference that an adapter recovers.
+
+An adapter is promoted when three conditions hold together: no regression on the bench within the
+measured noise floor, gap closed not lower than the serving adapter's by more than its interval,
+and the Gate picking in its favour. The Gate is the owner's blind forced choice between two
+candidates over fresh items, with its size set by a power calculation written before it runs.
+
+## Stack
 
 | Layer | Technologies |
 |---|---|
-| Core | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), [Rayon](https://github.com/rayon-rs/rayon), [`parking_lot`](https://github.com/Amanieu/parking_lot) `FairMutex` for deterministic real-time latency |
-| Capture | [`windows-rs`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`, [Extension MV3](https://developer.chrome.com/docs/extensions/mv3/intro/) |
-| Analysis | [`similar`](https://crates.io/crates/similar), [`ropey`](https://crates.io/crates/ropey), [`regex`](https://crates.io/crates/regex), [`unicode-segmentation`](https://crates.io/crates/unicode-segmentation), hunspell with `en_GB` plus a Singapore supplement, LanguageTool 6.x set to `en-GB` over localhost HTTP |
-| Style features | 50 to 200 deterministic features across function words, punctuation, orthography, sentence shape, and readability, plus the AI-telltale catalog |
-| Models | Claude Sonnet 5 for rewrites, soft critic, onboarding generation, and de-styling. Encoder classifier with a regression head for register. Quantized Qwen3 8B plus QLoRA for the local adapter |
-| Runtimes | Java 17+ via `jlink` for LanguageTool, ONNX Runtime, llama.cpp |
-| Data | SQLite via [`rusqlite`](https://github.com/rusqlite/rusqlite), flat vector index, Markdown Style Card, JSON config via [`directories`](https://crates.io/crates/directories) |
-| Desktop and UI | [Tauri 2.x](https://tauri.app) with a frameless transparent always-on-top overlay, [React](https://react.dev) 19, TypeScript, [Zustand](https://github.com/pmndrs/zustand), [Vite](https://vitejs.dev) |
-| Infrastructure | Anthropic API, Amazon SageMaker, [WiX](https://wixtoolset.org) MSI, [NSIS](https://nsis.sourceforge.io) for ARM64, EV code signing, [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) `embedBootstrapper`, Tauri updater |
-| Observability | [`log`](https://crates.io/crates/log) and `env_logger`, in-app log viewer, continuous Tier 0 latency tracking |
-
-The AI-telltale catalog is vendored from [signs-of-ai-writing](https://github.com/egc365/signs-of-ai-writing), which ships machine-readable JSON and YAML for 30+ patterns. It stays a separate data file, kept out of source.
+| Engine | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), `thiserror`, `log` with `env_logger` |
+| Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
+| Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
+| Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
+| Settings | A JSON config file through `serde_json`, located by `directories` |
+| CI | GitHub Actions: `rustfmt`, `clippy`, and `cargo test` on Windows; ESLint, Prettier, and `tsc` on Linux |
+| Planned | SQLite (Phase 1). llama-server and the Anthropic API (Phase 3). Python with `uv`, `ruff`, and `pytest` (Phase 5). Amazon SageMaker AI (Phase 6) |
 
 ## Requirements
 
-| | Minimum |
+| Item | Requirement |
 |---|---|
-| OS | Windows 10 22H2 or Windows 11, x64 |
-| RAM | 8 GB, or 32 GB to run a voice adapter locally |
-| Disk | ~500 MB, or ~4 GB with a local model and adapter |
-| Runtime | Bundled `jlink` Java runtime |
-| Network | Required for rewrites. Live checking works offline |
-| Credentials | Anthropic API key on first run. AWS with SageMaker access only to train a voice adapter |
-| Optional | A Chromium-based browser for the web surface |
+| OS | Windows 11, x64: the configuration the tool is built and verified on |
+| RAM | 16 GB. The local model shares system memory with the integrated GPU, beside LanguageTool's Java process and WebView2. Not yet measured: resident memory with the model loaded |
+| Disk | About 4 GB with the local model. LanguageTool and its Java runtime measure 455 MB as the setup script builds them. A published Q5_K_M file of the provisional base is 3.1 to 3.4 GB, depending on the publisher. Not yet counted: llama-server, the decision model, and the embedding model |
+| Network | None for checking or rewriting. Used only for feedback routing (Phase 3), synthesis with the bench's frontier calls (Phase 5), and training jobs (Phase 6) |
+| Credentials | An Anthropic API key, for the frontier roles. An AWS access pair, for the customisation jobs and their bucket. Both live in the Windows credential manager and are entered once in settings (planned, Phase 3). No code reads a credential today |
+| Build tools | Rust stable, Node 22, and a JDK on `PATH` for `jlink` |
 
-Offline, the app still captures text and runs spelling, grammar, drift, and AI-tell flagging locally. Rewriting and the soft critic need the cloud until an adapter is trained, after which they run locally too.
+### What leaves the machine
+
+| Work | What is sent | To |
+|---|---|---|
+| Checking and rewriting | Nothing | |
+| Feedback routing | The comment, the Card, the feature menu, and the preference history | Anthropic API |
+| Synthesis and the bench | Passages, synthetic and captured, with the Card | Anthropic API |
+| Training | The training rows, which include rows built from the owner's captured text and edits | The owner's AWS account |
 
 ### First-run setup
 
+A local build is the deployment. No installer exists, and distribution has no phase.
+
 ```powershell
 src-tauri\scripts\build-languagetool-jre.ps1
+npm ci
+npm run tauri dev
 ```
 
-Downloads LanguageTool and builds its trimmed Java runtime into `src-tauri/resources/`. Needs a
-JDK on `PATH`. Until it runs, only spelling and AI-tell flags appear.
+The script downloads LanguageTool 6.6, checks the archive against a pinned SHA-256, and builds a
+trimmed Java runtime with `jlink`, both into `src-tauri/resources/`. The runtime's module list was
+derived against Java release 21, and the runtime the script built on the development machine is
+21.0.12. Until the script has run, only spelling and telltale flags appear.
 
-## License
+## Documentation
 
-This project is [MIT licensed](LICENSE).
+| File | Holds |
+|---|---|
+| [`docs/constitution.md`](docs/constitution.md) | The principles and invariants that outrank convenience |
+| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | Folder structure, tooling, CI, testing, git, and secrets |
+| [`docs/CODE_STYLE.md`](docs/CODE_STYLE.md) | Language-level rules for Rust, TypeScript, and Python |
+| [`docs/style-guide.md`](docs/style-guide.md) | Prose conventions for everything committed |
+| [`CLAUDE.md`](CLAUDE.md) | The index of top-level folders, and the operating instructions for Claude Code |
 
-Bundled and vendored components keep their own licenses. The two that carry live obligations are isolated by design: LanguageTool runs as a separate subprocess rather than a linked library, and the telltale catalog ships as an attributed data file rather than merged into source.
+## Licence
 
-| Component | License | Notes |
+The project's own source is MIT-licensed: see [`LICENSE`](LICENSE).
+
+Third-party components keep their own licences. LanguageTool and the `en_GB` dictionary are LGPL,
+and each is kept apart from the project's source: LanguageTool runs as a subprocess and is never
+linked, and the dictionary is vendored unmodified as data beside its notice.
+
+| Component | Licence | Notes |
 |---|---|---|
-| [LanguageTool](https://github.com/languagetool-org/languagetool) 6.x | LGPL-2.1-or-later | Bundled JAR, invoked as a subprocess over localhost |
-| [signs-of-ai-writing](https://github.com/egc365/signs-of-ai-writing) catalog | CC BY-SA, tooling MIT | Pattern observations derive from Wikipedia. Attributed, and modifications stay under the same license |
-| [hunspell](https://github.com/hunspell/hunspell) | MPL-1.1 / GPL-2.0 / LGPL-2.1 | Engine only |
-| `en_GB` dictionary | Varies by source | Licensed separately from the engine. The LibreOffice British dictionary is LGPL-3.0, while SCOWL-derived builds are permissive. Confirm at selection time |
-| OpenJDK runtime via `jlink` | GPL-2.0 with Classpath Exception | The exception is what permits bundling |
-| [Qwen3 8B](https://huggingface.co/Qwen) | Apache-2.0 | Fine-tuning and shipping a per-user adapter is permitted |
-| Tauri, Rust crates | MIT / Apache-2.0 | Notice only |
-| [WiX Toolset](https://wixtoolset.org) v3 | MS-RL | Build-time only |
-| [NSIS](https://nsis.sourceforge.io) | zlib/libpng | Build-time only |
+| [spellbook](https://github.com/helix-editor/spellbook) | MPL-2.0 | A Rust crate, used unmodified |
+| LibreOffice `en_GB` dictionary | LGPL, per the file's own header. Version unstated | Vendored unmodified. Provenance in `src-tauri/resources/dictionaries/NOTICE.md` |
+| [LanguageTool](https://github.com/languagetool-org/languagetool) 6.6 | LGPL-2.1-or-later | Fetched by the setup script and never committed. Runs as a subprocess |
+| OpenJDK runtime, built with `jlink` | GPL-2.0 with the Classpath Exception | Built by the setup script and never committed |
+| Telltale catalogue | Hand-encoded for this project from a Wikipedia page that is CC BY-SA | Read through an MIT-licensed intermediary. Provenance in `src-tauri/resources/ai-telltales/NOTICE.md` |
+| llama.cpp | MIT | Planned, Phase 3 |
+| Qwen3.5-4B, the provisional base model | Apache-2.0 | Planned, Phase 4 |
+| Embedding model | Not yet decided | Planned, Phase 7 |
+| Tauri and the Rust crates | MIT or Apache-2.0 for most. MPL-2.0, Unicode-3.0, BSD-3-Clause, and Zlib for the rest | Read from `cargo metadata` for the Windows target. The frontend packages that ship, React and the Tauri API, are MIT and MIT or Apache-2.0 |
 
-Full license texts ship as `THIRD-PARTY-NOTICES.md` in release builds.
+Not yet decided: the local decision model. Its licence, and the embedding model's, are recorded
+here when each model is chosen.
+
+No notices file is assembled, since no build is distributed. The two committed notices sit beside
+the files they cover.
