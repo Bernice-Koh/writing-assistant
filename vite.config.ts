@@ -13,8 +13,9 @@ export default defineConfig({
     port: DEV_PORT,
     strictPort: true,
     watch: {
-      // The Rust crate has its own watcher inside `cargo tauri dev`.
-      ignored: ["**/src-tauri/**"],
+      // The Rust workspace has its own watcher inside `cargo tauri dev`, and the build output
+      // in `target/` holds executables that Windows locks while they run.
+      ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**"],
     },
   },
 });

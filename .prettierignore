@@ -2,7 +2,7 @@ node_modules/
 dist/
 dist-ssr/
 extension/dist/
-src-tauri/target/
+target/
 package-lock.json
 
 # Prose formatting is docs/style-guide.md's call, not Prettier's.
