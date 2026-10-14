@@ -69,7 +69,7 @@ struct Inner {
 impl Analyzer {
     /// Starts polling `capture` in the background. `languagetool` is `None` when the subprocess
     /// could not be started at all; a `Some` that later degrades keeps answering `check` calls,
-    /// just with `None` results, which [`Self::check_sentence`] already treats as no grammar
+    /// just with `None` results, which [`check_sentence`] already treats as no grammar
     /// flags this time rather than a failure.
     pub fn start(
         capture: Arc<dyn Capture>,
