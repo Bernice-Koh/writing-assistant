@@ -19,9 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, ShowWindow, PBT_APMRESUMEAUTOMATIC, SW_HIDE, SW_SHOW, WM_POWERBROADCAST,
 };
 
-use crate::analyzer::Analyzer;
-use crate::capture::{Capture, CursorRect};
-use crate::flag::Flag;
+use wa_engine::analyzer::Analyzer;
+use wa_engine::capture::{Capture, CursorRect};
+use wa_engine::flag::Flag;
 
 // Arbitrary and deliberately not (0, 0), so it's visually distinguishable from a stray
 // full-screen window during manual verification. Only ever on screen for the moment between
@@ -434,7 +434,7 @@ fn contains(rect: &CursorRect, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flag::{FlagOrigin, Span};
+    use wa_engine::flag::{FlagOrigin, Span};
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> CursorRect {
         CursorRect {

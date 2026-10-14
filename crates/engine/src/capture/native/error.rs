@@ -46,11 +46,12 @@ pub enum NativeCaptureError {
 /// with no TextPattern at all. `SelectionNotCaret` joins them for that same reason; the two
 /// stay separate variants only so a log line can say which of the two happened.
 /// `ImplausibleCaretShape` joins them too: an element whose reported rectangle does not look
-/// like a caret cannot answer a cursor-rect request right now either, and `track_document_view`'s
-/// existing handling of an `Err` result, holding the overlay at its last position rather than
-/// moving it, is exactly the behaviour `#28` needs for a fabricated rectangle. `NoForegroundWindow`
-/// joins the same group for `document_view_rect`'s own fallback: no window to report a rectangle
-/// for is the same practical "cannot answer right now" outcome as the others.
+/// like a caret cannot answer a cursor-rect request right now either, and the overlay's existing
+/// handling of an `Err` result from its document-view poll, holding the overlay at its last
+/// position rather than moving it, is exactly the behaviour `#28` needs for a fabricated
+/// rectangle. `NoForegroundWindow` joins the same group for `document_view_rect`'s own fallback:
+/// no window to report a rectangle for is the same practical "cannot answer right now" outcome
+/// as the others.
 impl From<NativeCaptureError> for crate::capture::CaptureError {
     fn from(error: NativeCaptureError) -> Self {
         use crate::capture::CaptureError;

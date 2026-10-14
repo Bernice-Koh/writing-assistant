@@ -3,8 +3,9 @@
 //! Also exercises the `Capture` trait added in #20: `current_text`/`cursor_rect` are queried
 //! once at the start and once before stopping, against whatever has focus at each point.
 //!
-//! Run with `RUST_LOG=debug` to see every attempt, including ones that failed (a control
-//! without TextPattern support, for instance) rather than only successes. Switch focus between
+//! Run from the repository root with `cargo run -p wa-engine --example native_capture_spike`.
+//! `RUST_LOG=debug` shows every attempt, including ones that failed (a control without
+//! TextPattern support, for instance) rather than only successes. Switch focus between
 //! a plain edit control, a Chromium-hosted text field, and a rich-text control while this runs,
 //! typing in each, and watch the log output.
 
@@ -12,8 +13,8 @@ use std::io::IsTerminal;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use writing_assistant::capture::native::NativeCapture;
-use writing_assistant::capture::Capture;
+use wa_engine::capture::native::NativeCapture;
+use wa_engine::capture::Capture;
 
 /// Generous enough to alt-tab through several target apps and type in each; also the entire
 /// runtime when there's no attached terminal to press Enter on (see `IsTerminal` check below).

@@ -7,18 +7,20 @@
 //!
 //! Takes exactly one argument: which app slot to test (its label and marker suffix), so each
 //! app can be run, and its focus explicitly confirmed, as a separate invocation rather than
-//! trusting a multi-app run's later phases to still be pointed at the right window.
+//! trusting a multi-app run's later phases to still be pointed at the right window. Run from the
+//! repository root with `cargo run -p wa-engine --example insertion_cascade_spike -- <slot>`,
+//! where the slot is one of the names in the usage line `main` prints.
 
 use std::thread::sleep;
 use std::time::Duration;
 
-use windows::Win32::UI::Accessibility::IUIAutomationElement;
-use writing_assistant::capture::native::client::Uia;
-use writing_assistant::capture::native::error::NativeCaptureError;
-use writing_assistant::capture::native::insert::{
+use wa_engine::capture::native::client::Uia;
+use wa_engine::capture::native::error::NativeCaptureError;
+use wa_engine::capture::native::insert::{
     changed_region, clipboard, current_selection, current_text, replace_last_typed, replace_span,
     replace_within, restore_after_failed_attempt, select, synthetic, value,
 };
+use windows::Win32::UI::Accessibility::IUIAutomationElement;
 
 const FOCUS_DELAY: Duration = Duration::from_secs(14);
 const SETTLE_DELAY: Duration = Duration::from_millis(500);
@@ -506,10 +508,7 @@ fn run_app_tests(label: &str, index: u32) {
 
 fn report_replace(
     label: &str,
-    replace_result: Result<
-        writing_assistant::capture::native::insert::InsertionMethod,
-        NativeCaptureError,
-    >,
+    replace_result: Result<wa_engine::capture::native::insert::InsertionMethod, NativeCaptureError>,
     element: &IUIAutomationElement,
     target: &str,
     replacement: &str,

@@ -41,9 +41,9 @@ pub mod web;
 pub use error::CaptureError;
 
 /// Screen-space rectangle for placing UI relative to the cursor. The capture module's one
-/// rectangle type: [`native::cursor`] re-exports it and keeps none of its own. `Serialize` so a
-/// [`crate::overlay::PositionedFlag`] carrying one can cross the Tauri IPC boundary to the
-/// overlay's own webview.
+/// rectangle type: [`native::cursor`] re-exports it and keeps none of its own. `Serialize` so the
+/// app's positioned flag, which carries one, can cross the Tauri IPC boundary to the overlay's own
+/// webview.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorRect {

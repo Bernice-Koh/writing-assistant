@@ -16,13 +16,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: .
       - name: cargo fmt --check
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        run: cargo fmt --all --check
       - name: cargo clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --workspace
 
   frontend:
     name: Frontend
