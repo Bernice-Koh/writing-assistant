@@ -165,5 +165,6 @@ local run of the same checks. Merge with a merge commit; delete the branch after
   as `config.json` directly under it, and the store, model files, adapters, and Card
   renderings as each is built. A test keeps the engine's identifier equal to the one in
   `tauri.conf.json`, and a test that reads or writes under the root is handed a temporary
-  directory, never the real one. Not yet built: nothing in the app loads or saves the config;
-  #80 loads it at startup.
+  directory, never the real one. The app loads the config once at startup and writes the
+  defaults when the file is missing; the controls that edit it arrive with the settings shell in
+  Phase 3.
