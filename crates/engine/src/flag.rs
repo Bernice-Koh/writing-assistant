@@ -28,8 +28,7 @@ pub struct Span {
 /// [`Self::severity`]: spelling and grammar are hard, style and AI tell are soft. The overlay
 /// renders each origin with its own underline.
 ///
-/// Suppression reads the severity from #106 on. Until then the analyzer's rule is the one
-/// `analyzer::dedupe` states: a grammar flag suppresses an AI-tell flag on an overlapping span.
+/// Suppression, in `analyzer::dedupe`, reads a flag's severity from [`Self::severity`] alone.
 ///
 /// A style flag's [`ClauseCitation`] is held in the `Style` variant rather than in an optional
 /// field on [`Flag`], so a style flag cannot be built without a citation and no other origin can

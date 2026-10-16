@@ -1,11 +1,11 @@
 //! The analyzer, between capture and the overlay. It polls the document's text, waits for the
 //! typing pause, splits the text into sentences, and checks the changed ones against spelling,
-//! the telltale catalogue, and LanguageTool. The suppression rule is applied to each sentence's
+//! the telltale catalogue, and LanguageTool. Suppression by severity is applied to each sentence's
 //! flags, the result is cached per sentence, and every recheck publishes the whole document's
 //! flags on the watch channel the overlay subscribes to. Checking keys to the pause because a
 //! flag on a half-typed word is noise.
 //!
-//! `sentences` covers the split and the diff, `dedupe` the suppression rule. Both are private:
+//! `sentences` covers the split and the diff, `dedupe` suppression. Both are private:
 //! [`Analyzer`] is the only public surface.
 
 mod dedupe;
