@@ -11,7 +11,7 @@ use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, LanguageToolSupervisor};
 use wa_engine::spelling::SpellChecker;
-use wa_engine::store::{self, config, Config, StoreError};
+use wa_engine::store::{self, config, Config, Store, StoreError};
 
 use overlay::{PositionedFlag, SharedFlags};
 
@@ -69,10 +69,10 @@ pub fn run() {
         .expect("the webview runtime is a hard requirement, with no degraded mode to fall back to");
 }
 
-/// Loads the settings and spelling, starts LanguageTool best-effort, starts the analyzer against
-/// `capture`, and starts the two background tasks that turn the analyzer's own flag stream into
-/// what the overlay renders and hit-tests. Split out of `run`'s `setup` closure because it
-/// `.await`s.
+/// Loads the settings, opens the store, loads spelling, starts LanguageTool best-effort, starts
+/// the analyzer against `capture`, and starts the two background tasks that turn the analyzer's
+/// own flag stream into what the overlay renders and hit-tests. Split out of `run`'s `setup`
+/// closure because it `.await`s.
 async fn start_checking_pipeline(
     app: tauri::AppHandle,
     capture: Arc<dyn Capture>,
@@ -82,6 +82,9 @@ async fn start_checking_pipeline(
     // Managed beside the capture backend for the readers that arrive with the telltale toggles
     // and the register.
     app.manage(load_settings());
+    // Managed as an `Option`, so a reader meets a store that failed to open as `None` rather than
+    // as unmanaged state. Nothing reads it yet.
+    app.manage(open_store().await);
 
     let resources_dir = app.path().resource_dir().expect(
         "the resource directory is a hard requirement: without it, not even the vendored \
@@ -152,6 +155,30 @@ fn load_settings() -> Config {
         Err(error) => {
             log::error!("{error}, so checking starts on the default settings");
             Config::default()
+        }
+    }
+}
+
+/// The store under the data root, or `None` when it cannot be opened, since a fault in the store
+/// degrades what the store records and never stops checking. Opened on a blocking thread because
+/// the open waits for the store thread to report, and can wait out the busy timeout while `wa`
+/// holds the write lock.
+async fn open_store() -> Option<Store> {
+    let opened = tauri::async_runtime::spawn_blocking(|| {
+        store::data_root().and_then(|root| Store::open(&root))
+    })
+    .await;
+    match opened {
+        Ok(Ok(store)) => Some(store),
+        Ok(Err(error)) => {
+            log::error!("{error}, so checking continues without the store");
+            None
+        }
+        Err(error) => {
+            log::error!(
+                "the store open did not finish ({error}), so checking continues without the store"
+            );
+            None
         }
     }
 }
