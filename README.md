@@ -448,8 +448,13 @@ Built ahead of the store, the data root is `%LOCALAPPDATA%\com.bernicekoh.writin
 folder under the local, non-roaming application-data directory, named by the bundle identifier,
 since a store with model files does not belong in a roaming profile. One engine function resolves
 it for the app and `wa` alike. Settings stay in a JSON config file there, `config.json` directly
-under the root. Nothing in the app loads or saves that file yet; loading it at startup is planned
-for Phase 1. Credentials are in neither file.
+under the root: whether checking runs, the register map with its default register, and a toggle
+per telltale pattern, every pattern on except `curly-quotes`. The app loads the file once at
+startup and writes the defaults when it is missing, so an edit made while the app runs takes
+effect at the next start. A file that does not parse is left as it is, and checking starts on the
+defaults. Nothing reads the toggles or the register map yet. The controls that edit the file
+arrive with the settings shell in Phase 3, and until then it is edited by hand. Credentials are in
+neither file.
 
 ### Model roles
 
@@ -550,7 +555,7 @@ candidates over fresh items, with its size set by a power calculation written be
 | Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
 | Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
-| Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories` |
+| Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories`. The app loads it once at startup; its controls arrive with the settings shell in Phase 3 |
 | CI | GitHub Actions: `rustfmt`, `clippy`, and `cargo test` on Windows; ESLint, Prettier, and `tsc` on Linux |
 | Planned | SQLite (Phase 1). llama-server and the Anthropic API (Phase 3). Python with `uv`, `ruff`, and `pytest` (Phase 5). Amazon SageMaker AI (Phase 6) |
 

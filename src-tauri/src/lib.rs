@@ -11,6 +11,7 @@ use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, LanguageToolSupervisor};
 use wa_engine::spelling::SpellChecker;
+use wa_engine::store::{self, config, Config, StoreError};
 
 use overlay::{PositionedFlag, SharedFlags};
 
@@ -68,14 +69,20 @@ pub fn run() {
         .expect("the webview runtime is a hard requirement, with no degraded mode to fall back to");
 }
 
-/// Loads spelling, starts LanguageTool best-effort, starts the analyzer against `capture`, and
-/// starts the two background tasks that turn the analyzer's own flag stream into what the
-/// overlay renders and hit-tests. Split out of `run`'s `setup` closure because it `.await`s.
+/// Loads the settings and spelling, starts LanguageTool best-effort, starts the analyzer against
+/// `capture`, and starts the two background tasks that turn the analyzer's own flag stream into
+/// what the overlay renders and hit-tests. Split out of `run`'s `setup` closure because it
+/// `.await`s.
 async fn start_checking_pipeline(
     app: tauri::AppHandle,
     capture: Arc<dyn Capture>,
     shared_flags: SharedFlags,
 ) {
+    // Read once, with no watcher: an edit made while the app runs takes effect at the next start.
+    // Managed beside the capture backend for the readers that arrive with the telltale toggles
+    // and the register.
+    app.manage(load_settings());
+
     let resources_dir = app.path().resource_dir().expect(
         "the resource directory is a hard requirement: without it, not even the vendored \
          dictionaries can be found",
@@ -119,4 +126,32 @@ async fn start_checking_pipeline(
         Arc::clone(&shared_flags),
     );
     overlay::track_hover(app, shared_flags);
+}
+
+/// The settings under the data root, or the defaults when they cannot be loaded, since a fault in
+/// the settings file degrades the settings and never stops checking. A file that does not parse
+/// is left as it is for the owner to correct.
+fn load_settings() -> Config {
+    let loaded = store::data_root().and_then(|root| {
+        let settings = config::load(&root)?;
+        log::info!("loaded the settings file under {}", root.display());
+        Ok(settings)
+    });
+    match loaded {
+        Ok(settings) => settings,
+        Err(StoreError::Parse { path, source }) => {
+            log::error!(
+                "the settings file {} does not parse at line {}, column {}, so checking starts on \
+                 the default settings and the file is left as it is: {source}",
+                path.display(),
+                source.line(),
+                source.column(),
+            );
+            Config::default()
+        }
+        Err(error) => {
+            log::error!("{error}, so checking starts on the default settings");
+            Config::default()
+        }
+    }
 }

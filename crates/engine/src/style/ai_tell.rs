@@ -85,6 +85,14 @@ fn phrase_regex_source(phrase: &str) -> String {
     )
 }
 
+/// The id of every pattern in the compiled catalogue, in catalogue order. The settings file keys
+/// its telltale toggles by these ids.
+pub fn pattern_ids() -> impl Iterator<Item = &'static str> {
+    catalog()
+        .iter()
+        .map(|compiled| compiled.pattern.id.as_str())
+}
+
 /// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match, so a phrase
 /// that occurs twice is flagged twice.
 ///
@@ -124,7 +132,7 @@ pub fn scan(text: &str) -> Vec<Flag> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::*;
 
@@ -323,6 +331,17 @@ mod tests {
         let flags = scan("You're absolutely right about the budget.");
         assert_eq!(flags.len(), 1, "{flags:#?}");
         assert_eq!(flags_of(&flags, "sycophantic-tone").len(), 1);
+    }
+
+    #[test]
+    fn every_pattern_id_is_unique() {
+        // A settings toggle names its pattern by id, so two patterns sharing one would share a
+        // toggle.
+        let mut seen = HashSet::new();
+        for id in pattern_ids() {
+            assert!(seen.insert(id), "pattern id {id:?} repeats");
+        }
+        assert_eq!(seen.len(), catalog().len());
     }
 
     #[test]
