@@ -79,6 +79,8 @@ mod tests {
             message: "test flag".to_string(),
             suggestions: Vec::new(),
             source_detail: "test".to_string(),
+            ruleset_version: None,
+            catalogue_hash: None,
         }
     }
 

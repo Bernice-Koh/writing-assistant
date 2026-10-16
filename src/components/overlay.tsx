@@ -8,15 +8,25 @@ interface Span {
   localLength: number;
 }
 
-type FlagOrigin = "spelling" | "grammar" | "aiTell";
+type FlagOrigin = "spelling" | "grammar" | "style" | "aiTell";
+
+interface ClauseCitation {
+  clauseId: number;
+  ruleId: string;
+  clauseText: string;
+}
 
 interface Flag {
   id: string;
   origin: FlagOrigin;
+  /** Present on a style flag only: the engine holds the citation in the style origin itself. */
+  citation?: ClauseCitation;
   span: Span;
   message: string;
   suggestions: string[];
   sourceDetail: string;
+  rulesetVersion: number | null;
+  catalogueHash: string | null;
 }
 
 interface CursorRect {
@@ -36,17 +46,19 @@ const UNDERLINE_THICKNESS = 2;
 const UNDERLINE_BORDER: Record<FlagOrigin, string> = {
   spelling: `${UNDERLINE_THICKNESS}px solid #e5484d`,
   grammar: `${UNDERLINE_THICKNESS}px solid #3b82f6`,
+  style: `${UNDERLINE_THICKNESS}px dashed #d97706`,
   aiTell: `${UNDERLINE_THICKNESS}px dotted #a855f7`,
 };
 
 /**
  * Renders one underline per {@link CursorRect} the backend already resolved for each flag, and a
- * card with the flag's message and suggestions while the native hover loop (`overlay::track_hover`
- * in `src-tauri/src/overlay.rs`) reports the cursor sitting over one. Coordinates arrive in CSS
- * pixels, already relative to this window's own top-left: the overlay window is itself positioned
- * at the document view's origin, and `overlay::relative_flags` divides UI Automation's physical
- * pixels down by the window's scale factor. No translation and no unit conversion happens here,
- * since React renders a bare number in a style as a CSS pixel, the space these are already in.
+ * card with the flag's message and suggestions, under the cited clause's text on a style flag,
+ * while the native hover loop (`overlay::track_hover` in `src-tauri/src/overlay.rs`) reports the
+ * cursor sitting over one. Coordinates arrive in CSS pixels, already relative to this window's own
+ * top-left: the overlay window is itself positioned at the document view's origin, and
+ * `overlay::relative_flags` divides UI Automation's physical pixels down by the window's scale
+ * factor. No translation and no unit conversion happens here, since React renders a bare number in
+ * a style as a CSS pixel, the space these are already in.
  */
 export function Overlay() {
   const [flags, setFlags] = useState<PositionedFlag[]>([]);
@@ -143,6 +155,11 @@ function FlagCard({ positioned }: { positioned: PositionedFlag }) {
         boxShadow: "0 2px 8px rgba(0, 0, 0, 0.35)",
       }}
     >
+      {positioned.flag.citation && (
+        <div style={{ marginBottom: 4, fontStyle: "italic", color: "rgba(255, 255, 255, 0.75)" }}>
+          {positioned.flag.citation.clauseText}
+        </div>
+      )}
       <div>{positioned.flag.message}</div>
       {positioned.flag.suggestions.length > 0 && (
         <ul style={{ margin: "4px 0 0", paddingLeft: 16 }}>

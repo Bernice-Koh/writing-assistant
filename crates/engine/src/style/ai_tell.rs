@@ -123,6 +123,8 @@ pub fn scan(text: &str) -> Vec<Flag> {
                     message: compiled.pattern.description.clone(),
                     suggestions: Vec::new(),
                     source_detail: compiled.pattern.source.clone(),
+                    ruleset_version: None,
+                    catalogue_hash: None,
                 });
             }
         }
