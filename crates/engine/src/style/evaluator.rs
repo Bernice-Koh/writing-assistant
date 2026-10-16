@@ -13,7 +13,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::checker::{Band, Checker, FormMode, Matcher};
-use super::phrase::PhraseMatcher;
+use super::phrase::{PhraseError, PhraseMatcher};
 use crate::flag::{ClauseId, Span};
 
 /// Why a checker did not compile. It names the checker by the clause it serves and holds only the
@@ -39,12 +39,26 @@ pub enum CompileError {
         #[source]
         source: regex::Error,
     },
+
+    /// The prefix flag lets a one-word entry match the longer words that start with it, and
+    /// means nothing on an entry of more words or none.
+    #[error(
+        "the phrase at index {entry_index} of the checker for clause {clause} carries the prefix \
+         flag and is not one word",
+        clause = clause_id.0
+    )]
+    PrefixNotOneWord {
+        clause_id: ClauseId,
+        entry_index: usize,
+    },
 }
 
 impl CompileError {
     pub fn clause_id(&self) -> ClauseId {
         match self {
-            Self::Regex { clause_id, .. } | Self::Phrase { clause_id, .. } => *clause_id,
+            Self::Regex { clause_id, .. }
+            | Self::Phrase { clause_id, .. }
+            | Self::PrefixNotOneWord { clause_id, .. } => *clause_id,
         }
     }
 }
@@ -70,8 +84,15 @@ impl Evaluator {
         let clause_id = checker.clause_id;
         let search = match &checker.matcher {
             Matcher::PhraseList { entries } => Some(TextSearch::Phrases(
-                PhraseMatcher::compile(entries)
-                    .map_err(|source| CompileError::Phrase { clause_id, source })?,
+                PhraseMatcher::compile(entries).map_err(|error| match error {
+                    PhraseError::Regex(source) => CompileError::Phrase { clause_id, source },
+                    PhraseError::PrefixNotOneWord { entry_index } => {
+                        CompileError::PrefixNotOneWord {
+                            clause_id,
+                            entry_index,
+                        }
+                    }
+                })?,
             )),
             Matcher::Regex { source } => {
                 Some(TextSearch::Regex(Regex::new(source).map_err(|error| {
@@ -318,6 +339,51 @@ mod tests {
         assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
         let failed: Vec<ClauseId> = failures.iter().map(CompileError::clause_id).collect();
         assert_eq!(failed, [ClauseId(2)]);
+    }
+
+    #[test]
+    fn a_prefix_flag_on_a_phrase_of_many_words_fails_naming_its_clause_and_the_rest_compile() {
+        let mut first = checker(phrases(&["boasts a"]));
+        first.clause_id = ClauseId(1);
+        let mut many_words = checker(Matcher::PhraseList {
+            entries: vec![
+                PhraseEntry {
+                    phrase: "intricate".to_owned(),
+                    prefix: true,
+                },
+                PhraseEntry {
+                    phrase: "rich tapestry".to_owned(),
+                    prefix: true,
+                },
+            ],
+        });
+        many_words.clause_id = ClauseId(5);
+        let mut last = checker(regex("\u{2014}"));
+        last.clause_id = ClauseId(3);
+
+        let (evaluators, failures) = compile_all([first, many_words, last]);
+        let compiled: Vec<ClauseId> = evaluators
+            .iter()
+            .map(|evaluator| evaluator.checker().clause_id)
+            .collect();
+        assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            matches!(
+                failures[0],
+                CompileError::PrefixNotOneWord {
+                    clause_id: ClauseId(5),
+                    entry_index: 1,
+                }
+            ),
+            "{}",
+            failures[0]
+        );
+        assert!(
+            failures[0].to_string().contains("clause 5"),
+            "{}",
+            failures[0]
+        );
     }
 
     #[test]
