@@ -13,7 +13,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::checker::{Band, Checker, FormMode, Matcher};
-use super::phrase::PhraseMatcher;
+use super::phrase::{PhraseError, PhraseMatcher};
 use crate::flag::{ClauseId, Span};
 
 /// Why a checker did not compile. It names the checker by the clause it serves and holds only the
@@ -39,12 +39,26 @@ pub enum CompileError {
         #[source]
         source: regex::Error,
     },
+
+    /// The prefix flag lets a one-word entry match the longer words that start with it, and
+    /// means nothing on an entry of more words or none.
+    #[error(
+        "the phrase at index {entry_index} of the checker for clause {clause} carries the prefix \
+         flag and is not one word",
+        clause = clause_id.0
+    )]
+    PrefixNotOneWord {
+        clause_id: ClauseId,
+        entry_index: usize,
+    },
 }
 
 impl CompileError {
     pub fn clause_id(&self) -> ClauseId {
         match self {
-            Self::Regex { clause_id, .. } | Self::Phrase { clause_id, .. } => *clause_id,
+            Self::Regex { clause_id, .. }
+            | Self::Phrase { clause_id, .. }
+            | Self::PrefixNotOneWord { clause_id, .. } => *clause_id,
         }
     }
 }
@@ -70,8 +84,15 @@ impl Evaluator {
         let clause_id = checker.clause_id;
         let search = match &checker.matcher {
             Matcher::PhraseList { entries } => Some(TextSearch::Phrases(
-                PhraseMatcher::compile(entries)
-                    .map_err(|source| CompileError::Phrase { clause_id, source })?,
+                PhraseMatcher::compile(entries).map_err(|error| match error {
+                    PhraseError::Regex(source) => CompileError::Phrase { clause_id, source },
+                    PhraseError::PrefixNotOneWord { entry_index } => {
+                        CompileError::PrefixNotOneWord {
+                            clause_id,
+                            entry_index,
+                        }
+                    }
+                })?,
             )),
             Matcher::Regex { source } => {
                 Some(TextSearch::Regex(Regex::new(source).map_err(|error| {
@@ -139,6 +160,8 @@ impl TextSearch {
     fn find(&self, text: &str) -> Vec<Range<usize>> {
         let ranges = match self {
             Self::Phrases(phrases) => phrases.find(text),
+            // The text as written, curly marks and all, so a regex can name a curly mark. Only
+            // the phrase matcher reads a curly mark as its straight form.
             Self::Regex(regex) => regex.find_iter(text).map(|found| found.range()).collect(),
         };
         ranges
@@ -252,6 +275,36 @@ mod tests {
     }
 
     #[test]
+    fn a_curly_apostrophe_ahead_of_a_phrase_does_not_shift_its_span() {
+        // The curly apostrophe is three bytes and its straight form one, so a byte range from the
+        // searched copy starts two bytes early in the text as written: inside the em dash, which
+        // is not a character boundary, and slicing there panics.
+        let text = "The town\u{2019}s jewel\u{2014}boasts a harbour.";
+        let evaluator = compiled(checker(phrases(&["boasts a"])));
+
+        let ranges = evaluator.search.as_ref().unwrap().find(text);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!(&text[ranges[0].clone()], "boasts a");
+
+        let span = span_in(text, ranges[0].clone());
+        assert_eq!(flagged_text(&span), "boasts a");
+        assert_eq!((span.local_start, span.local_length), (17, 8));
+        assert_eq!(in_prose(&evaluator, text), [span]);
+    }
+
+    #[test]
+    fn a_regex_runs_against_the_text_as_written_and_can_name_a_curly_mark() {
+        let curly_apostrophe = compiled(checker(regex(r"\x{2019}")));
+        let matches = in_prose(&curly_apostrophe, "It\u{2019}s here, and it's there.");
+        assert_eq!(
+            matches.iter().map(flagged_text).collect::<Vec<_>>(),
+            ["\u{2019}"]
+        );
+        assert_eq!(matches[0].local_start, 2);
+        assert!(in_prose(&curly_apostrophe, "It's here.").is_empty());
+    }
+
+    #[test]
     fn a_regex_that_does_not_compile_fails_naming_its_clause() {
         let mut unclosed = checker(regex("(an unclosed group"));
         unclosed.clause_id = ClauseId(4);
@@ -286,6 +339,51 @@ mod tests {
         assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
         let failed: Vec<ClauseId> = failures.iter().map(CompileError::clause_id).collect();
         assert_eq!(failed, [ClauseId(2)]);
+    }
+
+    #[test]
+    fn a_prefix_flag_on_a_phrase_of_many_words_fails_naming_its_clause_and_the_rest_compile() {
+        let mut first = checker(phrases(&["boasts a"]));
+        first.clause_id = ClauseId(1);
+        let mut many_words = checker(Matcher::PhraseList {
+            entries: vec![
+                PhraseEntry {
+                    phrase: "intricate".to_owned(),
+                    prefix: true,
+                },
+                PhraseEntry {
+                    phrase: "rich tapestry".to_owned(),
+                    prefix: true,
+                },
+            ],
+        });
+        many_words.clause_id = ClauseId(5);
+        let mut last = checker(regex("\u{2014}"));
+        last.clause_id = ClauseId(3);
+
+        let (evaluators, failures) = compile_all([first, many_words, last]);
+        let compiled: Vec<ClauseId> = evaluators
+            .iter()
+            .map(|evaluator| evaluator.checker().clause_id)
+            .collect();
+        assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            matches!(
+                failures[0],
+                CompileError::PrefixNotOneWord {
+                    clause_id: ClauseId(5),
+                    entry_index: 1,
+                }
+            ),
+            "{}",
+            failures[0]
+        );
+        assert!(
+            failures[0].to_string().contains("clause 5"),
+            "{}",
+            failures[0]
+        );
     }
 
     #[test]
@@ -391,6 +489,33 @@ mod tests {
                 "testament to",
                 "\u{2014}",
                 "testament to"
+            ]
+        );
+        assert_eq!(in_prose(&evaluator, text), first);
+        assert_eq!(in_prose(&compiled(listed()), text), first);
+    }
+
+    #[test]
+    fn the_same_checker_over_text_with_curly_marks_gives_identical_matches_in_identical_order() {
+        let text = "\u{201C}You\u{2019}re absolutely right,\u{201D} he said. You\u{2019}re absolutely right.";
+        let listed = || {
+            checker(phrases(&[
+                "absolutely right",
+                "you're absolutely right",
+                "\"",
+            ]))
+        };
+        let evaluator = compiled(listed());
+        let first = in_prose(&evaluator, text);
+        assert_eq!(
+            first.iter().map(flagged_text).collect::<Vec<_>>(),
+            [
+                "\u{201C}",
+                "You\u{2019}re absolutely right",
+                "absolutely right",
+                "\u{201D}",
+                "You\u{2019}re absolutely right",
+                "absolutely right",
             ]
         );
         assert_eq!(in_prose(&evaluator, text), first);
