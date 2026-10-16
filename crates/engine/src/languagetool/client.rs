@@ -129,6 +129,8 @@ fn matches_to_flags(matches: Vec<Match>) -> Vec<Flag> {
                 .map(|replacement| replacement.value)
                 .collect(),
             source_detail: found.rule.id,
+            ruleset_version: None,
+            catalogue_hash: None,
         })
         .collect()
 }

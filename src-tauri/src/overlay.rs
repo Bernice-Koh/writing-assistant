@@ -493,6 +493,8 @@ mod tests {
             message: "test".to_owned(),
             suggestions: Vec::new(),
             source_detail: "test".to_owned(),
+            ruleset_version: None,
+            catalogue_hash: None,
         }
     }
 

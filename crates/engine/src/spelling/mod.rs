@@ -103,6 +103,8 @@ impl SpellChecker {
             message: format!("\"{word}\" is not in the dictionary"),
             suggestions,
             source_detail: "en_GB plus the Singapore supplement".to_string(),
+            ruleset_version: None,
+            catalogue_hash: None,
         }
     }
 }
