@@ -87,10 +87,26 @@ telltale flags continue.
 
 ### Severity and suppression
 
-Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft. A
-hard flag suppresses a soft flag on an overlapping span, and a style flag takes precedence over a
-telltale on the same span (planned, Phase 1). The rule implemented today is one case of that
-model: a grammar flag suppresses a telltale flag.
+Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft.
+Suppression runs on each sentence's flags once every source has checked it, in four steps, in
+this order:
+
+1. Each flag's span is located within its sentence. A flag anchored on other text is kept and
+   takes no part in the later steps, since suppression fires only on a confirmed overlap.
+2. A hard flag suppresses every soft flag whose span shares at least one code unit with its own,
+   whatever the two origins. Two hard flags both stand, and two spans that meet end to start
+   share no code unit.
+3. The telltales left standing collapse. Each connected group of overlapping telltales, whether
+   identical, nested as `is a testament to` and `testament to` are, or partly overlapping,
+   becomes one flag. Its span runs from the earliest start in the group to the latest end, it
+   carries the message of the widest match, and its detail lists every pattern id in the group.
+4. A telltale on exactly a style flag's span is dropped, and its pattern ids are added to the
+   style flag's detail. A style flag and a telltale on unequal overlapping spans both stand.
+
+Hard flags act before the collapse, so a hard flag drops only the telltales on its own span: a
+telltale that overlaps a dropped one, and not the hard flag, still stands. No source raises a
+style flag until a ruleset holds a checker, so today the model shows on telltales: a spelling or
+grammar flag suppresses one, and overlapping ones merge into one underline.
 
 ### The rule layer
 
