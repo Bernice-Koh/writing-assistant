@@ -385,7 +385,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite, no artefact tables yet")]
+        Store[("Store<br/>SQLite: schema_version and passages,<br/>no passage written until Phase 4")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -414,9 +414,10 @@ flowchart LR
 The Rust code is a Cargo workspace of three crates, with a virtual manifest and the lockfile at the
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
-`crates/wa`. Of the engine's contents in the table, the rule layer, the screen, and the store's
-artefact tables are planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands
-yet.
+`crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
+Phase 1, the store's remaining artefact tables for Phase 1 and the phases that first write them,
+and the two clients for Phase 3. The store holds `schema_version` and `passages`, and nothing
+writes a passage until Phase 4. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -467,8 +468,8 @@ schema is a new migration. An applied migration whose SQL no longer matches its 
 the open, and so does a store recorded above the newest migration a build carries, which that
 build leaves as it is. The open takes the write lock before it reads what the store records, so
 the app and `wa` opening one store at once apply each migration once. The first migration creates
-`schema_version`, the one table so far; the artefact tables arrive with the features that first
-write them.
+`schema_version` and the second `passages`; the other artefact tables arrive with the features that
+first write them.
 
 Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
 and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
@@ -478,10 +479,23 @@ too. The serving adapter is the latest row of a promotions table, so a rollback 
 row. The engine is the only writer. The Python project opens the file read-only, and its results
 enter through `wa ingest`.
 
+A passage is a piece of source text that a rewrite, a bench item or a judgement item is built on,
+either synthetic or captured from the owner's writing. The store computes its content hash, the
+SHA-256 of its text, and assigns its split at insert, and a passage is never reassigned. Only a
+train passage ever reaches a training file. A synthetic passage lands in train, bench or sealed in
+the ratio 65 to 5 to 3, and a captured passage in train, monitor, bench, gate or sealed at 65, 20,
+5, 7 and 3 in every hundred. The content hash's leading bytes pick the split, so one text of one
+kind lands in one split in every store and under every build. The fractions hold until the bench
+and the judgement instrument are sized, and a change to them affects only passages inserted after
+it. Text identical to a stored passage of the same kind is that passage: inserting it again adds
+nothing and returns the stored passage's id. A passage inserted with a document key takes the split
+of the earliest stored passage of its kind holding that key, so two versions of one document never
+sit on both sides of a split boundary. The capture layer supplies no document key yet; Phase 2
+adds one. Nothing writes a passage until Phase 4.
+
 Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
 questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version
-it happened under. A passage is assigned to a split by content hash at insert and is never
-reassigned.
+it happened under.
 
 The data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one folder under the local,
 non-roaming application-data directory, named by the bundle identifier, since a store with model

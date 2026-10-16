@@ -33,9 +33,10 @@ screen, generation, embedding, synthesis, export, ingest, and backup.
 
 Built today: in the engine, capture, spelling, LanguageTool, the telltale matcher, the
 analyzer, the flag types, the settings file, and the store; in the app, the overlay and one
-command. The store has its file, the thread that owns its connection, the migration runner, and
-the insert-only guard; its one table is `schema_version`, and the artefact tables arrive with the
-features that first write them. `wa` has no subcommands yet; each arrives with its own issue.
+command. The store has its file, the thread that owns its connection, the migration runner, the
+insert-only guard, and two tables, `schema_version` and `passages`; nothing writes a passage until
+Phase 4, and the other artefact tables arrive with the features that first write them. `wa` has no
+subcommands yet; each arrives with its own issue.
 `adapter/` does not exist.
 
 The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file

@@ -36,11 +36,18 @@ pub(super) struct Migration {
 
 /// Every migration, in order and numbered from 1 without a gap. A test holds this list and the
 /// files under `migrations/` equal.
-pub(super) static MIGRATIONS: &[Migration] = &[Migration {
-    number: 1,
-    name: "schema_version",
-    sql: include_str!("migrations/0001_schema_version.sql"),
-}];
+pub(super) static MIGRATIONS: &[Migration] = &[
+    Migration {
+        number: 1,
+        name: "schema_version",
+        sql: include_str!("migrations/0001_schema_version.sql"),
+    },
+    Migration {
+        number: 2,
+        name: "passages",
+        sql: include_str!("migrations/0002_passages.sql"),
+    },
+];
 
 /// Brings the schema of the store at `path`, open on `connection`, up to the newest of
 /// `migrations`, and returns the schema version it ends at.
@@ -165,6 +172,20 @@ mod tests {
 
     /// A table a later build's migration might create.
     const LATER_TABLE: &str = "CREATE TABLE later (id INTEGER PRIMARY KEY AUTOINCREMENT);";
+
+    /// Every merged migration's number and the SHA-256 of its file, so an edit to a merged
+    /// migration fails CI before a store that recorded the old hash refuses to open. Every pull
+    /// request that adds a migration appends its entry.
+    const PINNED: &[(u32, &str)] = &[
+        (
+            1,
+            "8eaca0519cc4ad0b27e67139adabafe433cdf1ab4ab4df95d5b2ae5856228a0b",
+        ),
+        (
+            2,
+            "b0296cd30eaf421b42b7da602939ac164d36b2cc6539a1cf8aa5ae58d2567fd2",
+        ),
+    ];
 
     fn newest() -> u32 {
         MIGRATIONS
@@ -316,6 +337,25 @@ mod tests {
             .collect();
         let from_one: Vec<u32> = (1..).take(MIGRATIONS.len()).collect();
         assert_eq!(numbers, from_one);
+    }
+
+    #[test]
+    fn every_migration_hashes_to_its_pinned_digest() {
+        let numbers: Vec<u32> = MIGRATIONS
+            .iter()
+            .map(|migration| migration.number)
+            .collect();
+        let pinned: Vec<u32> = PINNED.iter().map(|(number, _)| *number).collect();
+        assert_eq!(numbers, pinned, "a migration without a pinned digest");
+
+        for (migration, (_, digest)) in MIGRATIONS.iter().zip(PINNED) {
+            assert_eq!(
+                sha256_hex(migration.sql.as_bytes()),
+                *digest,
+                "migration {} no longer hashes to its pinned digest",
+                migration.number
+            );
+        }
     }
 
     /// `.gitattributes` checks every `.sql` file out with LF endings, so a migration hashes the
