@@ -381,7 +381,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite, no tables yet")]
+        Store[("Store<br/>SQLite, no artefact tables yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -411,7 +411,8 @@ The Rust code is a Cargo workspace of three crates, with a virtual manifest and 
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
 `crates/wa`. Of the engine's contents in the table, the rule layer, the screen, and the store's
-tables are planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands yet.
+artefact tables are planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands
+yet.
 
 | Crate | Holds |
 |---|---|
@@ -445,17 +446,30 @@ under memory pressure.
 ### The store
 
 One SQLite file, `store.sqlite`, directly under the data root, in write-ahead mode, with SQLite's
-`store.sqlite-wal` and `store.sqlite-shm` beside it once a connection has read or written. One
+`store.sqlite-wal` and `store.sqlite-shm` beside it from the moment the open reads the schema. One
 store thread owns the connection, and the rest of the engine sends it requests over a channel, the
 shape the UI Automation thread has, so async code awaits a reply and never blocks on SQLite. The
 connection enforces foreign keys. The app and `wa` are two processes running the engine's code, so
 two writers can contend for the file, and a busy timeout of five seconds makes the second write
-wait for the first. The app opens the store at startup, and nothing reads it yet. A store that
-fails to open leaves checking running without it. Not yet built: the migrations, numbered SQL files
-embedded in the engine and applied at open, and the tables they create, which arrive in the rest
-of Phase 1.
+wait for the first. The app opens the store at startup, and nothing past the open reads or writes
+it yet. A store that fails to open leaves checking running without it.
 
-Artefact tables are insert-only: triggers raise on update or delete. Mutable state is append-only
+The schema is a list of numbered SQL migrations, files compiled into the engine and applied in
+order when the store opens, on the store thread before it serves a request. Each runs in its own
+transaction, which also inserts the migration's row into `schema_version`: its number, the SHA-256
+of its SQL, and the time it was applied. A migration that fails rolls back and fails the open, and
+the store stays at the version it had. A merged migration is never edited, and a change to the
+schema is a new migration. An applied migration whose SQL no longer matches its recorded hash fails
+the open, and so does a store recorded above the newest migration a build carries, which that
+build leaves as it is. The open takes the write lock before it reads what the store records, so
+the app and `wa` opening one store at once apply each migration once. The first migration creates
+`schema_version`, the one table so far; the artefact tables arrive with the features that first
+write them.
+
+Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
+and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
+beside the table in its migration, that raise before any update or delete. A test walks the schema
+after every migration has run and fails for a table without them. Mutable state is append-only
 too. The serving adapter is the latest row of a promotions table, so a rollback is one inserted
 row. The engine is the only writer. The Python project opens the file read-only, and its results
 enter through `wa ingest`.
@@ -572,7 +586,7 @@ candidates over fresh items, with its size set by a power calculation written be
 
 | Layer | Technologies |
 |---|---|
-| Engine | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), `thiserror`, `log` with `env_logger` |
+| Engine | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), `thiserror`, `log` with `env_logger`, and `sha2` for content hashes |
 | Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
 | Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |

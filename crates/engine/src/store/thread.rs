@@ -37,14 +37,19 @@ struct StoreThread {
 
 impl Store {
     /// Opens the store under `data_root` and starts the store thread that owns its connection:
-    /// creates the root and the store file when either is absent, and sets write-ahead mode,
-    /// foreign-key enforcement and the busy timeout. Blocks until the thread reports the outcome.
+    /// creates the root and the store file when either is absent, sets write-ahead mode,
+    /// foreign-key enforcement and the busy timeout, and applies every embedded migration the
+    /// store does not yet record before the thread serves its first request. Blocks until the
+    /// thread reports the outcome.
     ///
     /// # Errors
     /// [`StoreError::Write`] when the root cannot be created, [`StoreError::Open`] when SQLite
-    /// cannot open the file or set a pragma, [`StoreError::JournalMode`] when the file does not
-    /// take write-ahead mode, and [`StoreError::ThreadSpawn`] or [`StoreError::ThreadNotReady`]
-    /// when the thread does not start.
+    /// cannot open the file, set a pragma or read the recorded migrations,
+    /// [`StoreError::JournalMode`] when the file does not take write-ahead mode,
+    /// [`StoreError::MigrationChanged`] or [`StoreError::SchemaNewerThanBuild`] when the recorded
+    /// migrations do not fit this build's, [`StoreError::MigrationFailed`] when a migration fails
+    /// and rolls back, and [`StoreError::ThreadSpawn`] or [`StoreError::ThreadNotReady`] when the
+    /// thread does not start.
     pub fn open(data_root: &Path) -> Result<Self, StoreError> {
         Self::open_with_busy_timeout(data_root, BUSY_TIMEOUT)
     }
@@ -62,8 +67,8 @@ impl Store {
                 // The opener blocks on the other end of `ready_tx` until this send, so it cannot
                 // fail.
                 match connection::open(&thread_root, busy_timeout) {
-                    Ok(connection) => {
-                        let _ = ready_tx.send(Ok(()));
+                    Ok((connection, schema_version)) => {
+                        let _ = ready_tx.send(Ok(schema_version));
                         serve(connection, request_rx);
                     }
                     Err(error) => {
@@ -73,9 +78,10 @@ impl Store {
             })
             .map_err(|source| StoreError::ThreadSpawn { source })?;
         match ready_rx.recv() {
-            Ok(Ok(())) => {
+            Ok(Ok(schema_version)) => {
                 log::info!(
-                    "opened the store under {} in write-ahead mode",
+                    "opened the store under {} in write-ahead mode at schema version \
+                     {schema_version}",
                     data_root.display()
                 );
                 Ok(Self {
@@ -216,7 +222,9 @@ fn serve(mut connection: Connection, mut requests: request_channel::UnboundedRec
 mod tests {
     use super::*;
     use crate::store::connection::STORE_FILE_NAME;
-    use crate::test_support::TempRoot;
+    use crate::store::migrations::MIGRATIONS;
+    use crate::test_support::{capture_logs, TempRoot};
+    use log::Level;
     use rusqlite::{ErrorCode, OpenFlags, TransactionBehavior};
     use std::sync::mpsc;
     use std::time::Instant;
@@ -286,6 +294,25 @@ mod tests {
 
         assert_eq!(thread_name.as_deref(), Some("writing-assistant-store"));
         assert_eq!(sum, 5);
+    }
+
+    #[test]
+    fn the_open_logs_one_info_line_naming_the_schema_version() {
+        let root = TempRoot::new();
+        let newest = MIGRATIONS.last().unwrap().number;
+
+        let (store, lines) = capture_logs(|| Store::open(root.path()));
+
+        store.unwrap();
+        let info: Vec<_> = lines
+            .iter()
+            .filter(|(level, _)| *level <= Level::Info)
+            .collect();
+        assert_eq!(info.len(), 1, "{lines:?}");
+        assert!(
+            info[0].1.ends_with(&format!("at schema version {newest}")),
+            "{lines:?}"
+        );
     }
 
     /// On a runtime with one worker thread, the test's own task makes progress only if the

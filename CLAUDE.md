@@ -27,8 +27,9 @@ Current top level:
 - `crates/`: two of the three members of the Cargo workspace; see `docs/CONVENTIONS.md`.
   `crates/engine` is the engine library, `wa-engine`: capture, spelling, LanguageTool
   subprocess management, the telltale matcher, the analyzer, the flag types, the settings
-  file, and the SQLite store's file and thread, with no tables yet. The rewriter and the
-  learning loop are not yet implemented.
+  file, and the SQLite store's file, thread, migration runner, and insert-only guard, whose
+  one table so far is `schema_version`. The rewriter and the learning loop are not yet
+  implemented.
   `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
   binary, with no subcommands yet.
 - `src-tauri/`: the Tauri app, the workspace's third member, kept at the path the Tauri CLI

@@ -4175,6 +4175,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
  "spellbook",
  "thiserror 2.0.19",
