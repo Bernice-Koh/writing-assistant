@@ -365,7 +365,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite, planned")]
+        Store[("Store<br/>SQLite, no tables yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -394,8 +394,8 @@ flowchart LR
 The Rust code is a Cargo workspace of three crates, with a virtual manifest and the lockfile at the
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
-`crates/wa`. Of the engine's contents in the table, the rule layer, the screen, and the store are
-planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands yet.
+`crates/wa`. Of the engine's contents in the table, the rule layer, the screen, and the store's
+tables are planned for Phase 1, and the two clients for Phase 3. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -410,7 +410,7 @@ the app's scheduler, the Python project, and the owner by hand.
 
 | Process | Role | State |
 |---|---|---|
-| The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the analyzer, the overlay, and the main window | Runs today |
+| The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the store thread, the analyzer, the overlay, and the main window | Runs today |
 | LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
 | llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
 | `wa` | The engine on the command line | Built, with no subcommands yet. `wa screen` and `wa backup` are planned for Phase 1 |
@@ -428,11 +428,16 @@ under memory pressure.
 
 ### The store
 
-Planned, Phase 1.
-
-One SQLite file in write-ahead mode under the data root. One store thread owns the connection, and
-the rest of the app sends it requests over a channel, the shape the UI Automation thread already
-has. Migrations are numbered SQL files embedded in the engine and applied at open.
+One SQLite file, `store.sqlite`, directly under the data root, in write-ahead mode, with SQLite's
+`store.sqlite-wal` and `store.sqlite-shm` beside it once a connection has read or written. One
+store thread owns the connection, and the rest of the engine sends it requests over a channel, the
+shape the UI Automation thread has, so async code awaits a reply and never blocks on SQLite. The
+connection enforces foreign keys. The app and `wa` are two processes running the engine's code, so
+two writers can contend for the file, and a busy timeout of five seconds makes the second write
+wait for the first. The app opens the store at startup, and nothing reads it yet. A store that
+fails to open leaves checking running without it. Not yet built: the migrations, numbered SQL files
+embedded in the engine and applied at open, and the tables they create, which arrive in the rest
+of Phase 1.
 
 Artefact tables are insert-only: triggers raise on update or delete. Mutable state is append-only
 too. The serving adapter is the latest row of a promotions table, so a rollback is one inserted
@@ -444,16 +449,16 @@ questionnaire answer, and Card publish, each stamped with the Card version and t
 it happened under. A passage is assigned to a split by content hash at insert and is never
 reassigned.
 
-Built ahead of the store, the data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one
-folder under the local, non-roaming application-data directory, named by the bundle identifier,
-since a store with model files does not belong in a roaming profile. One engine function resolves
-it for the app and `wa` alike. Settings stay in a JSON config file there, `config.json` directly
-under the root: whether checking runs, the register map with its default register, and a toggle
-per telltale pattern, every pattern on except `curly-quotes`. The app loads the file once at
-startup and writes the defaults when it is missing, so an edit made while the app runs takes
-effect at the next start. A file that does not parse is left as it is, and checking starts on the
-defaults. Nothing reads the toggles or the register map yet. The controls that edit the file
-arrive with the settings shell in Phase 3, and until then it is edited by hand. Credentials are in
+The data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one folder under the local,
+non-roaming application-data directory, named by the bundle identifier, since a store with model
+files does not belong in a roaming profile. One engine function resolves it for the app and `wa`
+alike. Settings stay in a JSON config file there, `config.json` directly under the root: whether
+checking runs, the register map with its default register, and a toggle per telltale pattern,
+every pattern on except `curly-quotes`. The app loads the file once at startup and writes the
+defaults when it is missing, so an edit made while the app runs takes effect at the next start. A
+file that does not parse is left as it is, and checking starts on the defaults. Nothing reads the
+toggles or the register map yet. The controls that edit the file arrive with the settings shell in
+Phase 3, and until then it is edited by hand. Credentials are in
 neither file.
 
 ### Model roles
@@ -556,8 +561,9 @@ candidates over fresh items, with its size set by a power calculation written be
 | Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
 | Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories`. The app loads it once at startup; its controls arrive with the settings shell in Phase 3 |
+| Store | [SQLite](https://sqlite.org) 3.53.2 through [`rusqlite`](https://github.com/rusqlite/rusqlite) 0.40 with its `bundled` feature, which compiles SQLite into the engine, so a machine with no SQLite installed builds the workspace |
 | CI | GitHub Actions: `rustfmt`, `clippy`, and `cargo test` on Windows; ESLint, Prettier, and `tsc` on Linux |
-| Planned | SQLite (Phase 1). llama-server and the Anthropic API (Phase 3). Python with `uv`, `ruff`, and `pytest` (Phase 5). Amazon SageMaker AI (Phase 6) |
+| Planned | llama-server and the Anthropic API (Phase 3). Python with `uv`, `ruff`, and `pytest` (Phase 5). Amazon SageMaker AI (Phase 6) |
 
 ## Requirements
 
@@ -615,6 +621,7 @@ linked, and the dictionary is vendored unmodified as data beside its notice.
 | Component | Licence | Notes |
 |---|---|---|
 | [spellbook](https://github.com/helix-editor/spellbook) | MPL-2.0 | A Rust crate, used unmodified |
+| [SQLite](https://sqlite.org/copyright.html) 3.53.2 | Public domain, per SQLite's own copyright page | Compiled into the engine through `rusqlite`'s `bundled` feature |
 | LibreOffice `en_GB` dictionary | LGPL, per the file's own header. Version unstated | Vendored unmodified. Provenance in `src-tauri/resources/dictionaries/NOTICE.md` |
 | [LanguageTool](https://github.com/languagetool-org/languagetool) 6.6 | LGPL-2.1-or-later | Fetched by the setup script and never committed. Runs as a subprocess |
 | OpenJDK runtime, built with `jlink` | GPL-2.0 with the Classpath Exception | Built by the setup script and never committed |

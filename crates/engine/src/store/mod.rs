@@ -1,7 +1,12 @@
 //! Local persistence, under the one data root that [`data_root`] resolves for the app and `wa`
-//! alike. Today the root holds only [`config`], the JSON settings file. The SQLite store for Card
-//! versions, rulesets, passages, candidates and events is not yet implemented; the engine's code is
-//! its only writer.
+//! alike. The root holds [`config`], the JSON settings file, and the store: one SQLite file,
+//! `store.sqlite`, in write-ahead mode, whose connection one store thread owns and the rest of the
+//! engine reaches through a [`Store`] handle. The store holds no tables yet, and the migration
+//! runner that creates them is not yet built. The engine's code is the store's only writer, run by
+//! the app and `wa` as two processes, so the connection carries a busy timeout.
+//!
+//! Tauri points WebView2's user-data folder at the same root, so nothing in this module
+//! enumerates, copies, sizes or clears the root: every operation names the files it touches.
 
 pub mod config;
 mod connection;
