@@ -4,7 +4,9 @@
 //! its only writer.
 
 pub mod config;
+mod connection;
 pub mod error;
+mod thread;
 
 use std::path::PathBuf;
 
@@ -12,6 +14,7 @@ use directories::BaseDirs;
 
 pub use config::Config;
 pub use error::StoreError;
+pub use thread::Store;
 
 /// The bundle identifier `tauri.conf.json` declares, and the data root's folder name. Tauri names
 /// its own per-app folders by the same string; a test holds the two equal.

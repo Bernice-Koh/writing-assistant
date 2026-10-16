@@ -179,24 +179,8 @@ pub fn save(data_root: &Path, config: &Config) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, unique_temp_dir};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    /// A directory under the OS temp directory unique to this call, handed in as the data root so
-    /// no test touches the real one, and concurrently running tests never read or write each
-    /// other's config file. `std::process::id()` separates concurrent test binaries (unlikely
-    /// here, but cheap to rule out); the atomic counter separates concurrent tests within this
-    /// one binary, the collision that actually matters since `cargo test` runs tests in parallel
-    /// by default.
-    fn unique_temp_dir() -> PathBuf {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "writing-assistant-store-test-{}-{id}",
-            std::process::id()
-        ))
-    }
 
     /// A fresh data root holding a config file with `contents`, as a hand edit would leave it.
     fn root_holding(contents: &str) -> PathBuf {
