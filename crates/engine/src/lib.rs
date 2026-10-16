@@ -1,7 +1,7 @@
 //! The checking engine: capture of the focused document, spelling, LanguageTool's grammar, the
 //! telltale matcher, the analyzer that runs them over each pause, the flag types they produce,
-//! and the settings file. It has two callers, the Tauri app and the `wa` command-line binary, and
-//! depends on neither, so what `wa` measures is what the app ships.
+//! the settings file, and the store. It has two callers, the Tauri app and the `wa` command-line
+//! binary, and depends on neither, so what `wa` measures is what the app ships.
 
 pub mod analyzer;
 pub mod capture;
