@@ -6,6 +6,7 @@
 pub mod analyzer;
 pub mod capture;
 pub mod flag;
+mod hash;
 pub mod languagetool;
 pub mod learning;
 pub mod rewrite;

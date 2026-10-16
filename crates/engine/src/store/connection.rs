@@ -1,4 +1,5 @@
-//! The store file under the data root, and the pragmas every connection to it carries.
+//! The store file under the data root, the pragmas every connection to it carries, and the
+//! migration step that brings its schema up to date at open.
 
 use std::path::Path;
 use std::time::Duration;
@@ -6,6 +7,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 use super::error::StoreError;
+use super::migrations::{self, MIGRATIONS};
 
 /// The store's file name, directly under the data root. SQLite keeps the write-ahead log and its
 /// shared-memory index beside the file as `store.sqlite-wal` and `store.sqlite-shm`, and
@@ -34,9 +36,13 @@ const ENFORCE_FOREIGN_KEYS: bool = true;
 pub(super) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Opens the store file under `data_root` with the pragmas every store connection carries,
-/// creating the root and the file when either is absent. Touches no other file under the root:
-/// Tauri points WebView2's user-data folder at the same root.
-pub(super) fn open(data_root: &Path, busy_timeout: Duration) -> Result<Connection, StoreError> {
+/// creating the root and the file when either is absent, and applies every embedded migration the
+/// store does not yet record. Returns the connection and the schema version it ends at. Touches no
+/// other file under the root: Tauri points WebView2's user-data folder at the same root.
+pub(super) fn open(
+    data_root: &Path,
+    busy_timeout: Duration,
+) -> Result<(Connection, u32), StoreError> {
     std::fs::create_dir_all(data_root).map_err(|source| StoreError::Write {
         path: data_root.to_path_buf(),
         source,
@@ -47,7 +53,7 @@ pub(super) fn open(data_root: &Path, busy_timeout: Duration) -> Result<Connectio
         source,
     };
 
-    let connection = Connection::open(&path).map_err(open_error)?;
+    let mut connection = Connection::open(&path).map_err(open_error)?;
     // Set first, so that switching a new file to write-ahead mode, which takes the write lock,
     // waits for another process's write rather than failing.
     connection.busy_timeout(busy_timeout).map_err(open_error)?;
@@ -64,9 +70,9 @@ pub(super) fn open(data_root: &Path, busy_timeout: Duration) -> Result<Connectio
         .pragma_update(None, "foreign_keys", ENFORCE_FOREIGN_KEYS)
         .map_err(open_error)?;
 
-    // The migration step goes here, so the schema is current before the store thread serves its
-    // first request.
-    Ok(connection)
+    // Inside the open, so the store thread never serves a request against an older schema.
+    let schema_version = migrations::migrate(&mut connection, MIGRATIONS, &path)?;
+    Ok((connection, schema_version))
 }
 
 #[cfg(test)]
@@ -87,7 +93,7 @@ mod tests {
     #[test]
     fn a_new_store_is_in_write_ahead_mode_with_foreign_keys_enforced() {
         let root = TempRoot::new();
-        let connection = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
 
         let journal_mode: String = connection
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
@@ -110,13 +116,13 @@ mod tests {
     #[test]
     fn reopening_the_store_keeps_its_rows() {
         let root = TempRoot::new();
-        let first = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (first, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
         first
             .execute_batch("CREATE TABLE scratch (id INTEGER PRIMARY KEY); INSERT INTO scratch DEFAULT VALUES;")
             .unwrap();
         drop(first);
 
-        let second = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (second, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
         let rows: i64 = second
             .query_row("SELECT count(*) FROM scratch", [], |row| row.get(0))
             .unwrap();
@@ -131,11 +137,9 @@ mod tests {
         std::fs::write(webview_profile.join("Local State"), "{}").unwrap();
         std::fs::write(root.path().join("config.json"), "{}").unwrap();
 
-        let connection = open(root.path(), BUSY_TIMEOUT).unwrap();
-        // A read opens the write-ahead log, which brings the two sidecars into being.
-        let _: i64 = connection
-            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
-            .unwrap();
+        // The migration step reads at open, and a read opens the write-ahead log, which brings the
+        // two sidecars into being before the open returns.
+        let _connection = open(root.path(), BUSY_TIMEOUT).unwrap();
 
         let mut added: Vec<String> = std::fs::read_dir(root.path())
             .unwrap()

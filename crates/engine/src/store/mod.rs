@@ -1,9 +1,11 @@
 //! Local persistence, under the one data root that [`data_root`] resolves for the app and `wa`
 //! alike. The root holds [`config`], the JSON settings file, and the store: one SQLite file,
 //! `store.sqlite`, in write-ahead mode, whose connection one store thread owns and the rest of the
-//! engine reaches through a [`Store`] handle. The store holds no tables yet, and the migration
-//! runner that creates them is not yet built. The engine's code is the store's only writer, run by
-//! the app and `wa` as two processes, so the connection carries a busy timeout.
+//! engine reaches through a [`Store`] handle. The schema is a list of numbered SQL migrations
+//! compiled into the engine, applied in order at open and each recorded in `schema_version`, the
+//! one table so far. Every table is insert-only: triggers raise on update and on delete. The
+//! engine's code is the store's only writer, run by the app and `wa` as two processes, so the
+//! connection carries a busy timeout.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
@@ -11,6 +13,7 @@
 pub mod config;
 mod connection;
 pub mod error;
+mod migrations;
 mod thread;
 
 use std::path::PathBuf;
