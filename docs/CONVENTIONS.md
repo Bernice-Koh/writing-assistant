@@ -32,8 +32,11 @@ for the app's scheduler, the Python project, and the owner by hand. Its subcomma
 screen, generation, embedding, synthesis, export, ingest, and backup.
 
 Built today: in the engine, capture, spelling, LanguageTool, the telltale matcher, the
-analyzer, the flag types, and the settings file; in the app, the overlay and one command. `wa`
-has no subcommands yet; each arrives with its own issue. `adapter/` does not exist.
+analyzer, the flag types, the settings file, and the store; in the app, the overlay and one
+command. The store has its file, the thread that owns its connection, the migration runner, and
+the insert-only guard; its one table is `schema_version`, and the artefact tables arrive with the
+features that first write them. `wa` has no subcommands yet; each arrives with its own issue.
+`adapter/` does not exist.
 
 The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file
 exists once in the repository. The engine reaches them by relative path: its tests read the
