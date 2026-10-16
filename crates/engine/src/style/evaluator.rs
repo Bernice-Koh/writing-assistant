@@ -139,6 +139,8 @@ impl TextSearch {
     fn find(&self, text: &str) -> Vec<Range<usize>> {
         let ranges = match self {
             Self::Phrases(phrases) => phrases.find(text),
+            // The text as written, curly marks and all, so a regex can name a curly mark. Only
+            // the phrase matcher reads a curly mark as its straight form.
             Self::Regex(regex) => regex.find_iter(text).map(|found| found.range()).collect(),
         };
         ranges
@@ -249,6 +251,36 @@ mod tests {
         assert!(matches.iter().all(|span| flagged_text(span) == "🚀"));
         // The second offset counts both of the first rocket's two UTF-16 units.
         assert_eq!([matches[0].local_start, matches[1].local_start], [7, 29]);
+    }
+
+    #[test]
+    fn a_curly_apostrophe_ahead_of_a_phrase_does_not_shift_its_span() {
+        // The curly apostrophe is three bytes and its straight form one, so a byte range from the
+        // searched copy starts two bytes early in the text as written: inside the em dash, which
+        // is not a character boundary, and slicing there panics.
+        let text = "The town\u{2019}s jewel\u{2014}boasts a harbour.";
+        let evaluator = compiled(checker(phrases(&["boasts a"])));
+
+        let ranges = evaluator.search.as_ref().unwrap().find(text);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!(&text[ranges[0].clone()], "boasts a");
+
+        let span = span_in(text, ranges[0].clone());
+        assert_eq!(flagged_text(&span), "boasts a");
+        assert_eq!((span.local_start, span.local_length), (17, 8));
+        assert_eq!(in_prose(&evaluator, text), [span]);
+    }
+
+    #[test]
+    fn a_regex_runs_against_the_text_as_written_and_can_name_a_curly_mark() {
+        let curly_apostrophe = compiled(checker(regex(r"\x{2019}")));
+        let matches = in_prose(&curly_apostrophe, "It\u{2019}s here, and it's there.");
+        assert_eq!(
+            matches.iter().map(flagged_text).collect::<Vec<_>>(),
+            ["\u{2019}"]
+        );
+        assert_eq!(matches[0].local_start, 2);
+        assert!(in_prose(&curly_apostrophe, "It's here.").is_empty());
     }
 
     #[test]
@@ -391,6 +423,33 @@ mod tests {
                 "testament to",
                 "\u{2014}",
                 "testament to"
+            ]
+        );
+        assert_eq!(in_prose(&evaluator, text), first);
+        assert_eq!(in_prose(&compiled(listed()), text), first);
+    }
+
+    #[test]
+    fn the_same_checker_over_text_with_curly_marks_gives_identical_matches_in_identical_order() {
+        let text = "\u{201C}You\u{2019}re absolutely right,\u{201D} he said. You\u{2019}re absolutely right.";
+        let listed = || {
+            checker(phrases(&[
+                "absolutely right",
+                "you're absolutely right",
+                "\"",
+            ]))
+        };
+        let evaluator = compiled(listed());
+        let first = in_prose(&evaluator, text);
+        assert_eq!(
+            first.iter().map(flagged_text).collect::<Vec<_>>(),
+            [
+                "\u{201C}",
+                "You\u{2019}re absolutely right",
+                "absolutely right",
+                "\u{201D}",
+                "You\u{2019}re absolutely right",
+                "absolutely right",
             ]
         );
         assert_eq!(in_prose(&evaluator, text), first);
