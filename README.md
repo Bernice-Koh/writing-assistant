@@ -110,7 +110,11 @@ grammar flag suppresses one, and overlapping ones merge into one underline.
 
 ### The rule layer
 
-Planned, Phase 1. A checker is a matcher, a unit, and a band.
+A checker is a matcher, a unit, and a band. It declares the form modes it runs in, prose or
+fragment, and a register scope, which is every register when unset. The engine holds a checker as
+data with every part in the table, and evaluates the phrase list and the regex under the forbidden
+band. Nothing runs a checker yet. Planned for Phase 1: the other matchers and bands, and the
+analyzer passes that run checkers.
 
 | Part | Values |
 |---|---|
