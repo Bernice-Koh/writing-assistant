@@ -2,10 +2,11 @@
 //! alike. The root holds [`config`], the JSON settings file, and the store: one SQLite file,
 //! `store.sqlite`, in write-ahead mode, whose connection one store thread owns and the rest of the
 //! engine reaches through a [`Store`] handle. The schema is a list of numbered SQL migrations
-//! compiled into the engine, applied in order at open and each recorded in `schema_version`, the
-//! one table so far. Every table is insert-only: triggers raise on update and on delete. The
-//! engine's code is the store's only writer, run by the app and `wa` as two processes, so the
-//! connection carries a busy timeout.
+//! compiled into the engine, applied in order at open and each recorded in `schema_version`.
+//! Beside it, `passages` holds each [`Passage`] with the [`Split`] it was assigned at insert;
+//! nothing writes a passage until Phase 4. Every table is insert-only: triggers raise on update
+//! and on delete. The engine's code is the store's only writer, run by the app and `wa` as two
+//! processes, so the connection carries a busy timeout.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
@@ -14,6 +15,8 @@ pub mod config;
 mod connection;
 pub mod error;
 mod migrations;
+mod passages;
+mod split;
 mod thread;
 
 use std::path::PathBuf;
@@ -22,6 +25,8 @@ use directories::BaseDirs;
 
 pub use config::Config;
 pub use error::StoreError;
+pub use passages::{Passage, PassageId, PassageKind};
+pub use split::Split;
 pub use thread::Store;
 
 /// The bundle identifier `tauri.conf.json` declares, and the data root's folder name. Tauri names

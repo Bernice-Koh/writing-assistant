@@ -111,14 +111,6 @@ impl Store {
     /// [`StoreError::Busy`] when another connection holds a lock `work` needs,
     /// [`StoreError::Request`] for any other failure of `work`, and [`StoreError::ThreadGone`]
     /// when the store thread has stopped.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the typed methods that arrive with the tables call it; until then only the \
-                      tests do"
-        )
-    )]
     pub(in crate::store) async fn request<T, F>(
         &self,
         operation: &'static str,
@@ -143,14 +135,6 @@ impl Store {
     /// # Panics
     /// When called from async code, where tokio panics rather than let a blocked worker stall the
     /// runtime. Async code awaits [`request`](Self::request) instead.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the typed methods that arrive with the tables call it; until then only the \
-                      tests do"
-        )
-    )]
     pub(in crate::store) fn request_blocking<T, F>(
         &self,
         operation: &'static str,

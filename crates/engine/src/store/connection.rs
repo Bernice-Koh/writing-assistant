@@ -55,7 +55,9 @@ pub(super) fn open(
 
     let mut connection = Connection::open(&path).map_err(open_error)?;
     // Set first, so that switching a new file to write-ahead mode, which takes the write lock,
-    // waits for another process's write rather than failing.
+    // waits for another process's write rather than failing. Only the app creates the store file,
+    // since `wa` opens an existing store and refuses when it is absent, so two `journal_mode`
+    // switches on a new file never race.
     connection.busy_timeout(busy_timeout).map_err(open_error)?;
     let journal_mode: String = connection
         .pragma_update_and_check(None, "journal_mode", JOURNAL_MODE, |row| row.get(0))

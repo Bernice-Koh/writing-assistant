@@ -5,14 +5,15 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use super::passages::PassageId;
+
 /// The store module's one error type.
 ///
 /// No variant carries the text of a row, and neither does any log line the module writes. A
-/// variant names a path, an operation, a journal mode or a migration number beside the underlying
-/// error. Every
-/// statement binds its values as parameters and never formats one into its SQL, so the statement
-/// text and SQLite's message in a [`rusqlite::Error`] name a table, a column or a constraint, and
-/// never a value.
+/// variant names a path, an operation, a journal mode, a migration number or a passage id beside
+/// the underlying error. Every statement binds its values as parameters and never formats one into
+/// its SQL, so the statement text and SQLite's message in a [`rusqlite::Error`] name a table, a
+/// column or a constraint, and never a value.
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("could not determine the local application-data directory that holds the data root")]
@@ -117,6 +118,10 @@ pub enum StoreError {
     /// The store thread stopped before it replied, which happens only when a request panics on it.
     #[error("the store thread has stopped, so the request {operation:?} got no reply")]
     ThreadGone { operation: &'static str },
+
+    /// A read named a passage id the store does not hold.
+    #[error("the store holds no passage with id {id}", id = id.0)]
+    NoPassage { id: PassageId },
 }
 
 impl StoreError {
