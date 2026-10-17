@@ -385,7 +385,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite: schema_version and passages,<br/>no passage written until Phase 4")]
+        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables;<br/>no passage, Card or ruleset written yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -416,8 +416,9 @@ repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
 `crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
 Phase 1, the store's remaining artefact tables for Phase 1 and the phases that first write them,
-and the two clients for Phase 3. The store holds `schema_version` and `passages`, and nothing
-writes a passage until Phase 4. `wa` has no subcommands yet.
+and the two clients for Phase 3. The store holds `schema_version`, `passages`, and the Card and
+ruleset tables. Nothing writes a passage until Phase 4 or a Card until Phase 3, and ruleset
+publishing, planned for Phase 1, is the first writer of a ruleset. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -468,8 +469,8 @@ schema is a new migration. An applied migration whose SQL no longer matches its 
 the open, and so does a store recorded above the newest migration a build carries, which that
 build leaves as it is. The open takes the write lock before it reads what the store records, so
 the app and `wa` opening one store at once apply each migration once. The first migration creates
-`schema_version` and the second `passages`; the other artefact tables arrive with the features that
-first write them.
+`schema_version`, the second `passages`, and the third the Card and ruleset tables; the other
+artefact tables arrive with the features that first write them.
 
 Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
 and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
@@ -492,6 +493,23 @@ nothing and returns the stored passage's id. A passage inserted with a document 
 of the earliest stored passage of its kind holding that key, so two versions of one document never
 sit on both sides of a split boundary. The capture layer supplies no document key yet; Phase 2
 adds one. Nothing writes a passage until Phase 4.
+
+The Style Card and the ruleset are stored as versions. A new version adds rows and changes none, so
+every earlier version reads back as it was published. `clauses` holds one row per clause ever
+created, and its id is the clause's id, which no other clause is given, including after the clause
+has left the Card. `clause_texts` holds each wording of a clause: its text, its twin, its register
+scope, which is every register when unset, and an optional example pair, a sentence that follows
+the clause and one that breaks it. A Card version is a row of `card_versions`, with its publish
+time and its change note, a row of `card_members` for each wording it holds, and a row of
+`card_changes` for each clause it added, reworded or dropped against the version before it.
+`checkers` holds each distinct checker once, as its serialised definition with the id of the clause
+it serves, its content hash, which is the SHA-256 of the definition, and its provenance. The
+provenance records who wrote the checker, a template, a model or the owner, and its
+back-translation and test results where they exist, and the hash leaves it out. A ruleset version
+is a row of `ruleset_versions`, with its publish time and a content hash taken over its checkers'
+hashes, and a row of `ruleset_members` for each checker it holds, so a checker that two versions
+share is one row. Nothing writes a Card until Phase 3. Ruleset publishing, planned for Phase 1, is
+the first writer of the ruleset tables.
 
 Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
 questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version

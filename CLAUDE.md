@@ -28,7 +28,8 @@ Current top level:
   `crates/engine` is the engine library, `wa-engine`: capture, spelling, LanguageTool
   subprocess management, the telltale matcher, the analyzer, the flag types, the settings
   file, and the SQLite store's file, thread, migration runner, and insert-only guard, whose
-  tables so far are `schema_version` and `passages`; nothing writes a passage until Phase 4.
+  tables so far are `schema_version`, `passages`, and the Card and ruleset tables; nothing
+  writes a passage until Phase 4, a Card until Phase 3, or a ruleset until #95.
   The rewriter and the learning loop are not yet implemented.
   `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
   binary, with no subcommands yet.
