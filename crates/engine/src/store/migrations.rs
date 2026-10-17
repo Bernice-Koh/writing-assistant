@@ -47,6 +47,11 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         name: "passages",
         sql: include_str!("migrations/0002_passages.sql"),
     },
+    Migration {
+        number: 3,
+        name: "card_and_ruleset",
+        sql: include_str!("migrations/0003_card_and_ruleset.sql"),
+    },
 ];
 
 /// Brings the schema of the store at `path`, open on `connection`, up to the newest of
@@ -184,6 +189,10 @@ mod tests {
         (
             2,
             "b0296cd30eaf421b42b7da602939ac164d36b2cc6539a1cf8aa5ae58d2567fd2",
+        ),
+        (
+            3,
+            "8c1f86fe2370a1d5067c184052e91163008e4afbaa96a8e40ea91c6f924a6d6d",
         ),
     ];
 
@@ -557,6 +566,33 @@ mod tests {
         let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
 
         assert_eq!(unguarded(&connection), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_card_and_ruleset_tables_exist_once_every_migration_has_run() {
+        let root = TempRoot::new();
+        let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+
+        let tables: BTreeSet<String> = connection
+            .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        for table in [
+            "clauses",
+            "clause_texts",
+            "card_versions",
+            "card_members",
+            "card_changes",
+            "checkers",
+            "ruleset_versions",
+            "ruleset_members",
+        ] {
+            assert!(tables.contains(table), "no table {table} in {tables:?}");
+        }
     }
 
     #[test]
