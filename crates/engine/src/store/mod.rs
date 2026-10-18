@@ -21,6 +21,7 @@ mod card;
 pub mod config;
 mod connection;
 pub mod error;
+mod items;
 mod json;
 mod migrations;
 mod passages;
@@ -40,6 +41,7 @@ pub use card::{
 };
 pub use config::Config;
 pub use error::StoreError;
+pub use items::{Contrast, Item, ItemId, ItemSlot, ItemType, NewItem};
 pub use passages::{Passage, PassageId, PassageKind};
 pub use ruleset::{
     CheckerAuthor, CheckerId, Provenance, PublishedRuleset, StoredChecker, TestResult,
