@@ -12,6 +12,7 @@ use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, LanguageToolSupervisor};
 use wa_engine::spelling::SpellChecker;
 use wa_engine::store::{self, config, Config, Store, StoreError};
+use wa_engine::style::ruleset::LoadedRuleset;
 
 use overlay::{PositionedFlag, SharedFlags};
 
@@ -69,10 +70,10 @@ pub fn run() {
         .expect("the webview runtime is a hard requirement, with no degraded mode to fall back to");
 }
 
-/// Loads the settings, opens the store, loads spelling, starts LanguageTool best-effort, starts
-/// the analyzer against `capture`, and starts the two background tasks that turn the analyzer's
-/// own flag stream into what the overlay renders and hit-tests. Split out of `run`'s `setup`
-/// closure because it `.await`s.
+/// Loads the settings, opens the store, loads the ruleset from it, loads spelling, starts
+/// LanguageTool best-effort, starts the analyzer against `capture`, and starts the two background
+/// tasks that turn the analyzer's own flag stream into what the overlay renders and hit-tests.
+/// Split out of `run`'s `setup` closure because it `.await`s.
 async fn start_checking_pipeline(
     app: tauri::AppHandle,
     capture: Arc<dyn Capture>,
@@ -82,9 +83,14 @@ async fn start_checking_pipeline(
     // Managed beside the capture backend for the readers that arrive with the telltale toggles
     // and the register.
     app.manage(load_settings());
+    let store = open_store().await;
+    // Read once, like the settings: a version published while the app runs is in force from the
+    // next start. Managed for the analyzer passes that run its checkers (#100).
+    let ruleset = Arc::new(load_ruleset(store.as_ref()).await);
+    app.manage(Arc::clone(&ruleset));
     // Managed as an `Option`, so a reader meets a store that failed to open as `None` rather than
     // as unmanaged state. Nothing reads it yet.
-    app.manage(open_store().await);
+    app.manage(store);
 
     let resources_dir = app.path().resource_dir().expect(
         "the resource directory is a hard requirement: without it, not even the vendored \
@@ -121,7 +127,7 @@ async fn start_checking_pipeline(
         Arc::clone(&capture),
         spelling,
         languagetool,
-        None,
+        ruleset.version(),
     ));
     overlay::track_flags(
         app.clone(),
@@ -182,4 +188,29 @@ async fn open_store() -> Option<Store> {
             None
         }
     }
+}
+
+/// The latest ruleset in `store`, or an empty one with no version when the store did not open or
+/// cannot be read, since a fault in the ruleset degrades style checking and never stops checking.
+/// Logs one `info` line naming the version in force.
+async fn load_ruleset(store: Option<&Store>) -> LoadedRuleset {
+    let ruleset = match store {
+        Some(store) => LoadedRuleset::load(store).await.unwrap_or_else(|error| {
+            log::error!("{error}, so checking continues without the ruleset");
+            LoadedRuleset::empty()
+        }),
+        None => LoadedRuleset::empty(),
+    };
+    match ruleset.version() {
+        Some(version) => {
+            let compiled = ruleset.checkers().len();
+            log::info!(
+                "loaded ruleset version {} with {compiled} compiled {}",
+                version.0,
+                if compiled == 1 { "checker" } else { "checkers" }
+            );
+        }
+        None => log::info!("loaded no ruleset version"),
+    }
+    ruleset
 }
