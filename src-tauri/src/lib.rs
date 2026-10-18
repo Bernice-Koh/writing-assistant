@@ -121,6 +121,7 @@ async fn start_checking_pipeline(
         Arc::clone(&capture),
         spelling,
         languagetool,
+        None,
     ));
     overlay::track_flags(
         app.clone(),
