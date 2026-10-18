@@ -6,6 +6,8 @@
 //! this module calls a model or the network.
 
 pub mod ai_tell;
+mod band;
 pub mod checker;
 pub mod evaluator;
 mod phrase;
+mod variants;

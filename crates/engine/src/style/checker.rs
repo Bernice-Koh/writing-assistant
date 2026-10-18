@@ -1,6 +1,6 @@
 //! The checker: a Style Card clause made mechanical, as the clause's id and a [`Rule`]. The rule is
 //! the part the engine evaluates: a matcher, a unit and a band, declared for the form modes and
-//! the registers it runs in. A telltale pattern carries the same rule under its pattern id (#96).
+//! the registers it runs in. #96 gives each telltale pattern a rule under its pattern id.
 //!
 //! A checker is data. The store holds it as its serde JSON and takes its content hash over those
 //! bytes (#82), so every part round-trips through serde, and the modes and the registers are
@@ -25,7 +25,7 @@ pub struct Checker {
     pub rule: Rule,
 }
 
-/// The evaluable part of a checker or a telltale pattern, which the evaluator compiles.
+/// The evaluable part of a checker, which the evaluator compiles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
@@ -53,15 +53,19 @@ pub enum Matcher {
     /// as written.
     Regex { source: String },
     /// Each match LanguageTool reports under this rule id, for a style rule the owner endorsed.
+    /// LanguageTool evaluates it in the grammar stage (#98), and the rule layer's evaluator does
+    /// not.
     LanguageToolRule { rule_id: String },
-    /// Each word of a variant pair written in the convention the checker does not prefer. The
-    /// pairs and the names of their conventions are the variant-pair table's (#94). Unset, the
-    /// preferred convention is the one the unit's text uses more often, or on an equal count the
-    /// one it uses first.
+    /// Each word of a variant pair written in a form the preferred convention does not write. The
+    /// pairs and the names of their conventions are the variant-pair table's, compiled in from
+    /// `src-tauri/resources/spelling-variants/`, and a name the table does not hold does not
+    /// compile. Unset, the preferred convention is the one the unit's words write most often, or
+    /// on an equal count the one they write first.
     SpellingVariant {
         preferred_convention: Option<String>,
     },
-    /// The unit's words, so a band over them limits the unit's length.
+    /// The unit's words, so a band over them limits the unit's length. Each word is a match, and
+    /// the words a band flags in one sentence are one violation.
     WordCount,
 }
 
@@ -84,7 +88,8 @@ pub enum Unit {
     Document,
 }
 
-/// How many matches a unit may hold.
+/// How many matches a unit may hold. A violation of a maximum or a rate flags the matches beyond
+/// the limit, and a violation of a minimum underlines every sentence of the unit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -99,7 +104,8 @@ pub enum Band {
         minimum: Option<u32>,
         maximum: Option<u32>,
     },
-    /// At most `maximum_per_hundred_words` for every hundred words of the unit.
+    /// At most `maximum_per_hundred_words` for every hundred words of the unit. A unit under fifty
+    /// words is not measured.
     Rate { maximum_per_hundred_words: f64 },
 }
 

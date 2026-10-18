@@ -13,6 +13,7 @@ pub mod rewrite;
 pub mod spelling;
 pub mod store;
 pub mod style;
+mod words;
 
 #[cfg(test)]
 mod test_support;
