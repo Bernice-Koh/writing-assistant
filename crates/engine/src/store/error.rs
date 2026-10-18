@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use super::candidates::CandidateId;
 use super::card::{CardVersionId, ClauseTextId};
 use super::passages::PassageId;
 use super::ruleset::CheckerId;
@@ -122,7 +123,7 @@ pub enum StoreError {
     #[error("the store thread has stopped, so the request {operation:?} got no reply")]
     ThreadGone { operation: &'static str },
 
-    /// A read named a passage id the store does not hold.
+    /// A read, or a candidate, named a passage id the store does not hold.
     #[error("the store holds no passage with id {id}", id = id.0)]
     NoPassage { id: PassageId },
 
@@ -150,9 +151,17 @@ pub enum StoreError {
     #[error("a ruleset version lists checker {id} more than once", id = id.0)]
     CheckerRepeated { id: CheckerId },
 
-    /// A read named a ruleset version the store does not hold.
+    /// A read, or a screen result, named a ruleset version the store does not hold.
     #[error("the store holds no ruleset version {version}", version = version.0)]
     NoRulesetVersion { version: RulesetVersion },
+
+    /// A read named a candidate id the store does not hold.
+    #[error("the store holds no candidate with id {id}", id = id.0)]
+    NoCandidate { id: CandidateId },
+
+    /// A screen result named a candidate content hash no stored candidate has.
+    #[error("the store holds no candidate with content hash {content_hash}")]
+    NoCandidateHash { content_hash: String },
 }
 
 impl StoreError {
