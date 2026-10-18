@@ -356,7 +356,7 @@ mod tests {
         assert_insert_only, assert_utc_to_the_millisecond, insert_version, new, open, refusal,
         rows, sqlite_now, HEDGES, SHORT,
     };
-    use crate::style::checker::{Band, CheckableMode, Matcher, PhraseEntry, Unit};
+    use crate::style::checker::{Band, CheckableMode, Matcher, PhraseEntry, Rule, Unit};
     use crate::test_support::TempRoot;
     use rusqlite::types::Value;
     use std::collections::BTreeSet;
@@ -377,33 +377,37 @@ mod tests {
     fn hedging_limit(clause_id: ClauseId, maximum: u32) -> Checker {
         Checker {
             clause_id,
-            matcher: Matcher::PhraseList {
-                entries: vec![PhraseEntry {
-                    phrase: "perhaps".to_owned(),
-                    prefix: false,
-                }],
+            rule: Rule {
+                matcher: Matcher::PhraseList {
+                    entries: vec![PhraseEntry {
+                        phrase: "perhaps".to_owned(),
+                        prefix: false,
+                    }],
+                },
+                unit: Unit::Paragraph,
+                band: Band::Count {
+                    minimum: None,
+                    maximum: Some(maximum),
+                },
+                form_modes: BTreeSet::from([CheckableMode::Prose]),
+                register_scope: None,
             },
-            unit: Unit::Paragraph,
-            band: Band::Count {
-                minimum: None,
-                maximum: Some(maximum),
-            },
-            form_modes: BTreeSet::from([CheckableMode::Prose]),
-            register_scope: None,
         }
     }
 
     fn sentence_length(clause_id: ClauseId) -> Checker {
         Checker {
             clause_id,
-            matcher: Matcher::WordCount,
-            unit: Unit::Sentence,
-            band: Band::Count {
-                minimum: None,
-                maximum: Some(30),
+            rule: Rule {
+                matcher: Matcher::WordCount,
+                unit: Unit::Sentence,
+                band: Band::Count {
+                    minimum: None,
+                    maximum: Some(30),
+                },
+                form_modes: BTreeSet::from([CheckableMode::Prose]),
+                register_scope: Some(BTreeSet::from(["email".to_owned()])),
             },
-            form_modes: BTreeSet::from([CheckableMode::Prose]),
-            register_scope: Some(BTreeSet::from(["email".to_owned()])),
         }
     }
 
@@ -516,15 +520,24 @@ mod tests {
             hedging_limit(hedges, 2),
             hedging_limit(short, 1),
             Checker {
-                unit: Unit::Sentence,
+                rule: Rule {
+                    unit: Unit::Sentence,
+                    ..original.rule.clone()
+                },
                 ..original.clone()
             },
             Checker {
-                form_modes: BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]),
+                rule: Rule {
+                    form_modes: BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]),
+                    ..original.rule.clone()
+                },
                 ..original.clone()
             },
             Checker {
-                register_scope: Some(BTreeSet::from(["email".to_owned()])),
+                rule: Rule {
+                    register_scope: Some(BTreeSet::from(["email".to_owned()])),
+                    ..original.rule.clone()
+                },
                 ..original.clone()
             },
         ];

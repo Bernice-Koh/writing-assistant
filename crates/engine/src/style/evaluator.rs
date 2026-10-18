@@ -1,4 +1,4 @@
-//! Compiles a [`Checker`] once into an [`Evaluator`], and evaluates it over one unit's text. An
+//! Compiles a [`Rule`] once into an [`Evaluator`], and evaluates it over one unit's text. An
 //! evaluation is a pure function of the text, the paragraph's form mode and the register: it calls
 //! no model and no network, and the same inputs give the same matches in the same order.
 //!
@@ -7,35 +7,46 @@
 //! #94, and a LanguageTool rule id is evaluated in the grammar stage (#98). Until then each
 //! evaluates to no match.
 
+use std::fmt;
 use std::ops::Range;
 
 use regex::Regex;
 use thiserror::Error;
 
-use super::checker::{Band, Checker, FormMode, Matcher};
+use super::checker::{Band, Checker, FormMode, Matcher, Rule};
 use super::phrase::{PhraseError, PhraseMatcher};
 use crate::flag::{ClauseId, Span};
 
-/// Why a checker did not compile. It names the checker by the clause it serves and holds only the
-/// checker's own data, never a document's text.
+/// What a rule belongs to, which names it wherever the rule itself is not quoted, as in a compile
+/// error. A telltale pattern's rule belongs to its pattern id (#96).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleOwner {
+    /// The checker that serves this Style Card clause.
+    Clause(ClauseId),
+}
+
+impl fmt::Display for RuleOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clause(clause_id) => write!(formatter, "the checker for clause {}", clause_id.0),
+        }
+    }
+}
+
+/// Why a rule did not compile. It names the rule by its owner and holds only the rule's own data,
+/// never a document's text.
 #[derive(Debug, Error)]
 pub enum CompileError {
-    #[error(
-        "the regex of the checker for clause {clause} does not compile: {source}",
-        clause = clause_id.0
-    )]
+    #[error("the regex of {owner} does not compile: {source}")]
     Regex {
-        clause_id: ClauseId,
+        owner: RuleOwner,
         #[source]
         source: regex::Error,
     },
 
-    #[error(
-        "a phrase of the checker for clause {clause} does not compile: {source}",
-        clause = clause_id.0
-    )]
+    #[error("a phrase of {owner} does not compile: {source}")]
     Phrase {
-        clause_id: ClauseId,
+        owner: RuleOwner,
         #[source]
         source: regex::Error,
     },
@@ -43,30 +54,29 @@ pub enum CompileError {
     /// The prefix flag lets a one-word entry match the longer words that start with it, and
     /// means nothing on an entry of more words or none.
     #[error(
-        "the phrase at index {entry_index} of the checker for clause {clause} carries the prefix \
-         flag and is not one word",
-        clause = clause_id.0
+        "the phrase at index {entry_index} of {owner} carries the prefix flag and is not one word"
     )]
     PrefixNotOneWord {
-        clause_id: ClauseId,
+        owner: RuleOwner,
         entry_index: usize,
     },
 }
 
 impl CompileError {
-    pub fn clause_id(&self) -> ClauseId {
+    pub fn owner(&self) -> &RuleOwner {
         match self {
-            Self::Regex { clause_id, .. }
-            | Self::Phrase { clause_id, .. }
-            | Self::PrefixNotOneWord { clause_id, .. } => *clause_id,
+            Self::Regex { owner, .. }
+            | Self::Phrase { owner, .. }
+            | Self::PrefixNotOneWord { owner, .. } => owner,
         }
     }
 }
 
-/// A checker compiled for evaluation.
+/// A rule compiled for evaluation.
 #[derive(Debug)]
 pub struct Evaluator {
-    checker: Checker,
+    owner: RuleOwner,
+    rule: Rule,
     /// `None` for a matcher that does not search the text.
     search: Option<TextSearch>,
 }
@@ -78,17 +88,19 @@ enum TextSearch {
 }
 
 impl Evaluator {
-    /// Compiles the checker's regex, or one regex per phrase, here and once, so an evaluation
-    /// compiles nothing.
-    pub fn compile(checker: Checker) -> Result<Self, CompileError> {
-        let clause_id = checker.clause_id;
-        let search = match &checker.matcher {
+    /// Compiles the rule's regex, or one regex per phrase, here and once, so an evaluation
+    /// compiles nothing. A failure names `owner`.
+    pub fn compile(owner: RuleOwner, rule: Rule) -> Result<Self, CompileError> {
+        let search = match &rule.matcher {
             Matcher::PhraseList { entries } => Some(TextSearch::Phrases(
                 PhraseMatcher::compile(entries).map_err(|error| match error {
-                    PhraseError::Regex(source) => CompileError::Phrase { clause_id, source },
+                    PhraseError::Regex(source) => CompileError::Phrase {
+                        owner: owner.clone(),
+                        source,
+                    },
                     PhraseError::PrefixNotOneWord { entry_index } => {
                         CompileError::PrefixNotOneWord {
-                            clause_id,
+                            owner: owner.clone(),
                             entry_index,
                         }
                     }
@@ -97,7 +109,7 @@ impl Evaluator {
             Matcher::Regex { source } => {
                 Some(TextSearch::Regex(Regex::new(source).map_err(|error| {
                     CompileError::Regex {
-                        clause_id,
+                        owner: owner.clone(),
                         source: error,
                     }
                 })?))
@@ -106,18 +118,26 @@ impl Evaluator {
             | Matcher::SpellingVariant { .. }
             | Matcher::WordCount => None,
         };
-        Ok(Self { checker, search })
+        Ok(Self {
+            owner,
+            rule,
+            search,
+        })
     }
 
-    pub fn checker(&self) -> &Checker {
-        &self.checker
+    pub fn owner(&self) -> &RuleOwner {
+        &self.owner
     }
 
-    /// The checker's matches in `text`, one unit's text, from a paragraph of form mode `mode`
-    /// under the register `register`. Each is a [`Span`] anchored on `text` with its offset and
-    /// length in UTF-16 code units, the anchor contract the flag types hold, and they come in the
-    /// order they start in `text`. Empty where the checker does not declare `mode`, or where
-    /// `register` is outside its scope.
+    pub fn rule(&self) -> &Rule {
+        &self.rule
+    }
+
+    /// The rule's matches in `text`, one unit's text, from a paragraph of form mode `mode` under
+    /// the register `register`. Each is a [`Span`] anchored on `text` with its offset and length
+    /// in UTF-16 code units, the anchor contract the flag types hold, and they come in the order
+    /// they start in `text`. Empty where the rule does not declare `mode`, or where `register` is
+    /// outside its scope.
     pub fn evaluate(&self, text: &str, mode: FormMode, register: &str) -> Vec<Span> {
         if !self.runs_in(mode, register) {
             return Vec::new();
@@ -127,7 +147,7 @@ impl Evaluator {
             // spelling-variant and word-count matchers arrive with #94.
             return Vec::new();
         };
-        match self.checker.band {
+        match self.rule.band {
             // Every match violates the band whatever unit holds it, so the unit changes nothing
             // here: it decides only which text the caller hands over.
             Band::Forbidden => search
@@ -143,9 +163,9 @@ impl Evaluator {
     fn runs_in(&self, mode: FormMode, register: &str) -> bool {
         let declares_mode = mode
             .checkable()
-            .is_some_and(|mode| self.checker.form_modes.contains(&mode));
+            .is_some_and(|mode| self.rule.form_modes.contains(&mode));
         let in_scope = self
-            .checker
+            .rule
             .register_scope
             .as_ref()
             .is_none_or(|scope| scope.contains(register));
@@ -171,15 +191,16 @@ impl TextSearch {
     }
 }
 
-/// Compiles each of `checkers` in order. A checker that does not compile is reported and the rest
-/// still compile, so one bad checker costs only its own flags.
+/// Compiles the rule of each of `checkers` in order, owned by the clause the checker serves. A
+/// checker that does not compile is reported and the rest still compile, so one bad checker costs
+/// only its own flags.
 pub fn compile_all(
     checkers: impl IntoIterator<Item = Checker>,
 ) -> (Vec<Evaluator>, Vec<CompileError>) {
     let mut evaluators = Vec::new();
     let mut failures = Vec::new();
     for checker in checkers {
-        match Evaluator::compile(checker) {
+        match Evaluator::compile(RuleOwner::Clause(checker.clause_id), checker.rule) {
             Ok(evaluator) => evaluators.push(evaluator),
             Err(error) => failures.push(error),
         }
@@ -203,16 +224,23 @@ mod tests {
     use super::*;
     use crate::style::checker::{CheckableMode, PhraseEntry, Unit};
 
-    /// A sentence-unit checker for clause 1 under the forbidden band, declared for prose and
-    /// fragment in every register.
-    fn checker(matcher: Matcher) -> Checker {
-        Checker {
-            clause_id: ClauseId(1),
+    /// A sentence-unit rule under the forbidden band, declared for prose and fragment in every
+    /// register.
+    fn rule(matcher: Matcher) -> Rule {
+        Rule {
             matcher,
             unit: Unit::Sentence,
             band: Band::Forbidden,
             form_modes: BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]),
             register_scope: None,
+        }
+    }
+
+    /// The checker for clause `clause` with `rule`.
+    fn checker(clause: i64, rule: Rule) -> Checker {
+        Checker {
+            clause_id: ClauseId(clause),
+            rule,
         }
     }
 
@@ -234,8 +262,8 @@ mod tests {
         }
     }
 
-    fn compiled(checker: Checker) -> Evaluator {
-        Evaluator::compile(checker).unwrap()
+    fn compiled(rule: Rule) -> Evaluator {
+        Evaluator::compile(RuleOwner::Clause(ClauseId(1)), rule).unwrap()
     }
 
     fn in_prose(evaluator: &Evaluator, text: &str) -> Vec<Span> {
@@ -251,7 +279,7 @@ mod tests {
     #[test]
     fn a_forbidden_phrase_held_twice_in_a_sentence_matches_twice_on_the_sentence() {
         let text = "🚀 The town boasts a harbour and boasts a castle.";
-        let matches = in_prose(&compiled(checker(phrases(&["boasts a"]))), text);
+        let matches = in_prose(&compiled(rule(phrases(&["boasts a"]))), text);
         assert_eq!(matches.len(), 2, "{matches:#?}");
         assert!(matches.iter().all(|span| span.anchor == text));
         assert!(matches.iter().all(|span| flagged_text(span) == "boasts a"));
@@ -263,7 +291,7 @@ mod tests {
     #[test]
     fn every_regex_match_anchors_on_the_text_at_its_own_offset() {
         let text = "Launch 🚀 today, then launch 🚀 again.";
-        let emojis = compiled(checker(regex(
+        let emojis = compiled(rule(regex(
             r"[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{1F1E6}-\x{1F1FF}]",
         )));
         let matches = in_prose(&emojis, text);
@@ -280,7 +308,7 @@ mod tests {
         // searched copy starts two bytes early in the text as written: inside the em dash, which
         // is not a character boundary, and slicing there panics.
         let text = "The town\u{2019}s jewel\u{2014}boasts a harbour.";
-        let evaluator = compiled(checker(phrases(&["boasts a"])));
+        let evaluator = compiled(rule(phrases(&["boasts a"])));
 
         let ranges = evaluator.search.as_ref().unwrap().find(text);
         assert_eq!(ranges.len(), 1, "{ranges:?}");
@@ -294,7 +322,7 @@ mod tests {
 
     #[test]
     fn a_regex_runs_against_the_text_as_written_and_can_name_a_curly_mark() {
-        let curly_apostrophe = compiled(checker(regex(r"\x{2019}")));
+        let curly_apostrophe = compiled(rule(regex(r"\x{2019}")));
         let matches = in_prose(&curly_apostrophe, "It\u{2019}s here, and it's there.");
         assert_eq!(
             matches.iter().map(flagged_text).collect::<Vec<_>>(),
@@ -306,14 +334,13 @@ mod tests {
 
     #[test]
     fn a_regex_that_does_not_compile_fails_naming_its_clause() {
-        let mut unclosed = checker(regex("(an unclosed group"));
-        unclosed.clause_id = ClauseId(4);
-        let error = Evaluator::compile(unclosed).unwrap_err();
+        let unclosed = rule(regex("(an unclosed group"));
+        let error = Evaluator::compile(RuleOwner::Clause(ClauseId(4)), unclosed).unwrap_err();
         assert!(
             matches!(
                 error,
                 CompileError::Regex {
-                    clause_id: ClauseId(4),
+                    owner: RuleOwner::Clause(ClauseId(4)),
                     ..
                 }
             ),
@@ -322,57 +349,66 @@ mod tests {
         assert!(error.to_string().contains("clause 4"), "{error}");
     }
 
+    /// The owner of each evaluator in `evaluators`, in order.
+    fn owners(evaluators: &[Evaluator]) -> Vec<RuleOwner> {
+        evaluators
+            .iter()
+            .map(|evaluator| evaluator.owner().clone())
+            .collect()
+    }
+
     #[test]
     fn compiling_a_set_reports_the_checker_that_fails_and_compiles_the_rest() {
-        let mut first = checker(phrases(&["boasts a"]));
-        first.clause_id = ClauseId(1);
-        let mut broken = checker(regex("(an unclosed group"));
-        broken.clause_id = ClauseId(2);
-        let mut last = checker(regex("\u{2014}"));
-        last.clause_id = ClauseId(3);
+        let first = checker(1, rule(phrases(&["boasts a"])));
+        let broken = checker(2, rule(regex("(an unclosed group")));
+        let last = checker(3, rule(regex("\u{2014}")));
 
         let (evaluators, failures) = compile_all([first, broken, last]);
-        let compiled: Vec<ClauseId> = evaluators
-            .iter()
-            .map(|evaluator| evaluator.checker().clause_id)
-            .collect();
-        assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
-        let failed: Vec<ClauseId> = failures.iter().map(CompileError::clause_id).collect();
-        assert_eq!(failed, [ClauseId(2)]);
+        assert_eq!(
+            owners(&evaluators),
+            [
+                RuleOwner::Clause(ClauseId(1)),
+                RuleOwner::Clause(ClauseId(3))
+            ]
+        );
+        let failed: Vec<&RuleOwner> = failures.iter().map(CompileError::owner).collect();
+        assert_eq!(failed, [&RuleOwner::Clause(ClauseId(2))]);
     }
 
     #[test]
     fn a_prefix_flag_on_a_phrase_of_many_words_fails_naming_its_clause_and_the_rest_compile() {
-        let mut first = checker(phrases(&["boasts a"]));
-        first.clause_id = ClauseId(1);
-        let mut many_words = checker(Matcher::PhraseList {
-            entries: vec![
-                PhraseEntry {
-                    phrase: "intricate".to_owned(),
-                    prefix: true,
-                },
-                PhraseEntry {
-                    phrase: "rich tapestry".to_owned(),
-                    prefix: true,
-                },
-            ],
-        });
-        many_words.clause_id = ClauseId(5);
-        let mut last = checker(regex("\u{2014}"));
-        last.clause_id = ClauseId(3);
+        let first = checker(1, rule(phrases(&["boasts a"])));
+        let many_words = checker(
+            5,
+            rule(Matcher::PhraseList {
+                entries: vec![
+                    PhraseEntry {
+                        phrase: "intricate".to_owned(),
+                        prefix: true,
+                    },
+                    PhraseEntry {
+                        phrase: "rich tapestry".to_owned(),
+                        prefix: true,
+                    },
+                ],
+            }),
+        );
+        let last = checker(3, rule(regex("\u{2014}")));
 
         let (evaluators, failures) = compile_all([first, many_words, last]);
-        let compiled: Vec<ClauseId> = evaluators
-            .iter()
-            .map(|evaluator| evaluator.checker().clause_id)
-            .collect();
-        assert_eq!(compiled, [ClauseId(1), ClauseId(3)]);
+        assert_eq!(
+            owners(&evaluators),
+            [
+                RuleOwner::Clause(ClauseId(1)),
+                RuleOwner::Clause(ClauseId(3))
+            ]
+        );
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(
             matches!(
                 failures[0],
                 CompileError::PrefixNotOneWord {
-                    clause_id: ClauseId(5),
+                    owner: RuleOwner::Clause(ClauseId(5)),
                     entry_index: 1,
                 }
             ),
@@ -389,7 +425,7 @@ mod tests {
     #[test]
     fn a_checker_returns_no_match_in_a_mode_it_does_not_declare() {
         let text = "The town boasts a harbour.";
-        let mut prose_only = checker(phrases(&["boasts a"]));
+        let mut prose_only = rule(phrases(&["boasts a"]));
         prose_only.form_modes = BTreeSet::from([CheckableMode::Prose]);
         let prose_only = compiled(prose_only);
         assert_eq!(
@@ -403,7 +439,7 @@ mod tests {
 
     #[test]
     fn no_checker_returns_a_match_in_code() {
-        let both = compiled(checker(phrases(&["boasts a"])));
+        let both = compiled(rule(phrases(&["boasts a"])));
         assert!(both
             .evaluate("The town boasts a harbour.", FormMode::Code, "default")
             .is_empty());
@@ -412,7 +448,7 @@ mod tests {
     #[test]
     fn a_checker_returns_no_match_under_a_register_outside_its_scope() {
         let text = "The town boasts a harbour.";
-        let mut email_only = checker(phrases(&["boasts a"]));
+        let mut email_only = rule(phrases(&["boasts a"]));
         email_only.register_scope = Some(BTreeSet::from(["email".to_owned()]));
         let email_only = compiled(email_only);
         assert_eq!(email_only.evaluate(text, FormMode::Prose, "email").len(), 1);
@@ -423,7 +459,7 @@ mod tests {
 
     #[test]
     fn an_unset_register_scope_runs_in_every_register() {
-        let every = compiled(checker(phrases(&["boasts a"])));
+        let every = compiled(rule(phrases(&["boasts a"])));
         for register in ["default", "email", "chat"] {
             let matches = every.evaluate("The town boasts a harbour.", FormMode::Prose, register);
             assert_eq!(matches.len(), 1, "{register}");
@@ -445,7 +481,7 @@ mod tests {
         ];
         for matcher in elsewhere {
             assert!(
-                in_prose(&compiled(checker(matcher.clone())), text).is_empty(),
+                in_prose(&compiled(rule(matcher.clone())), text).is_empty(),
                 "{matcher:?}"
             );
         }
@@ -459,7 +495,7 @@ mod tests {
             },
         ];
         for band in counting {
-            let mut counted = checker(phrases(&["perhaps", "boasts a"]));
+            let mut counted = rule(phrases(&["perhaps", "boasts a"]));
             counted.band = band.clone();
             assert!(in_prose(&compiled(counted), text).is_empty(), "{band:?}");
         }
@@ -467,19 +503,19 @@ mod tests {
 
     #[test]
     fn an_empty_match_is_not_a_match() {
-        let optional = compiled(checker(regex("x*")));
+        let optional = compiled(rule(regex("x*")));
         assert!(in_prose(&optional, "abc").is_empty());
         let matches = in_prose(&optional, "a xx b");
         assert_eq!(matches.iter().map(flagged_text).collect::<Vec<_>>(), ["xx"]);
 
-        let empty_phrase = compiled(checker(phrases(&[""])));
+        let empty_phrase = compiled(rule(phrases(&[""])));
         assert!(in_prose(&empty_phrase, "abc").is_empty());
     }
 
     #[test]
     fn the_same_checker_over_the_same_text_gives_identical_matches_in_identical_order() {
         let text = "Its success is a testament to the team\u{2014}a testament to its care.";
-        let listed = || checker(phrases(&["testament to", "\u{2014}", "is a testament to"]));
+        let listed = || rule(phrases(&["testament to", "\u{2014}", "is a testament to"]));
         let evaluator = compiled(listed());
         let first = in_prose(&evaluator, text);
         assert_eq!(
@@ -499,7 +535,7 @@ mod tests {
     fn the_same_checker_over_text_with_curly_marks_gives_identical_matches_in_identical_order() {
         let text = "\u{201C}You\u{2019}re absolutely right,\u{201D} he said. You\u{2019}re absolutely right.";
         let listed = || {
-            checker(phrases(&[
+            rule(phrases(&[
                 "absolutely right",
                 "you're absolutely right",
                 "\"",

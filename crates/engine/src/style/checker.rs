@@ -1,9 +1,13 @@
-//! The checker: a Style Card clause made mechanical, as a matcher, a unit and a band, declared for
-//! the form modes and the registers it runs in. A checker is data. The store holds it (#82) and
-//! #95 takes its content hash over a canonical serialisation of it, so every part round-trips
-//! through serde, and the modes and the registers are ordered sets: the order they were written
-//! in reaches neither the store nor the hash. Its provenance is stored beside it (#95) and is not
-//! a part of it.
+//! The checker: a Style Card clause made mechanical, as the clause's id and a [`Rule`]. The rule is
+//! the part the engine evaluates: a matcher, a unit and a band, declared for the form modes and
+//! the registers it runs in. A telltale pattern carries the same rule under its pattern id (#96).
+//!
+//! A checker is data. The store holds it as its serde JSON and takes its content hash over those
+//! bytes (#82), so every part round-trips through serde, and the modes and the registers are
+//! ordered sets: the order they were written in reaches neither the store nor the hash. The rule's
+//! fields are flattened into the checker's, so a checker serialises as it did before the rule was
+//! a type of its own and every stored hash still names its checker. Its provenance is stored beside
+//! it and is not a part of it.
 
 use std::collections::BTreeSet;
 
@@ -17,13 +21,21 @@ pub struct Checker {
     /// The clause the checker serves, which every flag it raises cites.
     #[serde(deserialize_with = "clause_id_from_integer")]
     pub clause_id: ClauseId,
+    #[serde(flatten)]
+    pub rule: Rule,
+}
+
+/// The evaluable part of a checker or a telltale pattern, which the evaluator compiles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rule {
     pub matcher: Matcher,
     pub unit: Unit,
     pub band: Band,
-    /// The form modes of the paragraphs the checker runs in. It runs in no other.
+    /// The form modes of the paragraphs the rule runs in. It runs in no other.
     pub form_modes: BTreeSet<CheckableMode>,
-    /// The registers the checker runs in, by the names the settings' register map gives them.
-    /// Unset, it runs in every register.
+    /// The registers the rule runs in, by the names the settings' register map gives them. Unset,
+    /// it runs in every register.
     pub register_scope: Option<BTreeSet<String>>,
 }
 
@@ -151,79 +163,93 @@ mod tests {
         vec![
             Checker {
                 clause_id: ClauseId(1),
-                matcher: Matcher::PhraseList {
-                    entries: vec![entry("it is worth noting", false), entry("intricate", true)],
+                rule: Rule {
+                    matcher: Matcher::PhraseList {
+                        entries: vec![entry("it is worth noting", false), entry("intricate", true)],
+                    },
+                    unit: Unit::Paragraph,
+                    band: Band::Count {
+                        minimum: None,
+                        maximum: Some(2),
+                    },
+                    form_modes: BTreeSet::from([CheckableMode::Prose]),
+                    register_scope: None,
                 },
-                unit: Unit::Paragraph,
-                band: Band::Count {
-                    minimum: None,
-                    maximum: Some(2),
-                },
-                form_modes: BTreeSet::from([CheckableMode::Prose]),
-                register_scope: None,
             },
             Checker {
                 clause_id: ClauseId(2),
-                matcher: Matcher::Regex {
-                    source: "\u{2014}".to_owned(),
+                rule: Rule {
+                    matcher: Matcher::Regex {
+                        source: "\u{2014}".to_owned(),
+                    },
+                    unit: Unit::Span,
+                    band: Band::Forbidden,
+                    form_modes: prose_and_fragment.clone(),
+                    register_scope: registers(&["default", "email"]),
                 },
-                unit: Unit::Span,
-                band: Band::Forbidden,
-                form_modes: prose_and_fragment.clone(),
-                register_scope: registers(&["default", "email"]),
             },
             Checker {
                 clause_id: ClauseId(3),
-                matcher: Matcher::LanguageToolRule {
-                    rule_id: "PASSIVE_VOICE".to_owned(),
+                rule: Rule {
+                    matcher: Matcher::LanguageToolRule {
+                        rule_id: "PASSIVE_VOICE".to_owned(),
+                    },
+                    unit: Unit::Sentence,
+                    band: Band::Forbidden,
+                    form_modes: BTreeSet::from([CheckableMode::Prose]),
+                    register_scope: None,
                 },
-                unit: Unit::Sentence,
-                band: Band::Forbidden,
-                form_modes: BTreeSet::from([CheckableMode::Prose]),
-                register_scope: None,
             },
             Checker {
                 clause_id: ClauseId(4),
-                matcher: Matcher::SpellingVariant {
-                    preferred_convention: None,
+                rule: Rule {
+                    matcher: Matcher::SpellingVariant {
+                        preferred_convention: None,
+                    },
+                    unit: Unit::Document,
+                    band: Band::Forbidden,
+                    form_modes: prose_and_fragment.clone(),
+                    register_scope: None,
                 },
-                unit: Unit::Document,
-                band: Band::Forbidden,
-                form_modes: prose_and_fragment.clone(),
-                register_scope: None,
             },
             Checker {
                 clause_id: ClauseId(5),
-                matcher: Matcher::SpellingVariant {
-                    preferred_convention: Some("british".to_owned()),
+                rule: Rule {
+                    matcher: Matcher::SpellingVariant {
+                        preferred_convention: Some("british".to_owned()),
+                    },
+                    unit: Unit::Span,
+                    band: Band::Forbidden,
+                    form_modes: BTreeSet::from([CheckableMode::Fragment]),
+                    register_scope: registers(&["email"]),
                 },
-                unit: Unit::Span,
-                band: Band::Forbidden,
-                form_modes: BTreeSet::from([CheckableMode::Fragment]),
-                register_scope: registers(&["email"]),
             },
             Checker {
                 clause_id: ClauseId(6),
-                matcher: Matcher::WordCount,
-                unit: Unit::Sentence,
-                band: Band::Count {
-                    minimum: Some(3),
-                    maximum: Some(30),
+                rule: Rule {
+                    matcher: Matcher::WordCount,
+                    unit: Unit::Sentence,
+                    band: Band::Count {
+                        minimum: Some(3),
+                        maximum: Some(30),
+                    },
+                    form_modes: BTreeSet::from([CheckableMode::Prose]),
+                    register_scope: None,
                 },
-                form_modes: BTreeSet::from([CheckableMode::Prose]),
-                register_scope: None,
             },
             Checker {
                 clause_id: ClauseId(7),
-                matcher: Matcher::PhraseList {
-                    entries: vec![entry("perhaps", false)],
+                rule: Rule {
+                    matcher: Matcher::PhraseList {
+                        entries: vec![entry("perhaps", false)],
+                    },
+                    unit: Unit::Document,
+                    band: Band::Rate {
+                        maximum_per_hundred_words: 1.5,
+                    },
+                    form_modes: prose_and_fragment,
+                    register_scope: registers(&[]),
                 },
-                unit: Unit::Document,
-                band: Band::Rate {
-                    maximum_per_hundred_words: 1.5,
-                },
-                form_modes: prose_and_fragment,
-                register_scope: registers(&[]),
             },
         ]
     }
@@ -257,6 +283,17 @@ mod tests {
                 "formModes": ["prose"],
                 "registerScope": null,
             })
+        );
+    }
+
+    #[test]
+    fn a_checker_serialises_to_the_bytes_it_did_before_the_rule_was_its_own_type() {
+        // The store's content hash is taken over these bytes, so a change to them, the order of
+        // the keys included, gives a stored checker a second rule id.
+        let checker = a_checker_of_every_kind().remove(0);
+        assert_eq!(
+            serde_json::to_string(&checker).unwrap(),
+            r#"{"clauseId":1,"matcher":{"kind":"phraseList","entries":[{"phrase":"it is worth noting","prefix":false},{"phrase":"intricate","prefix":true}]},"unit":"paragraph","band":{"kind":"count","minimum":null,"maximum":2},"formModes":["prose"],"registerScope":null}"#
         );
     }
 
