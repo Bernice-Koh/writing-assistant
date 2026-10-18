@@ -5,13 +5,16 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use super::card::{CardVersionId, ClauseTextId};
 use super::passages::PassageId;
+use super::ruleset::CheckerId;
+use crate::flag::{ClauseId, RulesetVersion};
 
 /// The store module's one error type.
 ///
 /// No variant carries the text of a row, and neither does any log line the module writes. A
-/// variant names a path, an operation, a journal mode, a migration number or a passage id beside
-/// the underlying error. Every statement binds its values as parameters and never formats one into
+/// variant names a path, an operation, a journal mode, a migration number or a row's id beside the
+/// underlying error. Every statement binds its values as parameters and never formats one into
 /// its SQL, so the statement text and SQLite's message in a [`rusqlite::Error`] name a table, a
 /// column or a constraint, and never a value.
 #[derive(Debug, Error)]
@@ -122,6 +125,34 @@ pub enum StoreError {
     /// A read named a passage id the store does not hold.
     #[error("the store holds no passage with id {id}", id = id.0)]
     NoPassage { id: PassageId },
+
+    /// A Card version's member, or a checker, named a clause id the store does not hold.
+    #[error("the store holds no clause with id {id}", id = id.0)]
+    NoClause { id: ClauseId },
+
+    /// A Card version's member named a clause text id the store does not hold.
+    #[error("the store holds no clause text with id {id}", id = id.0)]
+    NoClauseText { id: ClauseTextId },
+
+    /// A Card version's members held two wordings of one clause.
+    #[error("a Card version lists clause {id} more than once", id = id.0)]
+    ClauseRepeated { id: ClauseId },
+
+    /// A read named a Card version id the store does not hold.
+    #[error("the store holds no Card version with id {id}", id = id.0)]
+    NoCardVersion { id: CardVersionId },
+
+    /// A ruleset version's members named a checker id the store does not hold.
+    #[error("the store holds no checker with id {id}", id = id.0)]
+    NoChecker { id: CheckerId },
+
+    /// A ruleset version's members named one checker twice.
+    #[error("a ruleset version lists checker {id} more than once", id = id.0)]
+    CheckerRepeated { id: CheckerId },
+
+    /// A read named a ruleset version the store does not hold.
+    #[error("the store holds no ruleset version {version}", version = version.0)]
+    NoRulesetVersion { version: RulesetVersion },
 }
 
 impl StoreError {
