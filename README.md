@@ -110,11 +110,12 @@ grammar flag suppresses one, and overlapping ones merge into one underline.
 
 ### The rule layer
 
-A checker is a matcher, a unit, and a band. It declares the form modes it runs in, prose or
-fragment, and a register scope, which is every register when unset. The engine holds a checker as
-data with every part in the table, and evaluates the phrase list and the regex under the forbidden
-band. Nothing runs a checker yet. Planned for Phase 1: the other matchers and bands, and the
-analyzer passes that run checkers.
+A checker is a Style Card clause made mechanical: the clause's id and a rule. The rule is a
+matcher, a unit, and a band, and it declares the form modes it runs in, prose or fragment, and a
+register scope, which is every register when unset. The engine holds a checker as data with every
+part in the table, and evaluates every matcher and band but the LanguageTool rule id, which the
+grammar stage evaluates (planned, Phase 1). Nothing runs a checker yet. Planned for Phase 1: the
+analyzer passes that run checkers, and a rule for each telltale pattern.
 
 | Part | Values |
 |---|---|
@@ -122,10 +123,30 @@ analyzer passes that run checkers.
 | Unit | Span, sentence, paragraph, document |
 | Band | Forbidden, a minimum and maximum count, a rate per hundred words |
 
+A span or sentence unit is one sentence. A paragraph or document unit is evaluated as its
+sentences, so its counts run over the whole unit while each flag anchors on the sentence that holds
+its match, and no flag crosses a paragraph mark.
+
 A ban on em dashes is a regex over spans with a band of zero. A limit on hedging is a phrase list
-per paragraph with a maximum. A band violation flags the matches beyond the limit, with the count
-in the message, so the flag marks what to cut. A style flag carries the text of its clause, and
-the hover card cites the clause the text broke.
+per paragraph with a maximum, and a limit on sentence length is a word count per sentence with a
+maximum. A violation of a maximum flags the matches beyond the limit, with the count and the limit
+in the message, so the flag marks what to cut, and the words beyond a word count's limit in one
+sentence are one flag. A violation of a minimum underlines every sentence of the unit, with the
+shortfall in the message, since no match lies beyond the limit. A rate band flags the matches
+beyond the count its rate allows for the unit's length, with the measured rate and the limit in
+the message, and does not measure a unit under fifty words. A word is a segment of Unicode's word
+boundaries that holds a letter or a digit, the segmentation spelling uses, and the engine counts
+words by that one definition everywhere.
+
+The spelling-variant matcher reads a table of variant pairs compiled into the engine from
+`src-tauri/resources/spelling-variants/`, whose notice records its three conventions: `british`,
+with `-ise`; `oxford`, which is `british` with `-ize`; and `american`. With a preferred convention,
+it matches each word written in a form that convention does not write, and a checker that prefers a
+convention the table does not hold does not compile. Without one, it prefers the convention the
+unit writes most often, or on an equal count the one written first. At the document unit it flags
+each word of the minority convention, and nothing in a document of one convention.
+
+A style flag carries the text of its clause, and the hover card cites the clause the text broke.
 
 Rulesets are versioned. Every flag and every candidate records the ruleset version it was checked
 under, and retiring a checker publishes a new version without rewriting the past.
