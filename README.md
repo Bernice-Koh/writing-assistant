@@ -385,7 +385,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables;<br/>no passage, Card or ruleset written yet")]
+        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results;<br/>none of them written yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -416,9 +416,11 @@ repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
 `crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
 Phase 1, the store's remaining artefact tables for Phase 1 and the phases that first write them,
-and the two clients for Phase 3. The store holds `schema_version`, `passages`, and the Card and
-ruleset tables. Nothing writes a passage until Phase 4 or a Card until Phase 3, and ruleset
-publishing, planned for Phase 1, is the first writer of a ruleset. `wa` has no subcommands yet.
+and the two clients for Phase 3. The store holds `schema_version`, `passages`, the Card and
+ruleset tables, `candidates`, and `screen_results`. Nothing writes a passage or a candidate until
+Phase 4 or a Card until Phase 3, ruleset publishing, planned for Phase 1, is the first writer of a
+ruleset, and the screen, also planned for Phase 1, is the first writer of a screen result. `wa` has
+no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -469,8 +471,9 @@ schema is a new migration. An applied migration whose SQL no longer matches its 
 the open, and so does a store recorded above the newest migration a build carries, which that
 build leaves as it is. The open takes the write lock before it reads what the store records, so
 the app and `wa` opening one store at once apply each migration once. The first migration creates
-`schema_version`, the second `passages`, and the third the Card and ruleset tables; the other
-artefact tables arrive with the features that first write them.
+`schema_version`, the second `passages`, the third the Card and ruleset tables, and the fourth
+`candidates` and `screen_results`; the other artefact tables arrive with the features that first
+write them.
 
 Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
 and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
@@ -510,6 +513,21 @@ is a row of `ruleset_versions`, with its publish time and a content hash taken o
 hashes, and a row of `ruleset_members` for each checker it holds, so a checker that two versions
 share is one row. Nothing writes a Card until Phase 3. Ruleset publishing, planned for Phase 1, is
 the first writer of the ruleset tables.
+
+A candidate is a model's rewrite of a passage. Its row in `candidates` holds the passage, the text,
+the content hash and the generation provenance: the generator's id, the hash of the adapter that
+produced it where one did, the decode parameters, the seed, the generation index and the repair
+depth. The store computes the content hash, the SHA-256 of the passage's content hash followed by
+the candidate's text, since a screening reads both. Two generators that produce one text for one
+passage are two rows with their own provenance and one content hash. The row holds nothing of a
+screening. A screen result is one screening of a candidate, a row of `screen_results` holding the
+candidate's content hash, the ruleset version, the telltale catalogue's content hash, the app
+version, the hard and soft results as JSON, and the killing rule where a check failed. The
+candidate's hash, the ruleset version and the catalogue hash form a lookup key and not a uniqueness
+rule: a candidate screened again under a new ruleset, a new catalogue or a new build gains a row
+and loses none, and a lookup returns the latest row under its key, which every candidate sharing
+the hash shares. Nothing writes a candidate until Phase 4 or a screen result until the screen
+exists.
 
 Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
 questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version

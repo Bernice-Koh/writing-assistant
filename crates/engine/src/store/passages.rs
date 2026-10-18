@@ -269,7 +269,7 @@ impl FromSql for Split {
 
 /// The one of `values` whose column value `value` holds. The CHECK constraints keep every stored
 /// value among them, and the error leaves the value out, as every error of the module does.
-fn from_column<T: Copy>(
+pub(super) fn from_column<T: Copy>(
     value: ValueRef<'_>,
     values: &[T],
     column_value: fn(T) -> &'static str,

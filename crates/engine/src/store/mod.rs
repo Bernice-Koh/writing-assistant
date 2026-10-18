@@ -6,13 +6,17 @@
 //! Beside it, `passages` holds each [`Passage`] with the [`Split`] it was assigned at insert;
 //! nothing writes a passage until Phase 4. The Card tables hold each Card version as a
 //! [`PublishedCard`], and the ruleset tables each ruleset version as a [`PublishedRuleset`];
-//! nothing writes a Card until Phase 3 or a ruleset until #95. Every table is insert-only:
+//! nothing writes a Card until Phase 3 or a ruleset until #95. `candidates` holds each
+//! [`Candidate`], a model's rewrite of a passage with its generation provenance, and
+//! `screen_results` each [`ScreenResult`], one screening of a candidate; nothing writes a
+//! candidate until Phase 4 or a screen result until the screen exists. Every table is insert-only:
 //! triggers raise on update and on delete. The engine's code is the store's only writer, run by the app and `wa` as two
 //! processes, so the connection carries a busy timeout.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
 
+mod candidates;
 mod card;
 pub mod config;
 mod connection;
@@ -21,6 +25,7 @@ mod json;
 mod migrations;
 mod passages;
 mod ruleset;
+mod screen_results;
 mod split;
 mod thread;
 
@@ -28,6 +33,7 @@ use std::path::PathBuf;
 
 use directories::BaseDirs;
 
+pub use candidates::{Candidate, CandidateId, GenerationProvenance};
 pub use card::{
     CardMember, CardVersionId, ClauseTextId, ClauseWording, ExamplePair, PublishedCard,
     PublishedClause,
@@ -38,6 +44,7 @@ pub use passages::{Passage, PassageId, PassageKind};
 pub use ruleset::{
     CheckerAuthor, CheckerId, Provenance, PublishedRuleset, StoredChecker, TestResult,
 };
+pub use screen_results::{KillingRule, ScreenResult, ScreenResultId, StoredScreenResult};
 pub use split::Split;
 pub use thread::Store;
 
