@@ -58,8 +58,7 @@ pub enum Matcher {
 pub struct PhraseEntry {
     pub phrase: String,
     /// Whether a single-word entry also matches the longer words that start with it, so one entry
-    /// covers its inflections. The matcher reads it from #108 on; until then an entry with it set
-    /// matches exactly as one without.
+    /// covers its inflections. Set on an entry that is not one word, the checker does not compile.
     pub prefix: bool,
 }
 
