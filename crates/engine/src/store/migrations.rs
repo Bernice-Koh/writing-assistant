@@ -57,6 +57,11 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         name: "candidates_and_screen_results",
         sql: include_str!("migrations/0004_candidates_and_screen_results.sql"),
     },
+    Migration {
+        number: 5,
+        name: "items",
+        sql: include_str!("migrations/0005_items.sql"),
+    },
 ];
 
 /// Brings the schema of the store at `path`, open on `connection`, up to the newest of
@@ -202,6 +207,10 @@ mod tests {
         (
             4,
             "50da4b19e3379d58824cffed66f4c42f3899e06d9642861a13a7c933cbd5ca30",
+        ),
+        (
+            5,
+            "3a97a07efb7719e99c3984cf8ca95b8eb076aaa8a5508b25b5f92b8064bde3a3",
         ),
     ];
 
@@ -578,7 +587,8 @@ mod tests {
     }
 
     #[test]
-    fn the_card_ruleset_candidate_and_screen_result_tables_exist_once_every_migration_has_run() {
+    fn the_card_ruleset_candidate_screen_result_and_item_tables_exist_once_every_migration_has_run()
+    {
         let root = TempRoot::new();
         let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
 
@@ -601,6 +611,8 @@ mod tests {
             "ruleset_members",
             "candidates",
             "screen_results",
+            "items",
+            "item_slots",
         ] {
             assert!(tables.contains(table), "no table {table} in {tables:?}");
         }

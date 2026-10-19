@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use super::candidates::CandidateId;
 use super::card::{CardVersionId, ClauseTextId};
+use super::items::{ItemId, SLOTS};
 use super::passages::PassageId;
 use super::ruleset::CheckerId;
 use crate::flag::{ClauseId, RulesetVersion};
@@ -14,8 +15,8 @@ use crate::flag::{ClauseId, RulesetVersion};
 /// The store module's one error type.
 ///
 /// No variant carries the text of a row, and neither does any log line the module writes. A
-/// variant names a path, an operation, a journal mode, a migration number or a row's id beside the
-/// underlying error. Every statement binds its values as parameters and never formats one into
+/// variant names a path, an operation, a journal mode, a migration number, a row's id or a count
+/// beside the underlying error. Every statement binds its values as parameters and never formats one into
 /// its SQL, so the statement text and SQLite's message in a [`rusqlite::Error`] name a table, a
 /// column or a constraint, and never a value.
 #[derive(Debug, Error)]
@@ -123,11 +124,12 @@ pub enum StoreError {
     #[error("the store thread has stopped, so the request {operation:?} got no reply")]
     ThreadGone { operation: &'static str },
 
-    /// A read, or a candidate, named a passage id the store does not hold.
+    /// A read, a candidate or an item named a passage id the store does not hold.
     #[error("the store holds no passage with id {id}", id = id.0)]
     NoPassage { id: PassageId },
 
-    /// A Card version's member, or a checker, named a clause id the store does not hold.
+    /// A Card version's member, a checker or an item's contrast named a clause id the store does
+    /// not hold.
     #[error("the store holds no clause with id {id}", id = id.0)]
     NoClause { id: ClauseId },
 
@@ -139,7 +141,7 @@ pub enum StoreError {
     #[error("a Card version lists clause {id} more than once", id = id.0)]
     ClauseRepeated { id: ClauseId },
 
-    /// A read named a Card version id the store does not hold.
+    /// A read, or an item, named a Card version id the store does not hold.
     #[error("the store holds no Card version with id {id}", id = id.0)]
     NoCardVersion { id: CardVersionId },
 
@@ -151,17 +153,25 @@ pub enum StoreError {
     #[error("a ruleset version lists checker {id} more than once", id = id.0)]
     CheckerRepeated { id: CheckerId },
 
-    /// A read, or a screen result, named a ruleset version the store does not hold.
+    /// A read, a screen result or an item named a ruleset version the store does not hold.
     #[error("the store holds no ruleset version {version}", version = version.0)]
     NoRulesetVersion { version: RulesetVersion },
 
-    /// A read named a candidate id the store does not hold.
+    /// A read, or an item's slot, named a candidate id the store does not hold.
     #[error("the store holds no candidate with id {id}", id = id.0)]
     NoCandidate { id: CandidateId },
 
     /// A screen result named a candidate content hash no stored candidate has.
     #[error("the store holds no candidate with content hash {content_hash}")]
     NoCandidateHash { content_hash: String },
+
+    /// A read named an item id the store does not hold.
+    #[error("the store holds no item with id {id}", id = id.0)]
+    NoItem { id: ItemId },
+
+    /// An item listed other than one candidate for each of its slots.
+    #[error("an item holds {SLOTS} slots, and the insert listed {count}")]
+    SlotCount { count: usize },
 }
 
 impl StoreError {

@@ -406,7 +406,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results;<br/>none of them written yet")]
+        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results,<br/>items, item_slots;<br/>none of them written yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -438,10 +438,10 @@ package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it
 `crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
 Phase 1, the store's remaining artefact tables for Phase 1 and the phases that first write them,
 and the two clients for Phase 3. The store holds `schema_version`, `passages`, the Card and
-ruleset tables, `candidates`, and `screen_results`. Nothing writes a passage or a candidate until
-Phase 4 or a Card until Phase 3, ruleset publishing, planned for Phase 1, is the first writer of a
-ruleset, and the screen, also planned for Phase 1, is the first writer of a screen result. `wa` has
-no subcommands yet.
+ruleset tables, `candidates`, `screen_results`, `items`, and `item_slots`. Nothing writes a passage
+or a candidate until Phase 4, an item until Phase 5, or a Card until Phase 3; ruleset publishing,
+planned for Phase 1, is the first writer of a ruleset, and the screen, also planned for Phase 1, is
+the first writer of a screen result. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -492,9 +492,9 @@ schema is a new migration. An applied migration whose SQL no longer matches its 
 the open, and so does a store recorded above the newest migration a build carries, which that
 build leaves as it is. The open takes the write lock before it reads what the store records, so
 the app and `wa` opening one store at once apply each migration once. The first migration creates
-`schema_version`, the second `passages`, the third the Card and ruleset tables, and the fourth
-`candidates` and `screen_results`; the other artefact tables arrive with the features that first
-write them.
+`schema_version`, the second `passages`, the third the Card and ruleset tables, the fourth
+`candidates` and `screen_results`, and the fifth `items` and `item_slots`; the other artefact tables
+arrive with the features that first write them.
 
 Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
 and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
@@ -549,6 +549,22 @@ rule: a candidate screened again under a new ruleset, a new catalogue or a new b
 and loses none, and a lookup returns the latest row under its key, which every candidate sharing
 the hash shares. Nothing writes a candidate until Phase 4 or a screen result until the screen
 exists.
+
+An item is the record of what was shown to the owner: a passage, a candidate in each of two slots,
+and the versions in force. Its row in `items` holds its type, which is fresh core, fresh fringe,
+anchor, repeat or clause audit, the passage, the register, the Card version, the ruleset version,
+the contrast type and the never-export flag. The contrast type is minimal when one candidate is the
+other with a residual clause's twin written into it, and names that clause; otherwise it is none.
+A row of
+`item_slots` holds each slot's position, 0 or 1, its candidate, and the candidate's generator id,
+which the store reads from the candidate's row. The never-export flag marks an item that must never
+reach a training file, and the store sets it at insert from the item's type and its passage's
+split. Every item on a bench, gate or sealed passage carries it, and so does every anchor, repeat
+and clause audit, whatever its passage. A fresh item on a train or monitor passage does not: a
+monitor passage never trains, and the exporter filters by split as well as by the flag. The insert
+takes no flag from its caller, and the insert-only triggers stop anything clearing it. Nothing
+writes an item until Phase 5, whose clause-audit sittings are the first writer, and an item's
+sitting and its position in it arrive there with the sittings table.
 
 Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
 questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version
