@@ -28,6 +28,66 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// not spelling's job.
 const SPELLING_CATEGORY_ID: &str = "TYPOS";
 
+/// The tag LanguageTool puts on a rule that runs only in picky mode, listed in the rule's `tags`.
+const PICKY_TAG: &str = "picky";
+
+/// How a match routes when no checker names its rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CategoryRoute {
+    /// An error: the match is a grammar flag, which is hard.
+    Hard,
+    /// A matter of style: the match surfaces only through a rule the owner endorsed.
+    Soft,
+    /// Spelling's: the match is dropped.
+    Spelling,
+}
+
+/// Every category id of LanguageTool 6.6's rules for `en-GB`, with its route. The source is the
+/// four XML rule files the `en-GB` variant loads, `grammar.xml` and `style.xml` under
+/// `org/languagetool/rules/en/` and the two of the same names under its `en-GB/` folder, and the
+/// Java-coded rules the variant loads, which add `MISC` and `TEXT_ANALYSIS`. `en_gb_categories.txt`
+/// beside this file lists the ids with the extraction that produced them, and a test holds this
+/// table to it.
+///
+/// #98 decided the hard categories, those of errors, and the soft ones, those of style. Every other
+/// category the files hold is soft, so that a category no decision covers surfaces only through an
+/// endorsed rule, and a category missing here, which a later release can add, routes as soft too.
+/// No 6.6 category appears only in picky mode: each picky rule sits in a category that also holds
+/// rules of the default level, the hard categories among them.
+const CATEGORY_ROUTES: [(&str, CategoryRoute); 23] = [
+    ("AMERICAN_ENGLISH", CategoryRoute::Hard),
+    ("APRIL", CategoryRoute::Soft),
+    ("BRE_STYLE_OXFORD_SPELLING", CategoryRoute::Soft),
+    ("CASING", CategoryRoute::Hard),
+    ("COLLOCATIONS", CategoryRoute::Soft),
+    ("COMPOUNDING", CategoryRoute::Hard),
+    ("CONFUSED_WORDS", CategoryRoute::Hard),
+    ("CREATIVE_WRITING", CategoryRoute::Soft),
+    ("GRAMMAR", CategoryRoute::Hard),
+    ("MISC", CategoryRoute::Hard),
+    ("MULTITOKEN_SPELLING", CategoryRoute::Soft),
+    ("NONSTANDARD_PHRASES", CategoryRoute::Soft),
+    ("PLAIN_ENGLISH", CategoryRoute::Soft),
+    ("PUNCTUATION", CategoryRoute::Hard),
+    ("REDUNDANCY", CategoryRoute::Soft),
+    ("REPETITIONS_STYLE", CategoryRoute::Soft),
+    ("SEMANTICS", CategoryRoute::Hard),
+    ("STYLE", CategoryRoute::Soft),
+    ("TEXT_ANALYSIS", CategoryRoute::Soft),
+    ("TON_ACADEMIC", CategoryRoute::Soft),
+    ("TYPOGRAPHY", CategoryRoute::Hard),
+    (SPELLING_CATEGORY_ID, CategoryRoute::Spelling),
+    ("WIKIPEDIA", CategoryRoute::Soft),
+];
+
+/// The route of `category_id` in [`CATEGORY_ROUTES`], soft for a category the table does not hold.
+fn category_route(category_id: &str) -> CategoryRoute {
+    CATEGORY_ROUTES
+        .iter()
+        .find(|(id, _)| *id == category_id)
+        .map_or(CategoryRoute::Soft, |(_, route)| *route)
+}
+
 pub struct LanguageToolClient {
     http: reqwest::Client,
     base_url: String,
@@ -66,25 +126,25 @@ impl LanguageToolClient {
     /// "degrade to spelling and style flags alone" behaviour AC #38(d) asks for should treat any
     /// `Err` from this call the same as a down subprocess, not propagate it as a hard failure.
     pub async fn check(&self, text: &str) -> Result<Vec<Flag>, LanguageToolError> {
-        let response = self
-            .http
-            .get(format!("{}/v2/check", self.base_url))
-            .query(&[("language", "en-GB"), ("text", text)])
-            .send()
-            .await?
-            .error_for_status()?;
+        let response = self.check_request(text).send().await?.error_for_status()?;
         let body: CheckResponse = response.json().await?;
         Ok(matches_to_flags(body.matches))
+    }
+
+    fn check_request(&self, text: &str) -> reqwest::RequestBuilder {
+        self.http
+            .get(format!("{}/v2/check", self.base_url))
+            .query(&[("language", "en-GB"), ("level", "picky"), ("text", text)])
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct CheckResponse {
+pub(super) struct CheckResponse {
     matches: Vec<Match>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Match {
+pub(super) struct Match {
     message: String,
     replacements: Vec<Replacement>,
     offset: usize,
@@ -102,6 +162,15 @@ struct Replacement {
 struct Rule {
     id: String,
     category: Category,
+    /// Absent from a rule that carries no tag.
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl Rule {
+    fn is_picky(&self) -> bool {
+        self.tags.iter().any(|tag| tag == PICKY_TAG)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,10 +178,15 @@ struct Category {
     id: String,
 }
 
+/// Keeps the matches of the hard categories, dropping a picky rule's: picky mode is on for the
+/// style rules the owner can endorse, not for the picky rules in the hard categories, which would
+/// otherwise surface as grammar flags the default level never raised.
 fn matches_to_flags(matches: Vec<Match>) -> Vec<Flag> {
     matches
         .into_iter()
-        .filter(|found| found.rule.category.id != SPELLING_CATEGORY_ID)
+        .filter(|found| {
+            category_route(&found.rule.category.id) == CategoryRoute::Hard && !found.rule.is_picky()
+        })
         .enumerate()
         .map(|(index, found)| Flag {
             id: format!("grammar:{index}:{}", found.rule.id),
@@ -135,13 +209,14 @@ fn matches_to_flags(matches: Vec<Match>) -> Vec<Flag> {
         .collect()
 }
 
+/// Responses captured from a running LanguageTool 6.6 server, trimmed to the fields this module
+/// reads.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(super) mod fixtures {
+    use super::{CheckResponse, Match};
 
-    /// Captured from a real LanguageTool 6.6 server's response to checking "I gotten used to
-    /// it." against `language=en-GB`, trimmed to the fields this module reads.
-    const GOT_GOTTEN_RESPONSE: &str = r#"{
+    /// "I gotten used to it." against `language=en-GB`.
+    pub(in crate::languagetool) const GOT_GOTTEN_RESPONSE: &str = r#"{
         "matches": [
             {
                 "message": "“Gotten” is commonly used in American English. For varieties outside of North America, “got” is the preferred variant.",
@@ -154,9 +229,9 @@ mod tests {
         ]
     }"#;
 
-    /// Captured from a real server's response to checking "My favorite color is red." against
-    /// `language=en-GB`: two matches, both from LanguageTool's own spelling rule.
-    const AMERICAN_SPELLING_RESPONSE: &str = r#"{
+    /// "My favorite color is red." against `language=en-GB`: two matches, both from LanguageTool's
+    /// own spelling rule.
+    pub(in crate::languagetool) const AMERICAN_SPELLING_RESPONSE: &str = r#"{
         "matches": [
             {
                 "message": "Possible spelling mistake. ‘favorite’ is American English.",
@@ -177,10 +252,146 @@ mod tests {
         ]
     }"#;
 
+    /// "The report was written by the committee." against `language=en-GB` and `level=picky`: one
+    /// match, from a picky style rule. At the default level the same request returns no match.
+    pub(in crate::languagetool) const PASSIVE_VOICE_RESPONSE: &str = r#"{
+        "matches": [
+            {
+                "message": "For a more expressive style, consider rephrasing the sentence in the active voice.",
+                "replacements": [{"value": "the committee wrote the report"}],
+                "offset": 0,
+                "length": 39,
+                "sentence": "The report was written by the committee.",
+                "rule": {"id": "PASSIVE_VOICE_SIMPLE", "category": {"id": "STYLE"}, "tags": ["picky"]}
+            }
+        ]
+    }"#;
+
+    /// "She said \"yes\" to the plan." against `language=en-GB` and `level=picky`: one match, from
+    /// a picky rule in a hard category. At the default level the same request returns no match.
+    pub(in crate::languagetool) const SMART_QUOTES_RESPONSE: &str = r#"{
+        "matches": [
+            {
+                "message": "Consider using typographic quotation marks here.",
+                "replacements": [{"value": "“yes”"}],
+                "offset": 9,
+                "length": 5,
+                "sentence": "She said \"yes\" to the plan.",
+                "rule": {"id": "EN_QUOTES", "category": {"id": "TYPOGRAPHY"}, "tags": ["picky"]}
+            }
+        ]
+    }"#;
+
+    /// "This is a very unique idea." against `language=en-GB` and `level=picky`: one match, from a
+    /// style rule of the default level.
+    pub(in crate::languagetool) const VERY_UNIQUE_RESPONSE: &str = r#"{
+        "matches": [
+            {
+                "message": "Consider using “unique”.",
+                "replacements": [{"value": "unique"}],
+                "offset": 10,
+                "length": 11,
+                "sentence": "This is a very unique idea.",
+                "rule": {"id": "VERY_UNIQUE", "category": {"id": "REDUNDANCY"}}
+            }
+        ]
+    }"#;
+
+    pub(in crate::languagetool) fn matches(response: &str) -> Vec<Match> {
+        serde_json::from_str::<CheckResponse>(response)
+            .expect("a captured response deserialises")
+            .matches
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::fixtures::*;
+    use super::*;
+
+    /// The category ids extracted from the 6.6 rule files, with the extraction in its header.
+    const EXTRACTED_CATEGORIES: &str = include_str!("en_gb_categories.txt");
+
+    #[test]
+    fn a_check_request_carries_picky_mode_beside_the_en_gb_variant() {
+        let request = LanguageToolClient::new(8081)
+            .check_request("A sentence.")
+            .build()
+            .unwrap();
+        let query: Vec<(String, String)> = request.url().query_pairs().into_owned().collect();
+        let expected = [
+            ("language", "en-GB"),
+            ("level", "picky"),
+            ("text", "A sentence."),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        assert_eq!(query, expected);
+    }
+
+    #[test]
+    fn the_route_table_marks_every_category_the_rule_files_hold_and_no_other() {
+        let extracted: BTreeSet<&str> = EXTRACTED_CATEGORIES
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        let marked: BTreeSet<&str> = CATEGORY_ROUTES.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            marked.len(),
+            CATEGORY_ROUTES.len(),
+            "a category is marked twice"
+        );
+        assert_eq!(marked, extracted);
+    }
+
+    #[test]
+    fn the_decided_lists_route_as_decided_and_every_other_category_as_soft() {
+        let hard: BTreeSet<&str> = CATEGORY_ROUTES
+            .iter()
+            .filter(|(_, route)| *route == CategoryRoute::Hard)
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(
+            hard,
+            BTreeSet::from([
+                "GRAMMAR",
+                "PUNCTUATION",
+                "CASING",
+                "TYPOGRAPHY",
+                "CONFUSED_WORDS",
+                "COMPOUNDING",
+                "SEMANTICS",
+                "MISC",
+                "AMERICAN_ENGLISH",
+            ])
+        );
+        for soft in [
+            "STYLE",
+            "REDUNDANCY",
+            "PLAIN_ENGLISH",
+            "REPETITIONS_STYLE",
+            "COLLOCATIONS",
+            "WIKIPEDIA",
+        ] {
+            assert_eq!(category_route(soft), CategoryRoute::Soft, "{soft}");
+        }
+        assert_eq!(category_route("TYPOS"), CategoryRoute::Spelling);
+        assert_eq!(category_route("A_CATEGORY_NOT_IN_6_6"), CategoryRoute::Soft);
+    }
+
+    #[test]
+    fn a_picky_rule_is_read_from_its_tags() {
+        let passive = matches(PASSIVE_VOICE_RESPONSE);
+        assert_eq!(passive[0].rule.id, "PASSIVE_VOICE_SIMPLE");
+        assert!(passive[0].rule.is_picky());
+        assert!(!matches(GOT_GOTTEN_RESPONSE)[0].rule.is_picky());
+    }
+
     #[test]
     fn maps_a_grammar_match_to_a_flag_with_a_utf16_span() {
-        let response: CheckResponse = serde_json::from_str(GOT_GOTTEN_RESPONSE).unwrap();
-        let flags = matches_to_flags(response.matches);
+        let flags = matches_to_flags(matches(GOT_GOTTEN_RESPONSE));
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].origin, FlagOrigin::Grammar);
         assert_eq!(flags[0].span.anchor, "I gotten used to it.");
@@ -192,8 +403,7 @@ mod tests {
 
     #[test]
     fn filters_out_languagetools_own_spelling_matches() {
-        let response: CheckResponse = serde_json::from_str(AMERICAN_SPELLING_RESPONSE).unwrap();
-        let flags = matches_to_flags(response.matches);
+        let flags = matches_to_flags(matches(AMERICAN_SPELLING_RESPONSE));
         assert!(
             flags.is_empty(),
             "TYPOS-category matches are spelling's job, not grammar's"
@@ -201,8 +411,18 @@ mod tests {
     }
 
     #[test]
+    fn drops_a_soft_category_match_and_a_picky_rule_in_a_hard_category() {
+        for response in [
+            PASSIVE_VOICE_RESPONSE,
+            SMART_QUOTES_RESPONSE,
+            VERY_UNIQUE_RESPONSE,
+        ] {
+            assert!(matches_to_flags(matches(response)).is_empty(), "{response}");
+        }
+    }
+
+    #[test]
     fn an_empty_matches_list_produces_no_flags() {
-        let response: CheckResponse = serde_json::from_str(r#"{"matches": []}"#).unwrap();
-        assert!(matches_to_flags(response.matches).is_empty());
+        assert!(matches_to_flags(matches(r#"{"matches": []}"#)).is_empty());
     }
 }

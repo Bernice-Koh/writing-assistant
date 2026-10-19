@@ -1,0 +1,48 @@
+# Every category id of LanguageTool 6.6's rules for en-GB, one per line, sorted. A test in
+# client.rs holds the route table to this list. Extracted from the 6.6 server distribution that
+# src-tauri/scripts/build-languagetool-jre.ps1 builds against, as the union of two lists:
+#
+# 1. The XML rule files the en-GB variant loads: grammar.xml and style.xml under
+#    org/languagetool/rules/en/, and the two of the same names under its en-GB/ folder. Run from
+#    org/languagetool/rules/en/, this gives 21 ids:
+#
+#      grep -oh '<category id="[A-Z_]*"' grammar.xml style.xml en-GB/grammar.xml en-GB/style.xml \
+#        | sed 's/.*id="\(.*\)"/\1/' | sort -u
+#
+# 2. Every rule a JLanguageTool for en-GB loads, XML and Java-coded alike. Run with JDK 21's source
+#    launcher as `java -cp languagetool-server.jar ListCategories.java`, this gives 22 ids:
+#
+#      import org.languagetool.*;
+#      public class ListCategories {
+#        public static void main(String[] args) throws Exception {
+#          new JLanguageTool(Languages.getLanguageForShortCode("en-GB")).getAllRules().stream()
+#              .map(rule -> rule.getCategory().getId().toString()).distinct().sorted()
+#              .forEach(System.out::println);
+#        }
+#      }
+#
+# MISC and TEXT_ANALYSIS are only in the second list: no XML file holds them, and only Java-coded
+# rules carry them. APRIL is only in the first: its one rule is not among the rules loaded.
+AMERICAN_ENGLISH
+APRIL
+BRE_STYLE_OXFORD_SPELLING
+CASING
+COLLOCATIONS
+COMPOUNDING
+CONFUSED_WORDS
+CREATIVE_WRITING
+GRAMMAR
+MISC
+MULTITOKEN_SPELLING
+NONSTANDARD_PHRASES
+PLAIN_ENGLISH
+PUNCTUATION
+REDUNDANCY
+REPETITIONS_STYLE
+SEMANTICS
+STYLE
+TEXT_ANALYSIS
+TON_ACADEMIC
+TYPOGRAPHY
+TYPOS
+WIKIPEDIA
