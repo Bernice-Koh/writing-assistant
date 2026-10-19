@@ -81,11 +81,14 @@ async fn start_checking_pipeline(
 ) {
     // Read once, with no watcher: an edit made while the app runs takes effect at the next start.
     // Managed beside the capture backend for the readers that arrive with the telltale toggles
-    // and the register.
-    app.manage(load_settings());
+    // and the register map. The analyzer checks every sentence under the default register.
+    let settings = load_settings();
+    let register = settings.default_register.clone();
+    app.manage(settings);
     let store = open_store().await;
     // Read once, like the settings: a version published while the app runs is in force from the
-    // next start. Managed for the analyzer passes that run its checkers (#100).
+    // next start. Handed to the analyzer, which routes LanguageTool's matches through it, and
+    // managed for the analyzer passes that run its checkers (#100).
     let ruleset = Arc::new(load_ruleset(store.as_ref()).await);
     app.manage(Arc::clone(&ruleset));
     // Managed as an `Option`, so a reader meets a store that failed to open as `None` rather than
@@ -127,7 +130,8 @@ async fn start_checking_pipeline(
         Arc::clone(&capture),
         spelling,
         languagetool,
-        ruleset.version(),
+        Arc::clone(&ruleset),
+        register,
     ));
     overlay::track_flags(
         app.clone(),

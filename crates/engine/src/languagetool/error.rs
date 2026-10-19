@@ -1,4 +1,5 @@
-//! Errors from managing the LanguageTool subprocess and talking to it over HTTP.
+//! Errors from managing the LanguageTool subprocess and talking to it over HTTP. No rendering of
+//! one carries the text a check was sent, so a log line may print any of them.
 
 use std::path::PathBuf;
 
@@ -19,6 +20,18 @@ pub enum LanguageToolError {
     #[error("LanguageTool did not become reachable within {timeout_ms} ms of starting")]
     StartupTimeout { timeout_ms: u64 },
 
+    /// The supervisor exhausted its restart attempts, so no check is sent for the rest of the
+    /// session.
+    #[error("LanguageTool is degraded, its restart attempts exhausted")]
+    Degraded,
+
+    /// Held without its URL, since a check's URL carries the text checked in its query.
     #[error("request to LanguageTool failed: {0}")]
-    Request(#[from] reqwest::Error),
+    Request(#[source] reqwest::Error),
+}
+
+impl From<reqwest::Error> for LanguageToolError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Request(error.without_url())
+    }
 }

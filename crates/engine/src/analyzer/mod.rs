@@ -22,10 +22,12 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
-use crate::flag::{Flag, RulesetVersion};
+use crate::flag::Flag;
 use crate::languagetool::LanguageToolSupervisor;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell;
+use crate::style::checker::FormMode;
+use crate::style::ruleset::LoadedRuleset;
 
 /// How often the debounce loop reads the capture backend's current text to look for a change.
 /// The 200 ms poll stands until the capture backend's text-changed event triggers the recheck.
@@ -50,7 +52,8 @@ struct Inner {
     capture: Arc<dyn Capture>,
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
-    ruleset_version: Option<RulesetVersion>,
+    ruleset: Arc<LoadedRuleset>,
+    register: String,
     flags: RwLock<Vec<Flag>>,
     /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
     /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
@@ -69,23 +72,26 @@ struct Inner {
 
 impl Analyzer {
     /// Starts polling `capture` in the background. `languagetool` is `None` when the subprocess
-    /// could not be started at all; a `Some` that later degrades keeps answering `check` calls,
-    /// just with `None` results, which [`check_sentence`] already treats as no grammar
-    /// flags this time rather than a failure. `ruleset_version` is the version of the ruleset
-    /// loaded at startup, which every flag the analyzer publishes carries whatever its origin,
-    /// and `None` when no ruleset is loaded.
+    /// could not be started at all; a `Some` that later degrades fails every check, which
+    /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
+    /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
+    /// when no version is loaded, and LanguageTool's matches route through its checkers.
+    /// `register` is the register every sentence is checked under, the settings' default register
+    /// until capture supplies the surface's (#58).
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
-        ruleset_version: Option<RulesetVersion>,
+        ruleset: Arc<LoadedRuleset>,
+        register: String,
     ) -> Self {
         let (flags_tx, _) = watch::channel(Vec::new());
         let inner = Arc::new(Inner {
             capture,
             spelling,
             languagetool,
-            ruleset_version,
+            ruleset,
+            register,
             flags: RwLock::new(Vec::new()),
             flags_tx,
             cache: Mutex::new(LruCache::new(
@@ -204,7 +210,7 @@ async fn recheck(inner: &Inner, text: &str) {
             }
         };
         document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
-            ruleset_version: inner.ruleset_version,
+            ruleset_version: inner.ruleset.version(),
             ..with_document_scope(index, flag)
         }));
     }
@@ -246,8 +252,17 @@ async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
     let mut flags = inner.spelling.check(sentence);
     flags.extend(ai_tell::scan(sentence));
     if let Some(languagetool) = &inner.languagetool {
-        if let Some(grammar_flags) = languagetool.check(sentence).await {
-            flags.extend(grammar_flags);
+        // Every sentence is prose until form mode is classified per paragraph (#54).
+        let checked = languagetool
+            .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
+            .await;
+        match checked {
+            Ok(grammar_flags) => flags.extend(grammar_flags),
+            Err(error) => log::debug!(
+                "the grammar check of a sentence of {} bytes failed, so it has no grammar flags \
+                 this time: {error}",
+                sentence.len()
+            ),
         }
     }
     dedupe::apply(sentence, flags)
@@ -265,7 +280,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use crate::capture::{CaptureError, CursorRect};
-    use crate::flag::{FlagOrigin, Span};
+    use crate::flag::{FlagOrigin, RulesetVersion, Span};
     use crate::test_support::dictionary_path;
 
     struct FakeCapture {
@@ -350,7 +365,13 @@ mod tests {
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
+        let analyzer = Analyzer::start(
+            capture,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty()),
+            "default".to_owned(),
+        );
 
         // Let the loop see the initial text and start its quiet timer; no recheck yet.
         step(1).await;
@@ -382,7 +403,13 @@ mod tests {
     async fn only_the_changed_sentence_in_a_two_sentence_document_is_rechecked() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
+        let analyzer = Analyzer::start(
+            capture,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty()),
+            "default".to_owned(),
+        );
 
         step(6).await;
         let first_pass = analyzer.current_flags();
@@ -422,7 +449,13 @@ mod tests {
         // and the overlay keys its underlines and its hover lookup by id.
         let fake = Arc::new(FakeCapture::new("An eror here. An eror there."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
+        let analyzer = Analyzer::start(
+            capture,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty()),
+            "default".to_owned(),
+        );
 
         step(6).await;
         let flags = analyzer.current_flags();
@@ -448,7 +481,14 @@ mod tests {
             "{misspelled} It stands as a testament to the team."
         )));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None, ruleset_version);
+        let ruleset = ruleset_version.map_or_else(LoadedRuleset::empty, LoadedRuleset::empty_at);
+        let analyzer = Analyzer::start(
+            capture,
+            test_spell_checker(),
+            None,
+            Arc::new(ruleset),
+            "default".to_owned(),
+        );
         step(6).await;
 
         let grammar = Flag {
