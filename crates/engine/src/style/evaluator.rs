@@ -13,7 +13,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::band;
-use super::checker::{Checker, FormMode, Matcher, Rule, Unit};
+use super::checker::{Band, Checker, FormMode, Matcher, Rule, Unit};
 use super::phrase::{PhraseError, PhraseMatcher};
 use super::variants::{UnknownConvention, VariantMatcher};
 use crate::flag::{ClauseId, Span};
@@ -70,6 +70,11 @@ pub enum CompileError {
          hold"
     )]
     UnknownConvention { owner: RuleOwner, name: String },
+
+    /// The band holds no count a unit could be measured against, so evaluating it would flag
+    /// nonsense.
+    #[error("the band of {owner} does not compile: {fault}")]
+    MalformedBand { owner: RuleOwner, fault: BandFault },
 }
 
 impl CompileError {
@@ -78,8 +83,54 @@ impl CompileError {
             Self::Regex { owner, .. }
             | Self::Phrase { owner, .. }
             | Self::PrefixNotOneWord { owner, .. }
-            | Self::UnknownConvention { owner, .. } => owner,
+            | Self::UnknownConvention { owner, .. }
+            | Self::MalformedBand { owner, .. } => owner,
         }
+    }
+}
+
+/// How a band is malformed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BandFault {
+    /// A count band whose minimum exceeds its maximum, which every count breaks.
+    MinimumAboveMaximum { minimum: u32, maximum: u32 },
+    /// A rate band whose rate is negative, infinite or not a number.
+    RateNegativeOrNotFinite { maximum_per_hundred_words: f64 },
+}
+
+impl fmt::Display for BandFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MinimumAboveMaximum { minimum, maximum } => write!(
+                formatter,
+                "its minimum, {minimum}, is above its maximum, {maximum}"
+            ),
+            Self::RateNegativeOrNotFinite {
+                maximum_per_hundred_words,
+            } => write!(
+                formatter,
+                "its rate, {maximum_per_hundred_words} per hundred words, is negative or not \
+                 finite"
+            ),
+        }
+    }
+}
+
+/// How `band` is malformed, or `None` when it is not.
+fn band_fault(band: &Band) -> Option<BandFault> {
+    match *band {
+        Band::Count {
+            minimum: Some(minimum),
+            maximum: Some(maximum),
+        } if minimum > maximum => Some(BandFault::MinimumAboveMaximum { minimum, maximum }),
+        Band::Rate {
+            maximum_per_hundred_words,
+        } if !maximum_per_hundred_words.is_finite() || maximum_per_hundred_words < 0.0 => {
+            Some(BandFault::RateNegativeOrNotFinite {
+                maximum_per_hundred_words,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -139,9 +190,13 @@ enum CompiledMatcher {
 }
 
 impl Evaluator {
-    /// Compiles the rule's regex, or one regex per phrase, and resolves its preferred spelling
-    /// convention, here and once, so an evaluation compiles nothing. A failure names `owner`.
+    /// Checks the rule's band, compiles its regex, or one regex per phrase, and resolves its
+    /// preferred spelling convention, here and once, so an evaluation compiles nothing. A failure
+    /// names `owner`.
     pub fn compile(owner: RuleOwner, rule: Rule) -> Result<Self, CompileError> {
+        if let Some(fault) = band_fault(&rule.band) {
+            return Err(CompileError::MalformedBand { owner, fault });
+        }
         let matcher = match &rule.matcher {
             Matcher::PhraseList { entries } => {
                 CompiledMatcher::Phrases(PhraseMatcher::compile(entries).map_err(|error| {
@@ -241,9 +296,6 @@ impl Evaluator {
             return Vec::new();
         };
         let mut breaches = band::breaches(&self.rule.band, &found, unit);
-        // A count band whose minimum is above its maximum can break both, and gives the
-        // maximum's flags ahead of the minimum's underlines.
-        breaches.sort_by_key(|(found, _)| (found.sentence, found.range.start, found.range.end));
         if matches!(self.matcher, CompiledMatcher::WordCount) {
             breaches = joined_per_sentence(breaches);
         }
@@ -518,6 +570,70 @@ pub(super) mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("clause 4"), "{error}");
+    }
+
+    #[test]
+    fn a_count_band_with_its_minimum_above_its_maximum_fails_naming_its_clause() {
+        let inverted = banded(
+            phrases(&["perhaps"]),
+            Unit::Paragraph,
+            count(Some(5), Some(1)),
+        );
+        let error = Evaluator::compile(RuleOwner::Clause(ClauseId(4)), inverted).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CompileError::MalformedBand {
+                    owner: RuleOwner::Clause(ClauseId(4)),
+                    fault: BandFault::MinimumAboveMaximum {
+                        minimum: 5,
+                        maximum: 1
+                    },
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "the band of the checker for clause 4 does not compile: its minimum, 5, is above its \
+             maximum, 1"
+        );
+        // A minimum equal to the maximum admits one count, and compiles.
+        compiled(banded(
+            phrases(&["perhaps"]),
+            Unit::Paragraph,
+            count(Some(1), Some(1)),
+        ));
+    }
+
+    #[test]
+    fn a_rate_band_that_is_negative_or_not_finite_fails_naming_its_clause() {
+        for rate in [-0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let band = Band::Rate {
+                maximum_per_hundred_words: rate,
+            };
+            let rule = banded(phrases(&["perhaps"]), Unit::Document, band);
+            let error = Evaluator::compile(RuleOwner::Clause(ClauseId(4)), rule).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    CompileError::MalformedBand {
+                        owner: RuleOwner::Clause(ClauseId(4)),
+                        fault: BandFault::RateNegativeOrNotFinite { .. },
+                    }
+                ),
+                "{rate}: {error}"
+            );
+            assert!(error.to_string().contains("clause 4"), "{error}");
+        }
+        // A rate of none per hundred words allows no match, and compiles.
+        compiled(banded(
+            phrases(&["perhaps"]),
+            Unit::Document,
+            Band::Rate {
+                maximum_per_hundred_words: 0.0,
+            },
+        ));
     }
 
     /// The owner of each evaluator in `evaluators`, in order.

@@ -44,7 +44,8 @@ pub use error::StoreError;
 pub use items::{Contrast, Item, ItemId, ItemSlot, ItemType, NewItem};
 pub use passages::{Passage, PassageId, PassageKind};
 pub use ruleset::{
-    CheckerAuthor, CheckerId, Provenance, PublishedRuleset, StoredChecker, TestResult,
+    CheckerAuthor, CheckerId, Provenance, PublishedRuleset, RulesetPublish, StoredChecker,
+    TestResult,
 };
 pub use screen_results::{KillingRule, ScreenResult, ScreenResultId, StoredScreenResult};
 pub use split::Split;

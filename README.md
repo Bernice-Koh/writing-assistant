@@ -148,8 +148,19 @@ each word of the minority convention, and nothing in a document of one conventio
 
 A style flag carries the text of its clause, and the hover card cites the clause the text broke.
 
-Rulesets are versioned. Every flag and every candidate records the ruleset version it was checked
-under, and retiring a checker publishes a new version without rewriting the past.
+Rulesets are versioned. A publish takes the whole set of checkers the ruleset should hold, each with
+its provenance, stores each checker the store does not hold by content hash, and inserts a new
+version only when that set differs from the latest version's. A changed parameter is therefore a
+new checker in a new version, a retired checker is a new version without it, and no version is
+rewritten. At startup the app reads the latest version and compiles each checker once. A checker
+that does not compile, or whose clause the latest Card version does not hold, is left out with a
+warning naming its id. With no version stored, or no store, the ruleset is empty and spelling,
+grammar and telltale checking run as before. Every flag
+records the version in force when it was raised, whatever its origin. A style flag cites its
+clause's id, its checker's rule id, which is the checker's content hash or LanguageTool's id for a
+LanguageTool rule, and the clause's text from the Card version current at load. Nothing publishes
+a ruleset until Phase 3, and nothing runs a checker until the analyzer's passes for checkers
+(planned, Phase 1).
 
 Form mode is classified per paragraph from its structure: prose, fragment, or code (planned,
 Phase 1). Bands apply to prose, phrase bans to prose and fragments, and nothing runs on code.

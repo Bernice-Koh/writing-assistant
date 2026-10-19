@@ -42,8 +42,7 @@ pub(super) fn breaches(band: &Band, found: &[Found], unit: &[&str]) -> Vec<(Foun
             if words < RATE_BAND_MINIMUM_WORDS {
                 return Vec::new();
             }
-            // The most matches a unit of this length holds within the band. A negative rate
-            // allows none.
+            // The most matches a unit of this length holds within the band.
             let allowed = (maximum_per_hundred_words * words as f64 / 100.0).floor() as usize;
             let rate_per_hundred_words = found.len() as f64 * 100.0 / words as f64;
             beyond(
@@ -420,36 +419,6 @@ mod tests {
                 rate_per_hundred_words: 4.0,
                 maximum_per_hundred_words: 3.0
             }
-        );
-    }
-
-    #[test]
-    fn a_count_band_with_its_minimum_above_its_maximum_gives_both_breaches_in_document_order() {
-        let paragraph = ["Perhaps it rains, perhaps not.", "Perhaps it snows."];
-        let flagged = violations(
-            &hedges(Unit::Paragraph, count(Some(5), Some(1))),
-            &paragraph,
-        );
-        let above = Breach::AboveMaximum {
-            count: 3,
-            maximum: 1,
-        };
-        let below = Breach::BelowMinimum {
-            count: 3,
-            minimum: 5,
-            shortfall: 2,
-        };
-        assert_eq!(
-            flagged
-                .iter()
-                .map(|violation| (flagged_text(&violation.span), &violation.breach))
-                .collect::<Vec<_>>(),
-            [
-                (paragraph[0].to_owned(), &below),
-                ("perhaps".to_owned(), &above),
-                ("Perhaps".to_owned(), &above),
-                (paragraph[1].to_owned(), &below),
-            ]
         );
     }
 }

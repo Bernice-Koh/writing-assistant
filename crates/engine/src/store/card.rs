@@ -21,6 +21,7 @@ use crate::flag::ClauseId;
 
 const INSERT_CARD_VERSION: &str = "insert a Card version";
 const READ_CARD_VERSION: &str = "read a Card version";
+const READ_LATEST_CARD_VERSION: &str = "read the latest Card version";
 
 /// The id of one wording of one clause, assigned at the wording's insert and never given to another
 /// wording. An `i64` because SQLite's integers are.
@@ -195,6 +196,34 @@ impl Store {
     pub fn card_version_blocking(&self, id: CardVersionId) -> Result<PublishedCard, StoreError> {
         self.request_blocking(READ_CARD_VERSION, move |connection| read(connection, id))?
             .ok_or(StoreError::NoCardVersion { id })
+    }
+
+    /// The latest Card version, with every clause as it was published, or `None` before the first.
+    ///
+    /// # Errors
+    /// [`StoreError::Busy`] when another connection holds a lock the read needs,
+    /// [`StoreError::Request`] for any other failure of the read, and [`StoreError::ThreadGone`]
+    /// when the store thread has stopped.
+    pub async fn latest_card_version(&self) -> Result<Option<PublishedCard>, StoreError> {
+        self.request(READ_LATEST_CARD_VERSION, |connection| {
+            read_latest(connection)
+        })
+        .await
+    }
+
+    /// [`latest_card_version`](Self::latest_card_version) for a synchronous caller, such as `wa`,
+    /// which blocks on the reply.
+    ///
+    /// # Errors
+    /// As [`latest_card_version`](Self::latest_card_version).
+    ///
+    /// # Panics
+    /// When called from async code, which awaits [`latest_card_version`](Self::latest_card_version)
+    /// instead.
+    pub fn latest_card_version_blocking(&self) -> Result<Option<PublishedCard>, StoreError> {
+        self.request_blocking(READ_LATEST_CARD_VERSION, |connection| {
+            read_latest(connection)
+        })
     }
 }
 
@@ -427,6 +456,12 @@ fn read(connection: &Connection, id: CardVersionId) -> rusqlite::Result<Option<P
         clauses,
         changed,
     }))
+}
+
+fn read_latest(connection: &Connection) -> rusqlite::Result<Option<PublishedCard>> {
+    let latest: Option<i64> =
+        connection.query_row("SELECT max(id) FROM card_versions", [], |row| row.get(0))?;
+    latest.map_or(Ok(None), |latest| read(connection, CardVersionId(latest)))
 }
 
 #[cfg(test)]
@@ -952,6 +987,28 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn the_latest_card_version_is_none_before_the_first_and_then_the_last_inserted() {
+        let root = TempRoot::new();
+        let store = open(&root);
+        assert_eq!(store.latest_card_version_blocking().unwrap(), None);
+
+        let first = insert_version(&store, &[new(HEDGES), new(SHORT)]);
+        assert_eq!(
+            store.latest_card_version_blocking().unwrap().as_ref(),
+            Some(&first)
+        );
+        let second = insert_version(
+            &store,
+            &[CardMember::Reworded {
+                clause_id: first.clauses[0].clause_id,
+                wording: wording(HEDGES_REWORDED),
+            }],
+        );
+
+        assert_eq!(store.latest_card_version_blocking().unwrap(), Some(second));
+    }
+
+    #[test]
     fn no_debug_rendering_or_error_carries_a_clauses_words_or_a_change_note() {
         let root = TempRoot::new();
         let store = open(&root);
@@ -1037,7 +1094,9 @@ pub(super) mod tests {
             .insert_card_version(&[CardMember::Stored(ClauseTextId(99))], NOTE)
             .await;
         let absent = store.card_version(CardVersionId(second.id.0 + 1)).await;
+        let latest = store.latest_card_version().await.unwrap();
 
+        assert_eq!(latest.as_ref(), Some(&second));
         assert_eq!(first.clauses[0].wording, wording(HEDGES));
         assert_eq!(second.clauses, first.clauses[1..]);
         assert_eq!(second.changed, [first.clauses[0].clause_id]);

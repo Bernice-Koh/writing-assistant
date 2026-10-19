@@ -22,7 +22,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
-use crate::flag::Flag;
+use crate::flag::{Flag, RulesetVersion};
 use crate::languagetool::LanguageToolSupervisor;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell;
@@ -50,6 +50,7 @@ struct Inner {
     capture: Arc<dyn Capture>,
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
+    ruleset_version: Option<RulesetVersion>,
     flags: RwLock<Vec<Flag>>,
     /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
     /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
@@ -70,17 +71,21 @@ impl Analyzer {
     /// Starts polling `capture` in the background. `languagetool` is `None` when the subprocess
     /// could not be started at all; a `Some` that later degrades keeps answering `check` calls,
     /// just with `None` results, which [`check_sentence`] already treats as no grammar
-    /// flags this time rather than a failure.
+    /// flags this time rather than a failure. `ruleset_version` is the version of the ruleset
+    /// loaded at startup, which every flag the analyzer publishes carries whatever its origin,
+    /// and `None` when no ruleset is loaded.
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
+        ruleset_version: Option<RulesetVersion>,
     ) -> Self {
         let (flags_tx, _) = watch::channel(Vec::new());
         let inner = Arc::new(Inner {
             capture,
             spelling,
             languagetool,
+            ruleset_version,
             flags: RwLock::new(Vec::new()),
             flags_tx,
             cache: Mutex::new(LruCache::new(
@@ -198,11 +203,10 @@ async fn recheck(inner: &Inner, text: &str) {
                 flags
             }
         };
-        document_flags.extend(
-            sentence_flags
-                .into_iter()
-                .map(|flag| with_document_scope(index, flag)),
-        );
+        document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
+            ruleset_version: inner.ruleset_version,
+            ..with_document_scope(index, flag)
+        }));
     }
 
     *inner
@@ -261,6 +265,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use crate::capture::{CaptureError, CursorRect};
+    use crate::flag::{FlagOrigin, Span};
     use crate::test_support::dictionary_path;
 
     struct FakeCapture {
@@ -345,7 +350,7 @@ mod tests {
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None);
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
 
         // Let the loop see the initial text and start its quiet timer; no recheck yet.
         step(1).await;
@@ -377,7 +382,7 @@ mod tests {
     async fn only_the_changed_sentence_in_a_two_sentence_document_is_rechecked() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None);
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
 
         step(6).await;
         let first_pass = analyzer.current_flags();
@@ -417,7 +422,7 @@ mod tests {
         // and the overlay keys its underlines and its hover lookup by id.
         let fake = Arc::new(FakeCapture::new("An eror here. An eror there."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
-        let analyzer = Analyzer::start(capture, test_spell_checker(), None);
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None, None);
 
         step(6).await;
         let flags = analyzer.current_flags();
@@ -430,5 +435,81 @@ mod tests {
         // The two sentences are different text, so each flag also anchors on its own sentence,
         // which is what lets the overlay resolve them to two different places on screen.
         assert_ne!(misspellings[0].span.anchor, misspellings[1].span.anchor);
+    }
+
+    /// The flags an analyzer started with `ruleset_version` publishes for a misspelled sentence
+    /// and a telltale one, once the first sentence's cached result also holds a grammar flag. No
+    /// test runs LanguageTool, so the grammar flag enters where a checked sentence's grammar flags
+    /// wait between rechecks, carrying a version the analyzer does not hold. Only the second
+    /// sentence then changes, so the first is served from the cache.
+    async fn flags_of_every_origin(ruleset_version: Option<RulesetVersion>) -> Vec<Flag> {
+        let misspelled = "This has a mispelling.";
+        let fake = Arc::new(FakeCapture::new(&format!(
+            "{misspelled} It stands as a testament to the team."
+        )));
+        let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
+        let analyzer = Analyzer::start(capture, test_spell_checker(), None, ruleset_version);
+        step(6).await;
+
+        let grammar = Flag {
+            id: "grammar:0:TEST_RULE".to_owned(),
+            origin: FlagOrigin::Grammar,
+            span: Span {
+                anchor: misspelled.to_owned(),
+                local_start: 0,
+                local_length: 4,
+            },
+            message: "a grammar flag".to_owned(),
+            suggestions: Vec::new(),
+            source_detail: "TEST_RULE".to_owned(),
+            ruleset_version: Some(RulesetVersion(99)),
+            catalogue_hash: None,
+        };
+        {
+            let mut cache = analyzer.inner.cache.lock().unwrap();
+            let key = hash_text(misspelled);
+            let mut cached = cache
+                .get(&key)
+                .cloned()
+                .expect("the first recheck cached the sentence's flags");
+            cached.push(grammar);
+            cache.put(key, cached);
+        }
+        fake.set_text(&format!(
+            "{misspelled} It stands as a testament to the town."
+        ));
+        step(6).await;
+        let flags = analyzer.current_flags();
+        for origin in [
+            FlagOrigin::Spelling,
+            FlagOrigin::Grammar,
+            FlagOrigin::AiTell,
+        ] {
+            assert!(
+                flags.iter().any(|flag| flag.origin == origin),
+                "no {origin:?} flag: {flags:#?}"
+            );
+        }
+        flags
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_published_flag_carries_the_ruleset_version_whatever_its_origin() {
+        let flags = flags_of_every_origin(Some(RulesetVersion(7))).await;
+        assert!(
+            flags
+                .iter()
+                .all(|flag| flag.ruleset_version == Some(RulesetVersion(7))),
+            "{flags:#?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_no_ruleset_loaded_every_published_flag_carries_no_version() {
+        let flags = flags_of_every_origin(None).await;
+        assert!(
+            flags.iter().all(|flag| flag.ruleset_version.is_none()),
+            "{flags:#?}"
+        );
     }
 }
