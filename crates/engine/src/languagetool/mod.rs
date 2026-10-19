@@ -1,7 +1,8 @@
 //! Manages the LanguageTool subprocess (launch, readiness, bounded restart on an unexpected
-//! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant.
-//! `process` covers the subprocess itself; `client` covers the HTTP API and the mapping into
-//! this crate's [`crate::flag::Flag`].
+//! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant and its
+//! picky mode. `process` covers the subprocess itself; `client` the HTTP API, the shape of a
+//! response and the route of each of LanguageTool's categories; `routing` the turn of one
+//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset.
 
 mod client;
 pub mod error;
@@ -45,7 +46,7 @@ struct Inner {
 impl LanguageToolSupervisor {
     /// Spawns the subprocess at `paths` on the first free port at or after `preferred_port`, and
     /// waits for it to answer before returning. A background task then takes over supervising it
-    /// for the rest of this supervisor's life, restarting it up to [`MAX_RESTART_ATTEMPTS`] times
+    /// for the rest of this supervisor's life, restarting it up to `MAX_RESTART_ATTEMPTS` times
     /// on an unexpected exit.
     ///
     /// Returns `Err` if the subprocess cannot be spawned at all, or does not become reachable

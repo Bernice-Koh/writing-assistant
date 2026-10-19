@@ -131,7 +131,7 @@ pub(crate) async fn warm_up(client: &LanguageToolClient) {
 
 /// The default location of the bundled JRE's `java` binary and the bundled server jar, both
 /// resolved relative to `resources_dir` (the Tauri resource directory at runtime). Kept separate
-/// from [`spawn`] and [`wait_until_ready`] so tests can supply their own paths instead.
+/// from `spawn` and `wait_until_ready` so tests can supply their own paths instead.
 pub fn default_paths(resources_dir: &Path) -> LanguageToolPaths {
     let resources_dir = without_extended_length_prefix(resources_dir);
     LanguageToolPaths {

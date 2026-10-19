@@ -8,12 +8,12 @@ use serde::Deserialize;
 
 use super::error::LanguageToolError;
 
-/// Bounds a single request so a stalled subprocess cannot block a caller indefinitely. Sized for
-/// the warm-up check in [`super::process::warm_up`], not steady-state traffic: LanguageTool
-/// lazily loads its `en-GB` rule set on the first real check rather than at startup, measured
-/// directly at 5.5 seconds cold against well under 100 ms once warm, and the warm-up call pays
-/// that cost with this same timeout applied. The grammar stage's checks after warm-up run far
-/// inside it; this is a last-resort ceiling, not the target latency.
+/// Bounds each request of the warm-up check and of the readiness poll, which run after every spawn,
+/// at startup and after a restart. LanguageTool loads its `en-GB` rules lazily on the first check,
+/// measured at 5.5 seconds cold against well under 100 ms warm, and the warm-up check in
+/// [`super::process::warm_up`] pays that cost inside this bound. A readiness request answers as
+/// soon as the HTTP listener is up. Every check after the warm-up runs under
+/// [`STEADY_STATE_TIMEOUT`] instead.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Bounds each steady-state check, every check after the warm-up, so that a server that stops
@@ -33,11 +33,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// one second a sentence while the server has stopped answering.
 const STEADY_STATE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// LanguageTool's own category for rules that flag a misspelling (for example
-/// `MORFOLOGIK_RULE_EN_GB`). Dropped by the routing, endorsed or not: [`crate::spelling`]
-/// already covers spelling against the vendored `en_GB` dictionary, and surfacing a second,
-/// independent opinion on the same word from LanguageTool's own dictionary would produce
-/// inconsistent flags on the same span from two different word lists for the same kind of error.
+/// LanguageTool's own category for rules that flag a misspelling, such as `MORFOLOGIK_RULE_EN_GB`.
+/// Every check runs in picky mode, and the routing drops this category's matches before it looks
+/// for a checker that endorses the rule: [`crate::spelling`] covers spelling against the vendored
+/// `en_GB` dictionary, and a second opinion on the same word from LanguageTool's own dictionary
+/// would flag one span from two word lists. Of the other categories, a hard one's match is a
+/// grammar flag unless its rule is picky, and a soft one's surfaces only as the style flag of an
+/// endorsed rule, as does a picky rule's in any category.
 const SPELLING_CATEGORY_ID: &str = "TYPOS";
 
 /// The tag LanguageTool puts on a rule that runs only in picky mode, listed in the rule's `tags`.
