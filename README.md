@@ -417,7 +417,7 @@ flowchart LR
         direction TB
         App["The app<br/>capture, analyzer, overlay, main window"]
         LT[["LanguageTool<br/>supervised subprocess"]]
-        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results,<br/>items, item_slots;<br/>none of them written yet")]
+        Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results,<br/>items, item_slots,<br/>events, habit_rollups;<br/>none of them written yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
         WA["wa<br/>command-line binary, no subcommands yet"]
         Py["adapter/<br/>bench and job scripts, planned"]
@@ -447,12 +447,13 @@ The Rust code is a Cargo workspace of three crates, with a virtual manifest and 
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
 `crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
-Phase 1, the store's remaining artefact tables for Phase 1 and the phases that first write them,
-and the two clients for Phase 3. The store holds `schema_version`, `passages`, the Card and
-ruleset tables, `candidates`, `screen_results`, `items`, and `item_slots`. Nothing writes a passage
-or a candidate until Phase 4, an item until Phase 5, or a Card until Phase 3; ruleset publishing,
-planned for Phase 1, is the first writer of a ruleset, and the screen, also planned for Phase 1, is
-the first writer of a screen result. `wa` has no subcommands yet.
+Phase 1, the store's remaining artefact tables for the phases that first write them, and the two
+clients for Phase 3. The store holds `schema_version`, `passages`, the Card and ruleset tables,
+`candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`, and the app
+reads the latest ruleset version and Card version from it at startup. Nothing writes a passage or a
+candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event until
+Phase 3's questionnaire, or a habit rollup until the habit ledger in Phase 9; the screen, planned
+for Phase 1, is the first writer of a screen result. `wa` has no subcommands yet.
 
 | Crate | Holds |
 |---|---|
@@ -491,8 +492,9 @@ store thread owns the connection, and the rest of the engine sends it requests o
 shape the UI Automation thread has, so async code awaits a reply and never blocks on SQLite. The
 connection enforces foreign keys. The app and `wa` are two processes running the engine's code, so
 two writers can contend for the file, and a busy timeout of five seconds makes the second write
-wait for the first. The app opens the store at startup, and nothing past the open reads or writes
-it yet. A store that fails to open leaves checking running without it.
+wait for the first. The app opens the store at startup and reads the latest ruleset version and
+Card version from it; nothing past the open writes to it yet. A store that fails to open leaves
+checking running without it.
 
 The schema is a list of numbered SQL migrations, files compiled into the engine and applied in
 order when the store opens, on the store thread before it serves a request. Each runs in its own
@@ -504,8 +506,8 @@ the open, and so does a store recorded above the newest migration a build carrie
 build leaves as it is. The open takes the write lock before it reads what the store records, so
 the app and `wa` opening one store at once apply each migration once. The first migration creates
 `schema_version`, the second `passages`, the third the Card and ruleset tables, the fourth
-`candidates` and `screen_results`, and the fifth `items` and `item_slots`; the other artefact tables
-arrive with the features that first write them.
+`candidates` and `screen_results`, the fifth `items` and `item_slots`, and the sixth `events` and
+`habit_rollups`; the other artefact tables arrive with the features that first write them.
 
 Every table is insert-only. Each has an auto-incrementing integer id, so ids only ever increase
 and the rows up to an id are a snapshot that later inserts never change, and two triggers, written
@@ -543,8 +545,8 @@ provenance records who wrote the checker, a template, a model or the owner, and 
 back-translation and test results where they exist, and the hash leaves it out. A ruleset version
 is a row of `ruleset_versions`, with its publish time and a content hash taken over its checkers'
 hashes, and a row of `ruleset_members` for each checker it holds, so a checker that two versions
-share is one row. Nothing writes a Card until Phase 3. Ruleset publishing, planned for Phase 1, is
-the first writer of the ruleset tables.
+share is one row. Ruleset versions are inserted by the publish described under the rule layer.
+Nothing writes a Card or publishes a ruleset until Phase 3.
 
 A candidate is a model's rewrite of a passage. Its row in `candidates` holds the passage, the text,
 the content hash and the generation provenance: the generator's id, the hash of the adapter that
@@ -577,9 +579,26 @@ takes no flag from its caller, and the insert-only triggers stop anything cleari
 writes an item until Phase 5, whose clause-audit sittings are the first writer, and an item's
 sitting and its position in it arrive there with the sittings table.
 
-Events are the one record of the owner's actions: every pick, edit, dismissal, accept,
-questionnaire answer, and Card publish, each stamped with the Card version and the ruleset version
-it happened under.
+Events are the one record of the owner's actions, from which everything downstream derives. A row
+of `events` is one action, and its kind is one of ten: pick, label, edit, dismissal, accept, typed
+replacement, Card publish, checker admission, questionnaire answer, and observation answer. It
+holds the kind, the time the store recorded it, the stream it was collected in, working or
+judgement, the item and the candidate it concerns where it concerns one, the slot order shown, the
+decision time in milliseconds, the register, the surface, the Card version and the ruleset version
+in force, and a JSON payload for what a kind carries beyond these: an edit's diff, an answer's
+value, a typed replacement's text. The stream is set at insert and never reassigned. A pick, a
+label, an edit, a dismissal and an accept name an item, and an edit carries its diff. A version is
+left unnamed only before the first of its kind is published, as for the first questionnaire's
+answers, from which the first Card version is built; once the store holds one, the insert refuses
+an event that names none. The surface stays unset until the capture layer supplies it in Phase 2.
+Nothing writes an event until Phase 3's questionnaire, and the working card's actions follow in
+Phase 4.
+
+A row of `habit_rollups` is one count of the style flags raised on the owner's typing: a day, the
+clause the flags cite, how many there were, and how many words were checked. The counts are kept in
+memory and written as a row, never one per flag, so no row holds a flag's text or its span. A day's
+total for a clause is the sum of its rows. Nothing writes a rollup until the habit ledger in
+Phase 9.
 
 The data root is `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`: one folder under the local,
 non-roaming application-data directory, named by the bundle identifier, since a store with model

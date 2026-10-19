@@ -29,9 +29,10 @@ Current top level:
   subprocess management, the telltale matcher, the analyzer, the flag types, the settings
   file, and the SQLite store's file, thread, migration runner, and insert-only guard, whose
   tables so far are `schema_version`, `passages`, the Card and ruleset tables, `candidates`,
-  `screen_results`, `items`, and `item_slots`; nothing writes a passage or a candidate until
-  Phase 4, an item until Phase 5, a Card until Phase 3, a ruleset until #95, or a screen result
-  until the screen exists (#103).
+  `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes a passage
+  or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event
+  until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
+  result until the screen exists (#103).
   The rewriter and the learning loop are not yet implemented.
   `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
   binary, with no subcommands yet.

@@ -35,10 +35,11 @@ Built today: in the engine, capture, spelling, LanguageTool, the telltale matche
 analyzer, the flag types, the settings file, and the store; in the app, the overlay and one
 command. The store has its file, the thread that owns its connection, the migration runner, the
 insert-only guard, and the tables `schema_version`, `passages`, those of the Card and the ruleset,
-`candidates`, `screen_results`, `items`, and `item_slots`; nothing writes a passage or a candidate
-until Phase 4, an item until Phase 5, a Card until Phase 3, a ruleset until #95, or a screen result
-until the screen exists (#103), and the other artefact tables arrive with the features that first
-write them. `wa` has no subcommands
+`candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes
+a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an
+event until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
+result until the screen exists (#103), and the other artefact tables arrive with the features that
+first write them. `wa` has no subcommands
 yet; each arrives with its own issue.
 `adapter/` does not exist.
 
