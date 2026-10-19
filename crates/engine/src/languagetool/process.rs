@@ -121,7 +121,7 @@ const WARM_UP_TEXT: &str = "Hello.";
 /// correctness, so it does not fail [`crate::languagetool::LanguageToolSupervisor::start`] or a
 /// restart over it.
 pub(crate) async fn warm_up(client: &LanguageToolClient) {
-    if let Err(error) = client.check(WARM_UP_TEXT).await {
+    if let Err(error) = client.warm_up_check(WARM_UP_TEXT).await {
         log::warn!(
             "LanguageTool warm-up check failed; the next real check will pay the cold-load cost \
              instead: {error}"
@@ -179,6 +179,11 @@ mod tests {
     /// depend on it to prove anything.
     const FREE_PORT: u16 = 45817;
     const TAKEN_PORT: u16 = 45903;
+
+    #[test]
+    fn the_readiness_poll_keeps_its_twenty_second_bound() {
+        assert_eq!(STARTUP_TIMEOUT, Duration::from_secs(20));
+    }
 
     #[test]
     fn finds_the_preferred_port_when_it_is_free() {

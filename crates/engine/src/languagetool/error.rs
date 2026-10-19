@@ -20,6 +20,11 @@ pub enum LanguageToolError {
     #[error("LanguageTool did not become reachable within {timeout_ms} ms of starting")]
     StartupTimeout { timeout_ms: u64 },
 
+    /// A check that LanguageTool did not answer inside its bound, which fails the check for its
+    /// sentence.
+    #[error("LanguageTool did not answer a check within {timeout_ms} ms")]
+    CheckTimeout { timeout_ms: u64 },
+
     /// The supervisor exhausted its restart attempts, so no check is sent for the rest of the
     /// session.
     #[error("LanguageTool is degraded, its restart attempts exhausted")]

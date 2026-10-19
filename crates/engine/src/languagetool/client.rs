@@ -16,6 +16,23 @@ use super::error::LanguageToolError;
 /// inside it; this is a last-resort ceiling, not the target latency.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Bounds each steady-state check, every check after the warm-up, so that a server that stops
+/// answering holds a recheck for this long per sentence rather than for [`REQUEST_TIMEOUT`]. A
+/// check still unanswered at the bound fails for its sentence, a failure distinct from a check
+/// that found nothing.
+///
+/// Set from a measurement on the development machine against the 6.6 server under the bundled
+/// runtime: 1,000 warm checks in picky mode, one sentence per request and in sequence, as the
+/// analyzer sends them, of 973 distinct sentences of three words or more, split as the analyzer
+/// splits a document, from two public-domain books, a novel and a work of natural history. The
+/// sentences ran to 141 words, with a median of 21 and a 95th percentile of 61. The checks took a
+/// median of 16.7 ms, a 95th percentile of 32.7 ms, a 99th of 69.5 ms and at most 108.3 ms. The
+/// median rose with length, from 13.4 ms up to ten words to 25.6 ms past fifty, and the five
+/// slowest checks were of sentences of 30 to 72 words. One second is about nine times the slowest
+/// check, a margin for a collection pause in the server's runtime or a loaded machine, at a cost of
+/// one second a sentence while the server has stopped answering.
+const STEADY_STATE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// LanguageTool's own category for rules that flag a misspelling (for example
 /// `MORFOLOGIK_RULE_EN_GB`). Dropped by the routing, endorsed or not: [`crate::spelling`]
 /// already covers spelling against the vendored `en_GB` dictionary, and surfacing a second,
@@ -111,23 +128,60 @@ impl LanguageToolClient {
             .is_ok_and(|response| response.status().is_success())
     }
 
-    /// LanguageTool's matches for `text`, one sentence: the routing anchors each match's flag on
-    /// the match's sentence with its offset, counted from the start of the text sent, which holds
-    /// only when the two are one string.
+    /// LanguageTool's matches for `text`, one sentence, in a steady-state check bounded by
+    /// [`STEADY_STATE_TIMEOUT`]. The routing anchors each match's flag on the match's sentence with
+    /// its offset, counted from the start of the text sent, which holds only when the two are one
+    /// string.
     ///
     /// # Errors
-    /// When the request fails or its response does not parse, which fails the check for its
-    /// sentence.
+    /// [`LanguageToolError::CheckTimeout`] when the server does not answer inside the bound, and
+    /// [`LanguageToolError::Request`] when the request fails or its response does not parse. Either
+    /// fails the check for its sentence.
     pub(super) async fn check(&self, text: &str) -> Result<Vec<Match>, LanguageToolError> {
-        let response = self.check_request(text).send().await?.error_for_status()?;
-        let body: CheckResponse = response.json().await?;
+        self.check_within(text, STEADY_STATE_TIMEOUT).await
+    }
+
+    /// [`Self::check`] bounded by [`REQUEST_TIMEOUT`], for the warm-up check, which pays for
+    /// LanguageTool's cold first check.
+    ///
+    /// # Errors
+    /// As [`Self::check`].
+    pub(super) async fn warm_up_check(&self, text: &str) -> Result<Vec<Match>, LanguageToolError> {
+        self.check_within(text, REQUEST_TIMEOUT).await
+    }
+
+    async fn check_within(
+        &self,
+        text: &str,
+        bound: Duration,
+    ) -> Result<Vec<Match>, LanguageToolError> {
+        let failed = |error| check_error(error, bound);
+        let response = self
+            .check_request(text, bound)
+            .send()
+            .await
+            .map_err(failed)?
+            .error_for_status()?;
+        let body: CheckResponse = response.json().await.map_err(failed)?;
         Ok(body.matches)
     }
 
-    fn check_request(&self, text: &str) -> reqwest::RequestBuilder {
+    fn check_request(&self, text: &str, bound: Duration) -> reqwest::RequestBuilder {
         self.http
             .get(format!("{}/v2/check", self.base_url))
             .query(&[("language", "en-GB"), ("level", "picky"), ("text", text)])
+            .timeout(bound)
+    }
+}
+
+/// `error`, from a check bounded by `bound`, as a timeout when the bound ran out.
+fn check_error(error: reqwest::Error, bound: Duration) -> LanguageToolError {
+    if error.is_timeout() {
+        LanguageToolError::CheckTimeout {
+            timeout_ms: bound.as_millis() as u64,
+        }
+    } else {
+        error.into()
     }
 }
 
@@ -270,6 +324,9 @@ pub(super) mod fixtures {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     use super::fixtures::*;
     use super::*;
@@ -277,10 +334,63 @@ mod tests {
     /// The category ids extracted from the 6.6 rule files, with the extraction in its header.
     const EXTRACTED_CATEGORIES: &str = include_str!("en_gb_categories.txt");
 
+    /// An HTTP answer with `status` and `body`, which closes the connection.
+    fn answer(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn empty_answer() -> String {
+        answer("200 OK", r#"{"matches": []}"#)
+    }
+
+    /// A client of a local stub that stands in for LanguageTool. The stub reads each request and
+    /// sends `reply` after its delay, or, given no reply, never answers and holds the connection
+    /// open until the client drops it.
+    fn client_of_stub(reply: Option<(Duration, String)>) -> LanguageToolClient {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let reply = reply.clone();
+                thread::spawn(move || {
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                        match stream.read(&mut buffer) {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => request.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    match reply {
+                        Some((delay, answer)) => {
+                            thread::sleep(delay);
+                            stream.write_all(answer.as_bytes()).ok();
+                        }
+                        None => while matches!(stream.read(&mut buffer), Ok(read) if read > 0) {},
+                    }
+                });
+            }
+        });
+        LanguageToolClient::new(port)
+    }
+
+    fn is_steady_state_timeout(result: &Result<Vec<Match>, LanguageToolError>) -> bool {
+        matches!(
+            result,
+            Err(LanguageToolError::CheckTimeout { timeout_ms })
+                if u128::from(*timeout_ms) == STEADY_STATE_TIMEOUT.as_millis()
+        )
+    }
+
     #[test]
-    fn a_check_request_carries_picky_mode_beside_the_en_gb_variant() {
+    fn a_check_request_carries_picky_mode_beside_the_en_gb_variant_and_its_bound() {
         let request = LanguageToolClient::new(8081)
-            .check_request("A sentence.")
+            .check_request("A sentence.", STEADY_STATE_TIMEOUT)
             .build()
             .unwrap();
         let query: Vec<(String, String)> = request.url().query_pairs().into_owned().collect();
@@ -291,6 +401,65 @@ mod tests {
         ]
         .map(|(key, value)| (key.to_owned(), value.to_owned()));
         assert_eq!(query, expected);
+        assert_eq!(request.timeout(), Some(&STEADY_STATE_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn a_check_the_server_never_answers_fails_at_the_steady_state_bound_unlike_an_empty_one()
+    {
+        let silent = client_of_stub(None);
+        let started = std::time::Instant::now();
+        let unanswered = silent.check("A sentence.").await;
+        let waited = started.elapsed();
+        assert!(is_steady_state_timeout(&unanswered), "{unanswered:?}");
+        assert!(
+            waited >= STEADY_STATE_TIMEOUT && waited < REQUEST_TIMEOUT,
+            "{waited:?}"
+        );
+
+        let answering = client_of_stub(Some((Duration::ZERO, empty_answer())));
+        let found_nothing = answering.check("A sentence.").await;
+        assert!(
+            found_nothing.as_ref().is_ok_and(Vec::is_empty),
+            "{found_nothing:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_check_and_the_readiness_poll_keep_their_twenty_second_bound() {
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(20));
+        // Past the steady-state bound and far inside the warm-up's.
+        let delay = STEADY_STATE_TIMEOUT + Duration::from_millis(500);
+        let slow = client_of_stub(Some((delay, empty_answer())));
+
+        let steady_state = slow.check("A sentence.").await;
+        assert!(is_steady_state_timeout(&steady_state), "{steady_state:?}");
+        let warm_up = slow.warm_up_check("Hello.").await;
+        assert!(warm_up.as_ref().is_ok_and(Vec::is_empty), "{warm_up:?}");
+        assert!(slow.languages_reachable().await);
+    }
+
+    #[tokio::test]
+    async fn no_rendering_of_a_failed_check_carries_the_text_checked() {
+        let text = "A sentence only its writer has seen.";
+        let silent = client_of_stub(None);
+        let failing = client_of_stub(Some((
+            Duration::ZERO,
+            answer("500 Internal Server Error", ""),
+        )));
+        let failures = [
+            silent.check(text).await.unwrap_err(),
+            failing.check(text).await.unwrap_err(),
+        ];
+        assert!(
+            matches!(failures[1], LanguageToolError::Request(_)),
+            "{failures:?}"
+        );
+        for failure in &failures {
+            for rendering in [failure.to_string(), format!("{failure:?}")] {
+                assert!(!rendering.contains("writer"), "{rendering}");
+            }
+        }
     }
 
     #[test]
