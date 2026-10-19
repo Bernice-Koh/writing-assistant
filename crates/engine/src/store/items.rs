@@ -259,7 +259,7 @@ fn insert(
 }
 
 /// Whether `statement`, an `EXISTS` query over one id, finds its row.
-fn exists(connection: &Connection, statement: &str, id: i64) -> rusqlite::Result<bool> {
+pub(super) fn exists(connection: &Connection, statement: &str, id: i64) -> rusqlite::Result<bool> {
     connection.query_row(statement, [id], |row| row.get(0))
 }
 

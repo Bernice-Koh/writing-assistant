@@ -21,6 +21,8 @@ mod card;
 pub mod config;
 mod connection;
 pub mod error;
+mod events;
+mod habit_rollups;
 mod items;
 mod json;
 mod migrations;
@@ -41,6 +43,8 @@ pub use card::{
 };
 pub use config::Config;
 pub use error::StoreError;
+pub use events::{Event, EventId, EventKind, StoredEvent, Stream};
+pub use habit_rollups::{HabitRollup, HabitRollupId, HabitTotal};
 pub use items::{Contrast, Item, ItemId, ItemSlot, ItemType, NewItem};
 pub use passages::{Passage, PassageId, PassageKind};
 pub use ruleset::{
