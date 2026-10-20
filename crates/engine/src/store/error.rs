@@ -55,6 +55,11 @@ pub enum StoreError {
         source: rusqlite::Error,
     },
 
+    /// An open of an existing store, `wa`'s, found no store file, and created neither the file
+    /// nor the root.
+    #[error("there is no store at {path}, and only the app creates one", path = path.display())]
+    NoStore { path: PathBuf },
+
     /// SQLite answered the request for write-ahead mode with another journal mode.
     #[error("the store {path} is in journal mode {mode:?}, not write-ahead", path = path.display())]
     JournalMode { path: PathBuf, mode: String },

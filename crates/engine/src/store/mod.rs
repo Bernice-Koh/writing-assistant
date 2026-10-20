@@ -21,7 +21,9 @@
 //! ruleset until Phase 3, an event until Phase 3's questionnaire, a habit rollup until the habit
 //! ledger in Phase 9, or a screen result until the screen exists. Every table is insert-only:
 //! triggers raise on update and on delete. The engine's code is the store's only writer, run by the
-//! app and `wa` as two processes, so the connection carries a busy timeout.
+//! app and `wa` as two processes, so the connection carries a busy timeout. The app opens the store
+//! with [`Store::open`], which creates it, and `wa` with [`Store::open_existing`], which refuses
+//! when it is absent.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
