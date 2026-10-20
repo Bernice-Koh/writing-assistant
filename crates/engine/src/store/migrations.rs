@@ -62,6 +62,11 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         name: "items",
         sql: include_str!("migrations/0005_items.sql"),
     },
+    Migration {
+        number: 6,
+        name: "events_and_habit_rollups",
+        sql: include_str!("migrations/0006_events_and_habit_rollups.sql"),
+    },
 ];
 
 /// Brings the schema of the store at `path`, open on `connection`, up to the newest of
@@ -211,6 +216,10 @@ mod tests {
         (
             5,
             "3a97a07efb7719e99c3984cf8ca95b8eb076aaa8a5508b25b5f92b8064bde3a3",
+        ),
+        (
+            6,
+            "1b1d1a4a76314a7ac1112a092626699fd7011481531fc10869da7b8de050a816",
         ),
     ];
 
@@ -587,8 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn the_card_ruleset_candidate_screen_result_and_item_tables_exist_once_every_migration_has_run()
-    {
+    fn the_artefact_tables_exist_once_every_migration_has_run() {
         let root = TempRoot::new();
         let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
 
@@ -613,6 +621,8 @@ mod tests {
             "screen_results",
             "items",
             "item_slots",
+            "events",
+            "habit_rollups",
         ] {
             assert!(tables.contains(table), "no table {table} in {tables:?}");
         }

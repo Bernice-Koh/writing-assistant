@@ -3,15 +3,25 @@
 //! `store.sqlite`, in write-ahead mode, whose connection one store thread owns and the rest of the
 //! engine reaches through a [`Store`] handle. The schema is a list of numbered SQL migrations
 //! compiled into the engine, applied in order at open and each recorded in `schema_version`.
-//! Beside it, `passages` holds each [`Passage`] with the [`Split`] it was assigned at insert;
-//! nothing writes a passage until Phase 4. The Card tables hold each Card version as a
-//! [`PublishedCard`], and the ruleset tables each ruleset version as a [`PublishedRuleset`];
-//! nothing writes a Card until Phase 3 or a ruleset until #95. `candidates` holds each
+//!
+//! Beside it, `passages` holds each [`Passage`] with the [`Split`] it was assigned at insert. The
+//! Card tables, `clauses`, `clause_texts`, `card_versions`, `card_members` and `card_changes`, hold
+//! each Card version as a [`PublishedCard`]. The ruleset tables, `checkers`, `ruleset_versions` and
+//! `ruleset_members`, hold each ruleset version as a [`PublishedRuleset`], which
+//! [`Store::publish_ruleset`] inserts when the checkers it is given differ from the latest
+//! version's, and the app reads the latest version at startup. `candidates` holds each
 //! [`Candidate`], a model's rewrite of a passage with its generation provenance, and
-//! `screen_results` each [`ScreenResult`], one screening of a candidate; nothing writes a
-//! candidate until Phase 4 or a screen result until the screen exists. Every table is insert-only:
-//! triggers raise on update and on delete. The engine's code is the store's only writer, run by the app and `wa` as two
-//! processes, so the connection carries a busy timeout.
+//! `screen_results` each [`ScreenResult`], one screening of a candidate. `items` and `item_slots`
+//! hold each [`Item`], the record of what was shown to the owner, with the never-export flag the
+//! store derives at insert. `events` holds each [`Event`], one action of the owner's, and
+//! `habit_rollups` each [`HabitRollup`], one count of the style flags raised on the owner's typing
+//! for a day and a clause.
+//!
+//! Nothing writes a passage or a candidate until Phase 4, an item until Phase 5, a Card or a
+//! ruleset until Phase 3, an event until Phase 3's questionnaire, a habit rollup until the habit
+//! ledger in Phase 9, or a screen result until the screen exists. Every table is insert-only:
+//! triggers raise on update and on delete. The engine's code is the store's only writer, run by the
+//! app and `wa` as two processes, so the connection carries a busy timeout.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
@@ -21,6 +31,8 @@ mod card;
 pub mod config;
 mod connection;
 pub mod error;
+mod events;
+mod habit_rollups;
 mod items;
 mod json;
 mod migrations;
@@ -41,6 +53,8 @@ pub use card::{
 };
 pub use config::Config;
 pub use error::StoreError;
+pub use events::{Event, EventId, EventKind, StoredEvent, Stream};
+pub use habit_rollups::{HabitRollup, HabitRollupId, HabitTotal};
 pub use items::{Contrast, Item, ItemId, ItemSlot, ItemType, NewItem};
 pub use passages::{Passage, PassageId, PassageKind};
 pub use ruleset::{
