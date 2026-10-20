@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use super::checker::{Matcher, Rule, Unit};
+use super::checker::{FormMode, Matcher, Rule, Unit};
 use super::evaluator::{Breach, Evaluator, RuleOwner, Violation};
 use crate::flag::{ClauseCitation, ClauseId, Flag, FlagOrigin, RuleId, RulesetVersion};
 use crate::store::{CheckerId, PublishedCard, PublishedRuleset, Store, StoreError, StoredChecker};
@@ -94,6 +94,29 @@ impl LoadedRuleset {
         &self.checkers
     }
 
+    /// The checkers whose matcher is LanguageTool's rule `rule_id`, which endorse its matches, in
+    /// ascending order of id.
+    pub fn checkers_of_languagetool_rule(&self, rule_id: &str) -> Vec<&LoadedChecker> {
+        self.checkers
+            .iter()
+            .filter(|checker| {
+                matches!(
+                    &checker.evaluator.rule().matcher,
+                    Matcher::LanguageToolRule { rule_id: named } if named == rule_id
+                )
+            })
+            .collect()
+    }
+
+    /// An empty ruleset recording `version`, for a test of what the version stamps.
+    #[cfg(test)]
+    pub(crate) fn empty_at(version: RulesetVersion) -> Self {
+        Self {
+            version: Some(version),
+            checkers: Vec::new(),
+        }
+    }
+
     /// The style flag for `violation` of `checker`, one of this ruleset's checkers. It cites the
     /// checker's clause, records this ruleset's version, and leaves the catalogue hash for the
     /// analyzer to set. Its message states the count and the limit, the shortfall, or the rate,
@@ -128,6 +151,21 @@ impl LoadedChecker {
 
     pub fn citation(&self) -> &ClauseCitation {
         &self.citation
+    }
+
+    /// Whether the checker's rule runs on text of form mode `mode` under `register`: the rule
+    /// declares the mode, which code never is, and its register scope is unset or holds the
+    /// register.
+    pub fn applies_to(&self, mode: FormMode, register: &str) -> bool {
+        let rule = self.evaluator.rule();
+        let declares_mode = mode
+            .checkable()
+            .is_some_and(|mode| rule.form_modes.contains(&mode));
+        let in_scope = rule
+            .register_scope
+            .as_ref()
+            .is_none_or(|scope| scope.contains(register));
+        declares_mode && in_scope
     }
 }
 
@@ -602,6 +640,72 @@ mod tests {
             flags[1].id,
             format!("style:{}:0:7", stored.checkers[0].id.0)
         );
+    }
+
+    #[test]
+    fn the_lookup_finds_the_checkers_of_a_languagetool_rule_in_ascending_order_of_id() {
+        let root = TempRoot::new();
+        let (store, hedges, dashes) = store_with_card(&root);
+        let stored = publish(
+            &store,
+            &[
+                hedging_limit(hedges, at_most(1)),
+                passive_voice(hedges),
+                passive_voice(dashes),
+            ],
+        );
+        let ruleset = LoadedRuleset::load_blocking(&store).unwrap();
+
+        let endorsing: Vec<CheckerId> = ruleset
+            .checkers_of_languagetool_rule("PASSIVE_VOICE")
+            .into_iter()
+            .map(LoadedChecker::id)
+            .collect();
+
+        assert_eq!(endorsing, [stored.checkers[1].id, stored.checkers[2].id]);
+        assert!(endorsing[0].0 < endorsing[1].0);
+        assert!(ruleset
+            .checkers_of_languagetool_rule("PASSIVE_VOICE_SIMPLE")
+            .is_empty());
+        // A checker of another matcher endorses no LanguageTool rule, its own rule id included.
+        assert!(ruleset
+            .checkers_of_languagetool_rule(&stored.checkers[0].content_hash)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_checker_applies_to_the_modes_it_declares_and_the_registers_its_scope_holds() {
+        let root = TempRoot::new();
+        let (store, hedges, dashes) = store_with_card(&root);
+        let mut fragments = passive_voice(hedges);
+        fragments.rule.form_modes = BTreeSet::from([CheckableMode::Fragment]);
+        let mut email = passive_voice(dashes);
+        email.rule.form_modes = BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]);
+        email.rule.register_scope = Some(BTreeSet::from(["email".to_owned()]));
+        publish(&store, &[fragments, email]);
+        let ruleset = LoadedRuleset::load_blocking(&store).unwrap();
+        let [fragments, email] = ruleset.checkers() else {
+            panic!("both checkers load: {:?}", ruleset.checkers());
+        };
+
+        let cases = [
+            (fragments, FormMode::Fragment, "default", true),
+            (fragments, FormMode::Fragment, "chat", true),
+            (fragments, FormMode::Prose, "default", false),
+            (fragments, FormMode::Code, "default", false),
+            (email, FormMode::Prose, "email", true),
+            (email, FormMode::Fragment, "email", true),
+            (email, FormMode::Prose, "default", false),
+            (email, FormMode::Code, "email", false),
+        ];
+        for (checker, mode, register, expected) in cases {
+            assert_eq!(
+                checker.applies_to(mode, register),
+                expected,
+                "checker {} in {mode:?} under {register}",
+                checker.id().0
+            );
+        }
     }
 
     #[test]

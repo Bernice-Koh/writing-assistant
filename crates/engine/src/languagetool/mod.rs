@@ -1,11 +1,13 @@
 //! Manages the LanguageTool subprocess (launch, readiness, bounded restart on an unexpected
-//! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant.
-//! `process` covers the subprocess itself; `client` covers the HTTP API and the mapping into
-//! this crate's [`crate::flag::Flag`].
+//! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant and its
+//! picky mode. `process` covers the subprocess itself; `client` the HTTP API, the shape of a
+//! response and the route of each of LanguageTool's categories; `routing` the turn of one
+//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset.
 
 mod client;
 pub mod error;
 mod process;
+mod routing;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -17,6 +19,8 @@ pub use error::LanguageToolError;
 pub use process::{default_paths, LanguageToolPaths};
 
 use crate::flag::Flag;
+use crate::style::checker::FormMode;
+use crate::style::ruleset::LoadedRuleset;
 
 /// How many times [`supervise`] restarts the subprocess after an unexpected exit before giving
 /// up and staying degraded for the rest of the session. Three gives a real subprocess crash-loop
@@ -42,7 +46,7 @@ struct Inner {
 impl LanguageToolSupervisor {
     /// Spawns the subprocess at `paths` on the first free port at or after `preferred_port`, and
     /// waits for it to answer before returning. A background task then takes over supervising it
-    /// for the rest of this supervisor's life, restarting it up to [`MAX_RESTART_ATTEMPTS`] times
+    /// for the rest of this supervisor's life, restarting it up to `MAX_RESTART_ATTEMPTS` times
     /// on an unexpected exit.
     ///
     /// Returns `Err` if the subprocess cannot be spawned at all, or does not become reachable
@@ -71,24 +75,26 @@ impl LanguageToolSupervisor {
         Ok(Self { inner })
     }
 
-    /// Runs the grammar stage's check against `text`, which should be exactly one sentence: see
-    /// [`LanguageToolClient::check`]'s own documentation for why. Returns `None`, never an error,
-    /// whenever the subprocess is degraded or a single request fails, so a caller can treat a
-    /// down or unreachable LanguageTool the same way as "no grammar flags this time" and keep
-    /// serving spelling and style flags without crashing or blocking, per AC #38(d).
-    pub async fn check(&self, text: &str) -> Option<Vec<Flag>> {
+    /// Runs the grammar stage's check of `sentence`, one sentence of form mode `mode` under
+    /// `register`, and routes LanguageTool's matches through `ruleset` into flags. An empty list
+    /// is a check that found nothing to flag.
+    ///
+    /// # Errors
+    /// When the subprocess is degraded or the request fails, which fails the check for this
+    /// sentence. The caller treats a failure as no grammar flags this time and keeps serving the
+    /// other sources' flags, so a down LanguageTool never stops checking.
+    pub async fn check(
+        &self,
+        sentence: &str,
+        ruleset: &LoadedRuleset,
+        mode: FormMode,
+        register: &str,
+    ) -> Result<Vec<Flag>, LanguageToolError> {
         if self.inner.degraded.load(Ordering::Relaxed) {
-            return None;
+            return Err(LanguageToolError::Degraded);
         }
-        match self.inner.client.check(text).await {
-            Ok(flags) => Some(flags),
-            Err(error) => {
-                log::debug!(
-                    "LanguageTool check failed, treating as unreachable this time: {error}"
-                );
-                None
-            }
-        }
+        let matches = self.inner.client.check(sentence).await?;
+        Ok(routing::route(matches, ruleset, mode, register))
     }
 }
 

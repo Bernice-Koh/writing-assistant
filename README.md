@@ -168,11 +168,38 @@ Today no form mode exists and all text is checked alike.
 
 ### Grammar
 
-LanguageTool 6.6 checks one sentence per request. Its spelling category is dropped, since
-spelling has one source. Today requests use LanguageTool's default level, and every other category
-surfaces as a grammar flag. Planned for Phase 1: picky mode, with grammar categories kept as
-grammar flags, a rule the owner endorsed in the questionnaire routed to a style flag that cites
-its clause, and every other picky rule dropped.
+LanguageTool 6.6 checks one sentence per request, in its `en-GB` variant and in picky mode, which
+turns on the style rules the owner can endorse, passive voice among them. Each match takes the
+first of these routes that holds:
+
+1. A match in the spelling category, `TYPOS`, is dropped, since spelling has one source.
+2. A match of a rule that a checker of the loaded ruleset names is a style flag citing that
+   checker's clause, with LanguageTool's message and replacements, when the checker declares the
+   sentence's form mode and its register scope holds the register. Of two such checkers, the first
+   by id that applies cites the match, and with none applying the match is dropped.
+3. A match of a picky rule is dropped, whatever its category, so picky mode adds no grammar flag
+   the default level did not raise.
+4. A match in a hard category is a grammar flag. The hard categories are `GRAMMAR`,
+   `PUNCTUATION`, `CASING`, `TYPOGRAPHY`, `CONFUSED_WORDS`, `COMPOUNDING`, `SEMANTICS`, `MISC`, and
+   `AMERICAN_ENGLISH`.
+5. Every other match is dropped. The soft categories are `STYLE`, `REDUNDANCY`, `PLAIN_ENGLISH`,
+   `REPETITIONS_STYLE`, `COLLOCATIONS`, and `WIKIPEDIA`, with every other category that 6.6's
+   `en-GB` rules hold: `APRIL`, `BRE_STYLE_OXFORD_SPELLING`, `CREATIVE_WRITING`,
+   `MULTITOKEN_SPELLING`, `NONSTANDARD_PHRASES`, `TEXT_ANALYSIS`, and `TON_ACADEMIC`. A category
+   a later release adds is soft as well.
+
+The engine marks each of the 23 categories in one table, and a test holds the table to the list
+extracted from 6.6's rule files. No ruleset names a rule until Phase 3, so today LanguageTool
+raises grammar flags alone, from its hard categories and its rules of the default level. Every
+sentence is checked as prose under the settings' default register until form mode is classified
+(planned, Phase 1) and capture supplies the surface's register (planned, Phase 2).
+
+Two timeouts bound the requests. The warm-up check and the readiness poll, which run at startup
+and after a restart, keep a bound of 20 seconds, since the first check loads LanguageTool's rules
+cold, measured at 5.5 seconds. Every later check has a bound of one second, set from 1,000 warm
+checks in picky mode of sentences from public-domain prose, which took a median of 16.7 ms, a 99th
+percentile of 69.5 ms, and at most 108.3 ms. A check that runs past it fails for its sentence,
+which then has no grammar flags this time, a result distinct from a check that found nothing.
 
 ### Telltales
 
