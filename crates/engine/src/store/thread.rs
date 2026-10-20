@@ -168,10 +168,63 @@ impl Store {
             .map_err(|_| StoreError::ThreadGone { operation })?
     }
 
+    /// [`request`](Self::request) for work that raises the store's own errors, such as a file
+    /// operation beside its SQL, which names the path it touched rather than the request.
+    ///
+    /// # Errors
+    /// Whatever `work` returns, and [`StoreError::ThreadGone`] when the store thread has stopped.
+    pub(in crate::store) async fn typed_request<T, F>(
+        &self,
+        operation: &'static str,
+        work: F,
+    ) -> Result<T, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let reply = self.enqueue(operation, work)?;
+        reply
+            .await
+            .map_err(|_| StoreError::ThreadGone { operation })?
+    }
+
+    /// [`typed_request`](Self::typed_request) for a synchronous caller, which blocks on the reply.
+    ///
+    /// # Errors
+    /// As [`typed_request`](Self::typed_request).
+    ///
+    /// # Panics
+    /// As [`request_blocking`](Self::request_blocking).
+    pub(in crate::store) fn typed_request_blocking<T, F>(
+        &self,
+        operation: &'static str,
+        work: F,
+    ) -> Result<T, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let reply = self.enqueue(operation, work)?;
+        reply
+            .blocking_recv()
+            .map_err(|_| StoreError::ThreadGone { operation })?
+    }
+
     /// Queues `work` for the store thread and returns the receiving half of its reply.
     fn send<T, F>(&self, operation: &'static str, work: F) -> Result<Reply<T>, StoreError>
     where
         F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.enqueue(operation, move |connection| {
+            work(connection).map_err(|source| StoreError::from_request(operation, source))
+        })
+    }
+
+    /// [`send`](Self::send) for work that raises the store's own errors.
+    fn enqueue<T, F>(&self, operation: &'static str, work: F) -> Result<Reply<T>, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
         T: Send + 'static,
     {
         let Some(requests) = &self.thread.requests else {
@@ -179,8 +232,7 @@ impl Store {
         };
         let (reply_tx, reply_rx) = oneshot::channel();
         let request: Request = Box::new(move |connection| {
-            let result =
-                work(connection).map_err(|source| StoreError::from_request(operation, source));
+            let result = work(connection);
             if reply_tx.send(result).is_err() {
                 log::debug!(
                     "the caller of the store request {operation:?} stopped waiting, so its result \

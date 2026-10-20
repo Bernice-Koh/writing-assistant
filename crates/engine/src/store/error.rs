@@ -1,5 +1,6 @@
 //! Errors from resolving the data root, reading or writing the config file under it, opening the
-//! store file and migrating its schema, and the requests the store thread serves.
+//! store file and migrating its schema, the requests the store thread serves, and backing the
+//! store up.
 
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ use crate::flag::{ClauseId, RulesetVersion};
 ///
 /// No variant carries the text of a row, and neither does any log line the module writes. A
 /// variant names a path, an operation, a journal mode, a migration number, a row's id, an event's
-/// kind or a count beside the underlying error. Every statement binds its values as parameters and never formats one into
+/// kind, a count or an integrity check's finding beside the underlying error. Every statement binds its values as parameters and never formats one into
 /// its SQL, so the statement text and SQLite's message in a [`rusqlite::Error`] name a table, a
 /// column or a constraint, and never a value.
 #[derive(Debug, Error)]
@@ -125,6 +126,31 @@ pub enum StoreError {
         #[source]
         source: rusqlite::Error,
     },
+
+    /// A backup's destination already exists, so the backup wrote nothing and left it as it is.
+    #[error("the backup destination {path} already exists", path = path.display())]
+    BackupDestinationExists { path: PathBuf },
+
+    /// A backup's destination ends in no file name, such as a path ending in `..`.
+    #[error("the backup destination {path} names no file", path = path.display())]
+    BackupDestinationNotAFile { path: PathBuf },
+
+    /// A path the backup hands SQLite is not valid Unicode, and SQLite takes file names as UTF-8.
+    #[error("the backup path {path} is not valid Unicode", path = path.display())]
+    BackupPathNotUnicode { path: PathBuf },
+
+    /// SQLite could not copy the store into the backup's temporary file, or open or check the copy.
+    #[error("the backup into {path} failed: {source}", path = path.display())]
+    BackupFailed {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// The copy failed SQLite's integrity check. `finding` is the check's first line, which names
+    /// a table, an index or a page and never a value.
+    #[error("the backup copy {path} failed its integrity check: {finding}", path = path.display())]
+    BackupCorrupt { path: PathBuf, finding: String },
 
     /// The store thread stopped before it replied, which happens only when a request panics on it.
     #[error("the store thread has stopped, so the request {operation:?} got no reply")]

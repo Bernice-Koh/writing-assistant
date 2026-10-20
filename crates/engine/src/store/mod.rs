@@ -23,11 +23,13 @@
 //! triggers raise on update and on delete. The engine's code is the store's only writer, run by the
 //! app and `wa` as two processes, so the connection carries a busy timeout. The app opens the store
 //! with [`Store::open`], which creates it, and `wa` with [`Store::open_existing`], which refuses
-//! when it is absent.
+//! when it is absent. [`Store::backup`] copies the store file alone, as one consistent snapshot,
+//! for `wa backup`.
 //!
 //! Tauri points WebView2's user-data folder at the same root, so nothing in this module
 //! enumerates, copies, sizes or clears the root: every operation names the files it touches.
 
+mod backup;
 mod candidates;
 mod card;
 pub mod config;
