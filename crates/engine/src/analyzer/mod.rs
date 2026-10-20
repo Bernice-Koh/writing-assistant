@@ -2,8 +2,9 @@
 //! typing pause, splits the text into sentences, and checks the changed ones against spelling,
 //! the telltale catalogue, and LanguageTool. Suppression by severity is applied to each sentence's
 //! flags, the result is cached per sentence, and every recheck publishes the whole document's
-//! flags on the watch channel the overlay subscribes to. Checking keys to the pause because a
-//! flag on a half-typed word is noise.
+//! flags on the watch channel the overlay subscribes to, each span's occurrence index counted from
+//! its sentence's position as it publishes. Checking keys to the pause because a flag on a
+//! half-typed word is noise.
 //!
 //! `sentences` covers the split and the diff, `dedupe` suppression. Both are private:
 //! [`Analyzer`] is the only public surface.
@@ -171,19 +172,23 @@ async fn debounce_loop(inner: Arc<Inner>) {
 
 async fn recheck(inner: &Inner, text: &str) {
     let current_sentences = sentences::split(text);
+    let current_texts: Vec<String> = current_sentences
+        .iter()
+        .map(|sentence| sentence.text.clone())
+        .collect();
     let changed = {
         let mut previous = inner
             .previous_sentences
             .lock()
             .expect("a poisoned lock here means another thread already panicked");
-        let changed = sentences::changed_indices(&previous, &current_sentences);
-        *previous = current_sentences.clone();
+        let changed = sentences::changed_indices(&previous, &current_texts);
+        *previous = current_texts;
         changed
     };
 
     let mut document_flags = Vec::new();
     for (index, sentence) in current_sentences.iter().enumerate() {
-        let key = hash_text(sentence);
+        let key = hash_text(&sentence.text);
         let cached = if changed.contains(&index) {
             None
         } else {
@@ -200,7 +205,7 @@ async fn recheck(inner: &Inner, text: &str) {
             // entry for it (first run, or an entry aged out under the LRU's capacity): either
             // way, a fresh check is the correct fallback, not silently showing no flags.
             None => {
-                let flags = check_sentence(inner, sentence).await;
+                let flags = check_sentence(inner, &sentence.text).await;
                 inner
                     .cache
                     .lock()
@@ -209,9 +214,10 @@ async fn recheck(inner: &Inner, text: &str) {
                 flags
             }
         };
+        let text_before_sentence = &text[..sentence.start];
         document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
             ruleset_version: inner.ruleset.version(),
-            ..with_document_scope(index, flag)
+            ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
         }));
     }
 
@@ -241,6 +247,18 @@ fn with_document_scope(sentence_index: usize, flag: Flag) -> Flag {
         id: format!("{sentence_index}:{}", flag.id),
         ..flag
     }
+}
+
+/// Sets `flag`'s occurrence index from the document text before the sentence it was found in, by
+/// the rule on [`crate::flag::Span::occurrence`]: `matches` scans left to right and does not
+/// overlap, as the native backend's search does. Counted here, as each recheck publishes, and not
+/// cached with the flag, so a cached sentence that an identical one now precedes gets its new
+/// index.
+fn with_occurrence(text_before_sentence: &str, mut flag: Flag) -> Flag {
+    flag.span.occurrence = text_before_sentence
+        .matches(flag.span.anchor.as_str())
+        .count();
+    flag
 }
 
 async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
@@ -470,6 +488,86 @@ mod tests {
         assert_ne!(misspellings[0].span.anchor, misspellings[1].span.anchor);
     }
 
+    fn analyzer_on(fake: &Arc<FakeCapture>) -> Analyzer {
+        Analyzer::start(
+            Arc::clone(fake) as Arc<dyn Capture>,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty()),
+            "default".to_owned(),
+        )
+    }
+
+    /// The spans of the published flags on "eror", in the order the analyzer published them.
+    fn eror_spans(analyzer: &Analyzer) -> Vec<Span> {
+        analyzer
+            .current_flags()
+            .into_iter()
+            .filter(|flag| flagged_text(flag) == "eror")
+            .map(|flag| flag.span)
+            .collect()
+    }
+
+    fn eror_here(occurrence: usize) -> Span {
+        Span {
+            anchor: "An eror here.".to_owned(),
+            local_start: 3,
+            local_length: 4,
+            occurrence,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_identical_sentences_publish_one_span_at_two_occurrences() {
+        let fake = Arc::new(FakeCapture::new("An eror here. An eror here."));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_occurrence_index_counts_the_anchors_text_inside_an_earlier_longer_sentence() {
+        let longer = "She typed An eror here. on the board.";
+        let fake = Arc::new(FakeCapture::new(&format!("{longer} An eror here.")));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        let in_longer = Span {
+            anchor: longer.to_owned(),
+            local_start: 13,
+            local_length: 4,
+            occurrence: 0,
+        };
+        assert_eq!(eror_spans(&analyzer), [in_longer, eror_here(1)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cached_sentence_that_moves_later_publishes_with_its_new_occurrence_index() {
+        let fake = Arc::new(FakeCapture::new("Fine start. An eror here."));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(eror_spans(&analyzer), [eror_here(0)]);
+        assert_eq!(analyzer.check_sentence_call_count(), 2);
+
+        // A copy inserted at the start moves the original to third place, where the diff marks it
+        // unchanged and the cache serves it.
+        fake.set_text("An eror here. Fine start. An eror here.");
+        step(6).await;
+        assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
+        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        let cached = analyzer
+            .inner
+            .cache
+            .lock()
+            .unwrap()
+            .get(&hash_text("An eror here."))
+            .cloned()
+            .unwrap();
+        assert!(
+            cached.iter().all(|flag| flag.span.occurrence == 0),
+            "{cached:#?}"
+        );
+    }
+
     /// The flags an analyzer started with `ruleset_version` publishes for a misspelled sentence
     /// and a telltale one, once the first sentence's cached result also holds a grammar flag. No
     /// test runs LanguageTool, so the grammar flag enters where a checked sentence's grammar flags
@@ -498,6 +596,7 @@ mod tests {
                 anchor: misspelled.to_owned(),
                 local_start: 0,
                 local_length: 4,
+                occurrence: 0,
             },
             message: "a grammar flag".to_owned(),
             suggestions: Vec::new(),

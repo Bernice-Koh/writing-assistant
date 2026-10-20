@@ -23,6 +23,16 @@ pub struct Span {
     pub anchor: String,
     pub local_start: usize,
     pub local_length: usize,
+    /// Which occurrence of `anchor` in the document the span sits in: the number of occurrences
+    /// before this one, so the first is 0. Occurrences are counted as the native backend's search
+    /// finds them: case-sensitively, left to right from the document's start, each search resuming
+    /// at the end of the previous occurrence, so overlapping occurrences count once. A sentence
+    /// equal to the anchor and a longer sentence that contains the anchor's text both count.
+    ///
+    /// A checking source sees one sentence and builds its spans with 0; the analyzer counts the
+    /// index as it publishes. The native backend resolves the first occurrence whatever the index
+    /// until #107.
+    pub occurrence: usize,
 }
 
 /// Which checking source produced a [`Flag`]. Each origin has exactly one [`Severity`], given by
@@ -171,6 +181,7 @@ mod tests {
                 anchor: "The team boasts a record.".to_owned(),
                 local_start: 9,
                 local_length: 8,
+                occurrence: 1,
             },
             message: "test flag".to_owned(),
             suggestions: vec!["has a".to_owned()],
@@ -216,6 +227,7 @@ mod tests {
                     "anchor": "The team boasts a record.",
                     "localStart": 9,
                     "localLength": 8,
+                    "occurrence": 1,
                 },
                 "message": "test flag",
                 "suggestions": ["has a"],

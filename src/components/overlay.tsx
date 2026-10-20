@@ -6,6 +6,7 @@ interface Span {
   anchor: string;
   localStart: number;
   localLength: number;
+  occurrence: number;
 }
 
 type FlagOrigin = "spelling" | "grammar" | "style" | "aiTell";

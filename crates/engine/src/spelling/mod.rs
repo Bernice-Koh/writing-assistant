@@ -99,6 +99,7 @@ impl SpellChecker {
                 anchor: text.to_string(),
                 local_start,
                 local_length,
+                occurrence: 0,
             },
             message: format!("\"{word}\" is not in the dictionary"),
             suggestions,
