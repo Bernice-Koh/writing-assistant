@@ -180,7 +180,7 @@ fn open_error(path: &Path, source: rusqlite::Error) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::connection::{self, BUSY_TIMEOUT, STORE_FILE_NAME};
+    use crate::store::connection::{self, WhenAbsent, BUSY_TIMEOUT, STORE_FILE_NAME};
     use crate::test_support::{capture_logs, TempRoot};
     use log::Level;
     use regex::Regex;
@@ -412,8 +412,9 @@ mod tests {
     fn a_new_store_ends_at_the_newest_migration_with_one_row_for_each() {
         let root = TempRoot::new();
 
-        let ((connection, version), lines) =
-            capture_logs(|| connection::open(root.path(), BUSY_TIMEOUT).unwrap());
+        let ((connection, version), lines) = capture_logs(|| {
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap()
+        });
 
         assert_eq!(version, newest());
         let rows = recorded_rows(&connection);
@@ -439,13 +440,14 @@ mod tests {
     #[test]
     fn reopening_a_store_at_the_newest_migration_applies_nothing() {
         let root = TempRoot::new();
-        let (first, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (first, _) = connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         let rows = recorded_rows(&first);
         drop(first);
         let bytes = std::fs::read(store_path(&root)).unwrap();
 
-        let ((second, version), lines) =
-            capture_logs(|| connection::open(root.path(), BUSY_TIMEOUT).unwrap());
+        let ((second, version), lines) = capture_logs(|| {
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap()
+        });
 
         assert_eq!(version, newest());
         assert_eq!(recorded_rows(&second), rows);
@@ -457,7 +459,7 @@ mod tests {
     #[test]
     fn a_recorded_hash_the_migration_no_longer_matches_fails_the_open_naming_it() {
         let root = TempRoot::new();
-        drop(connection::open(root.path(), BUSY_TIMEOUT).unwrap());
+        drop(connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap());
         let tamper = Connection::open(store_path(&root)).unwrap();
         // The update trigger refuses the edit, so the tamper drops it first.
         tamper
@@ -469,7 +471,7 @@ mod tests {
         drop(tamper);
         let bytes = std::fs::read(store_path(&root)).unwrap();
 
-        let error = connection::open(root.path(), BUSY_TIMEOUT).unwrap_err();
+        let error = connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap_err();
 
         assert!(
             matches!(error, StoreError::MigrationChanged { number: 1, .. }),
@@ -483,7 +485,8 @@ mod tests {
     fn an_applied_migration_edited_since_fails_the_open_naming_it() {
         let root = TempRoot::new();
         let path = store_path(&root);
-        let (mut connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (mut connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         migrate(&mut connection, &with_next(LATER_TABLE), &path).unwrap();
         let edited =
             with_next("CREATE TABLE later (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT);");
@@ -499,7 +502,8 @@ mod tests {
     #[test]
     fn a_store_recorded_above_the_newest_migration_fails_the_open_and_is_left_as_it_is() {
         let root = TempRoot::new();
-        let (mut later_build, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (mut later_build, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         migrate(
             &mut later_build,
             &with_next(LATER_TABLE),
@@ -509,7 +513,7 @@ mod tests {
         drop(later_build);
         let bytes = std::fs::read(store_path(&root)).unwrap();
 
-        let error = connection::open(root.path(), BUSY_TIMEOUT).unwrap_err();
+        let error = connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap_err();
 
         assert!(
             matches!(
@@ -526,7 +530,8 @@ mod tests {
     fn a_migration_that_fails_part_way_rolls_back_and_leaves_the_recorded_version() {
         let root = TempRoot::new();
         let path = store_path(&root);
-        let (mut connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (mut connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         let rows = recorded_rows(&connection);
         let fails_part_way = with_next(
             "CREATE TABLE half (id INTEGER PRIMARY KEY AUTOINCREMENT);
@@ -575,7 +580,8 @@ mod tests {
                 let data_root = root.path().to_path_buf();
                 thread::spawn(move || {
                     barrier.wait();
-                    connection::open(&data_root, BUSY_TIMEOUT).map(|(_, version)| version)
+                    connection::open(&data_root, BUSY_TIMEOUT, WhenAbsent::Create)
+                        .map(|(_, version)| version)
                 })
             })
             .collect();
@@ -583,14 +589,16 @@ mod tests {
             assert_eq!(opener.join().unwrap().unwrap(), newest());
         }
 
-        let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         assert_eq!(recorded_rows(&connection).len(), MIGRATIONS.len());
     }
 
     #[test]
     fn every_table_the_migrations_create_has_an_autoincrement_id_and_both_triggers() {
         let root = TempRoot::new();
-        let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
 
         assert_eq!(unguarded(&connection), Vec::<String>::new());
     }
@@ -598,7 +606,8 @@ mod tests {
     #[test]
     fn the_artefact_tables_exist_once_every_migration_has_run() {
         let root = TempRoot::new();
-        let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
 
         let tables: BTreeSet<String> = connection
             .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
@@ -631,7 +640,8 @@ mod tests {
     #[test]
     fn the_schema_walk_names_each_table_added_without_the_guard() {
         let root = TempRoot::new();
-        let (mut connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (mut connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         let unguarded_tables = with_next(
             "CREATE TABLE bare (id INTEGER PRIMARY KEY, note TEXT);
              CREATE TABLE conditional (id INTEGER PRIMARY KEY AUTOINCREMENT);
@@ -669,7 +679,8 @@ mod tests {
     #[test]
     fn updating_or_deleting_a_schema_version_row_raises_and_leaves_it_as_it_was() {
         let root = TempRoot::new();
-        let (connection, _) = connection::open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) =
+            connection::open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         let rows = recorded_rows(&connection);
 
         for statement in [

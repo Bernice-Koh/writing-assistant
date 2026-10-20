@@ -480,7 +480,8 @@ clients for Phase 3. The store holds `schema_version`, `passages`, the Card and 
 reads the latest ruleset version and Card version from it at startup. Nothing writes a passage or a
 candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event until
 Phase 3's questionnaire, or a habit rollup until the habit ledger in Phase 9; the screen, planned
-for Phase 1, is the first writer of a screen result. `wa` has no subcommands yet.
+for Phase 1, is the first writer of a screen result. `wa` has one subcommand, `wa backup`, which
+copies the store file alone; `wa screen` is planned for Phase 1.
 
 | Crate | Holds |
 |---|---|
@@ -498,7 +499,7 @@ the app's scheduler, the Python project, and the owner by hand.
 | The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the store thread, the analyzer, the overlay, and the main window | Runs today |
 | LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
 | llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
-| `wa` | The engine on the command line | Built, with no subcommands yet. `wa screen` and `wa backup` are planned for Phase 1 |
+| `wa` | The engine on the command line | Built. `wa backup` copies the store file alone; `wa screen` is planned for Phase 1 |
 | `adapter/` | A Python `uv` project: the bench, and job submission, polling, download, and conversion | Planned, Phase 5 |
 
 LanguageTool's supervision is the pattern for both subprocesses. A free port is probed upward from
@@ -522,6 +523,24 @@ two writers can contend for the file, and a busy timeout of five seconds makes t
 wait for the first. The app opens the store at startup and reads the latest ruleset version and
 Card version from it; nothing past the open writes to it yet. A store that fails to open leaves
 checking running without it.
+
+The app is the store's one creator. `wa` opens an existing store and refuses when it is absent,
+naming the missing file, so only one process ever switches a new file to write-ahead mode. Every
+open applies the migrations, so a `wa` built ahead of the app migrates the store before it does
+anything else; both are built from one checkout.
+
+`wa backup <destination>` copies the store file alone to a path that must not exist, while the app
+runs and writes. The settings file, model files and adapters are not part of it. The copy is
+SQLite's `VACUUM INTO`, which reads one consistent snapshot, rows still in the write-ahead log
+included, blocks no writer, and needs no checkpoint and no clean close of the store. It is written
+under a temporary name beside the destination, passes SQLite's integrity check on a connection of
+its own, and is renamed into place without replacing anything, so a failure at any step leaves
+nothing at the destination. The copy is one file in rollback-journal mode with no `-wal` or `-shm`
+beside it, and the engine's open switches it to write-ahead mode, so a copy put back as
+`store.sqlite` opens at the schema version it was taken at. On success `wa backup` prints the
+destination's path and exits zero; a failure prints one line naming the path at fault and exits
+non-zero. `--data-root <dir>` points `wa` at another data root, such as a copied one, and defaults
+to the data root, `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`.
 
 The schema is a list of numbered SQL migrations, files compiled into the engine and applied in
 order when the store opens, on the store thread before it serves a request. Each runs in its own

@@ -11,3 +11,4 @@ repository = "https://github.com/Bernice-Koh/writing-assistant"
 [dependencies]
 wa-engine.workspace = true
 clap = { version = "4.6", features = ["derive"] }
+env_logger.workspace = true
