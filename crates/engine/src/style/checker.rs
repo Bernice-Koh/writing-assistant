@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::flag::ClauseId;
 
@@ -19,7 +19,6 @@ use crate::flag::ClauseId;
 #[serde(rename_all = "camelCase")]
 pub struct Checker {
     /// The clause the checker serves, which every flag it raises cites.
-    #[serde(deserialize_with = "clause_id_from_integer")]
     pub clause_id: ClauseId,
     #[serde(flatten)]
     pub rule: Rule,
@@ -135,14 +134,6 @@ impl FormMode {
             Self::Code => None,
         }
     }
-}
-
-/// Reads back the integer a [`ClauseId`] serialises as. The flag types derive `Serialize` only,
-/// since a flag never travels back into the engine.
-fn clause_id_from_integer<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<ClauseId, D::Error> {
-    i64::deserialize(deserializer).map(ClauseId)
 }
 
 #[cfg(test)]
@@ -292,15 +283,22 @@ mod tests {
         );
     }
 
+    /// The first of [`a_checker_of_every_kind`] as it serialises. The store's content hash is
+    /// taken over these bytes, so a change to them, the order of the keys included, gives a stored
+    /// checker a second rule id.
+    const PINNED_BYTES: &str = r#"{"clauseId":1,"matcher":{"kind":"phraseList","entries":[{"phrase":"it is worth noting","prefix":false},{"phrase":"intricate","prefix":true}]},"unit":"paragraph","band":{"kind":"count","minimum":null,"maximum":2},"formModes":["prose"],"registerScope":null}"#;
+
     #[test]
     fn a_checker_serialises_to_the_bytes_it_did_before_the_rule_was_its_own_type() {
-        // The store's content hash is taken over these bytes, so a change to them, the order of
-        // the keys included, gives a stored checker a second rule id.
         let checker = a_checker_of_every_kind().remove(0);
-        assert_eq!(
-            serde_json::to_string(&checker).unwrap(),
-            r#"{"clauseId":1,"matcher":{"kind":"phraseList","entries":[{"phrase":"it is worth noting","prefix":false},{"phrase":"intricate","prefix":true}]},"unit":"paragraph","band":{"kind":"count","minimum":null,"maximum":2},"formModes":["prose"],"registerScope":null}"#
-        );
+        assert_eq!(serde_json::to_string(&checker).unwrap(), PINNED_BYTES);
+    }
+
+    #[test]
+    fn the_pinned_bytes_read_back_as_the_checker_they_were_written_from() {
+        let read_back: Checker = serde_json::from_str(PINNED_BYTES).unwrap();
+        assert_eq!(read_back, a_checker_of_every_kind().remove(0));
+        assert_eq!(serde_json::to_string(&read_back).unwrap(), PINNED_BYTES);
     }
 
     #[test]

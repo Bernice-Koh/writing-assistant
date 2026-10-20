@@ -6,8 +6,9 @@
 //!
 //! Every type a [`Flag`] holds derives `Serialize` (camelCase on the wire, per this repo's
 //! TypeScript naming convention) so the app's positioned flag, which carries one, can cross the
-//! Tauri IPC boundary to the overlay's own webview unchanged. Nothing here needs `Deserialize`: a
-//! `Flag` only ever travels from the engine to the frontend, never back.
+//! Tauri IPC boundary to the overlay's own webview unchanged. A `Flag` only ever travels from the
+//! engine to the frontend, never back, so it has no `Deserialize`. The id newtypes have one, since
+//! a checker read back from the store holds a [`ClauseId`].
 
 /// Addresses a span of text the same way [`crate::capture::Capture::replace`] does: an anchor
 /// found in the document plus a local offset and length from that anchor, in UTF-16 code units.
@@ -22,6 +23,16 @@ pub struct Span {
     pub anchor: String,
     pub local_start: usize,
     pub local_length: usize,
+    /// Which occurrence of `anchor` in the document the span sits in: the number of occurrences
+    /// before this one, so the first is 0. Occurrences are counted as the native backend's search
+    /// finds them: case-sensitively, left to right from the document's start, each search resuming
+    /// at the end of the previous occurrence, so overlapping occurrences count once. A sentence
+    /// equal to the anchor and a longer sentence that contains the anchor's text both count.
+    ///
+    /// A checking source sees one sentence and builds its spans with 0; the analyzer counts the
+    /// index as it publishes. The native backend resolves the first occurrence whatever the index
+    /// until #107.
+    pub occurrence: usize,
 }
 
 /// Which checking source produced a [`Flag`]. Each origin has exactly one [`Severity`], given by
@@ -78,17 +89,17 @@ pub struct ClauseCitation {
 /// A Style Card clause's id, which the store assigns when the clause is first inserted and never
 /// gives another clause (#82), so it names one clause across every Card version. An `i64`
 /// because SQLite's integers are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ClauseId(pub i64);
 
 /// The rule id of the checker that raised a style flag. A string, because a style flag raised
 /// through an endorsed LanguageTool rule (#98) cites LanguageTool's own rule id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RuleId(pub String);
 
 /// A published ruleset version's id in the store (#82, #95). An `i64` because SQLite's integers
 /// are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RulesetVersion(pub i64);
 
 /// The content hash of the telltale catalogue's compiled bytes, as a lowercase hex digest. The
@@ -107,6 +118,23 @@ impl CatalogueHash {
                 .bytes()
                 .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
         is_digest.then(|| Self(digest.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Refuses what [`CatalogueHash::from_hex`] refuses, so a hash read back is a digest.
+impl<'de> serde::Deserialize<'de> for CatalogueHash {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let digest = String::deserialize(deserializer)?;
+        Self::from_hex(&digest).ok_or_else(|| {
+            serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&digest),
+                &"a non-empty, even-length run of lowercase hex digits",
+            )
+        })
     }
 }
 
@@ -153,6 +181,7 @@ mod tests {
                 anchor: "The team boasts a record.".to_owned(),
                 local_start: 9,
                 local_length: 8,
+                occurrence: 1,
             },
             message: "test flag".to_owned(),
             suggestions: vec!["has a".to_owned()],
@@ -198,6 +227,7 @@ mod tests {
                     "anchor": "The team boasts a record.",
                     "localStart": 9,
                     "localLength": 8,
+                    "occurrence": 1,
                 },
                 "message": "test flag",
                 "suggestions": ["has a"],
@@ -233,5 +263,34 @@ mod tests {
         for rejected in ["", "09AF", "09a", "09ag", " 09af"] {
             assert!(CatalogueHash::from_hex(rejected).is_none(), "{rejected:?}");
         }
+    }
+
+    #[test]
+    fn a_catalogue_hash_reads_back_from_its_digest_and_refuses_anything_else() {
+        let hash = CatalogueHash::from_hex("9f86d081").unwrap();
+        let read_back: CatalogueHash =
+            serde_json::from_value(serde_json::to_value(&hash).unwrap()).unwrap();
+        assert_eq!(read_back, hash);
+        assert_eq!(read_back.as_str(), "9f86d081");
+        for rejected in ["", "09AF", "09a", "not hex", " 09af"] {
+            assert!(
+                serde_json::from_value::<CatalogueHash>(json!(rejected)).is_err(),
+                "{rejected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_id_newtypes_read_back_from_what_they_serialise_as() {
+        let citation = citation();
+        let clause_id: ClauseId =
+            serde_json::from_value(serde_json::to_value(citation.clause_id).unwrap()).unwrap();
+        let rule_id: RuleId =
+            serde_json::from_value(serde_json::to_value(&citation.rule_id).unwrap()).unwrap();
+        let version: RulesetVersion =
+            serde_json::from_value(serde_json::to_value(RulesetVersion(3)).unwrap()).unwrap();
+        assert_eq!(clause_id, citation.clause_id);
+        assert_eq!(rule_id, citation.rule_id);
+        assert_eq!(version, RulesetVersion(3));
     }
 }
