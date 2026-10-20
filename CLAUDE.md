@@ -35,7 +35,8 @@ Current top level:
   result until the screen exists (#103).
   The rewriter and the learning loop are not yet implemented.
   `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
-  binary, with no subcommands yet.
+  binary, whose one subcommand, `wa backup`, copies the store file alone; `wa screen` is
+  planned.
 - `src-tauri/`: the Tauri app, the workspace's third member, kept at the path the Tauri CLI
   expects: the overlay, the commands, and the setup that starts the engine.
   `src-tauri/resources/` holds the committed dictionaries and telltale catalogue, which the
