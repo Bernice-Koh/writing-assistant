@@ -122,9 +122,10 @@ impl Catalogue {
     /// its register. In catalogue order, and within a pattern in order of start.
     ///
     /// Every flag anchors on `sentence` itself and carries the match's own offset into it, the
-    /// same anchoring [`crate::spelling`] and [`crate::languagetool`] use. An anchor resolves to
-    /// its first occurrence in the document, so a flag anchored on its bare match, a single emoji
-    /// or a dash, would address the first identical match in the document instead of its own.
+    /// same anchoring [`crate::spelling`] and [`crate::languagetool`] use. The analyzer counts a
+    /// span's occurrence index over the text before the sentence, so two flags anchored on
+    /// identical bare matches in one sentence, a single emoji or a dash each, would share an index
+    /// and address the same match.
     pub fn flags(&self, sentence: &str, mode: FormMode, register: &str) -> Vec<Flag> {
         self.patterns
             .iter()
@@ -349,8 +350,8 @@ mod tests {
 
     #[test]
     fn two_identical_regex_matches_anchor_on_the_scanned_text_at_their_own_offsets() {
-        // Anchored on the bare match, both flags would resolve to the first rocket in the
-        // document, since an anchor resolves to its first occurrence.
+        // Anchored on the bare match, both flags would share the occurrence index the analyzer
+        // counts before the sentence, and resolve to the same rocket.
         let text = "Launch 🚀 today, then launch 🚀 again.";
         let flags = scan(text);
         let emojis = flags_of(&flags, "emojis");

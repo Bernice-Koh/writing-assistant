@@ -30,8 +30,8 @@ pub struct Span {
     /// equal to the anchor and a longer sentence that contains the anchor's text both count.
     ///
     /// A checking source sees one sentence and builds its spans with 0; the analyzer counts the
-    /// index as it publishes. The native backend resolves the first occurrence whatever the index
-    /// until #107.
+    /// index as it publishes. The native backend resolves the span at the occurrence the index
+    /// names; the web backend resolves only an index of 0.
     pub occurrence: usize,
 }
 
