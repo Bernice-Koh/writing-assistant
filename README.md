@@ -185,13 +185,15 @@ first of these routes that holds:
 3. A match of a picky rule is dropped, whatever its category, so picky mode adds no grammar flag
    the default level did not raise.
 4. A match in a hard category is a grammar flag. The hard categories are `GRAMMAR`,
-   `PUNCTUATION`, `CASING`, `TYPOGRAPHY`, `CONFUSED_WORDS`, `COMPOUNDING`, `SEMANTICS`, `MISC`, and
-   `AMERICAN_ENGLISH`.
+   `PUNCTUATION`, `CASING`, `TYPOGRAPHY`, `CONFUSED_WORDS`, `COMPOUNDING`, `SEMANTICS`, `MISC`,
+   `AMERICAN_ENGLISH`, `NONSTANDARD_PHRASES`, and `MULTITOKEN_SPELLING`. LanguageTool types the
+   last two as misspellings, but the first marks phrases as wrong as `CONFUSED_WORDS` does, and the
+   second finds spelling mistakes in proper nouns of two to four tokens, which the single-word
+   dictionary cannot see.
 5. Every other match is dropped. The soft categories are `STYLE`, `REDUNDANCY`, `PLAIN_ENGLISH`,
    `REPETITIONS_STYLE`, `COLLOCATIONS`, and `WIKIPEDIA`, with every other category that 6.6's
    `en-GB` rules hold: `APRIL`, `BRE_STYLE_OXFORD_SPELLING`, `CREATIVE_WRITING`,
-   `MULTITOKEN_SPELLING`, `NONSTANDARD_PHRASES`, `TEXT_ANALYSIS`, and `TON_ACADEMIC`. A category
-   a later release adds is soft as well.
+   `TEXT_ANALYSIS`, and `TON_ACADEMIC`. A category a later release adds is soft as well.
 
 The engine marks each of the 23 categories in one table, and a test holds the table to the list
 extracted from 6.6's rule files. No ruleset names a rule until Phase 3, so today LanguageTool

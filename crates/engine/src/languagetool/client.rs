@@ -66,6 +66,10 @@ pub(super) enum CategoryRoute {
 /// #98 decided the hard categories, those of errors, and the soft ones, those of style. Every other
 /// category the files hold is soft, so that a category no decision covers surfaces only through an
 /// endorsed rule, and a category missing here, which a later release can add, routes as soft too.
+/// Two categories LanguageTool types as misspellings are hard: `NONSTANDARD_PHRASES` marks phrases
+/// as wrong as `CONFUSED_WORDS` does, and `MULTITOKEN_SPELLING` finds spelling mistakes in proper
+/// nouns of two to four tokens, which the single-word dictionary cannot see, so neither puts a
+/// second opinion on a span spelling already judges.
 /// No 6.6 category appears only in picky mode: each picky rule sits in a category that also holds
 /// rules of the default level, the hard categories among them.
 const CATEGORY_ROUTES: [(&str, CategoryRoute); 23] = [
@@ -79,8 +83,8 @@ const CATEGORY_ROUTES: [(&str, CategoryRoute); 23] = [
     ("CREATIVE_WRITING", CategoryRoute::Soft),
     ("GRAMMAR", CategoryRoute::Hard),
     ("MISC", CategoryRoute::Hard),
-    ("MULTITOKEN_SPELLING", CategoryRoute::Soft),
-    ("NONSTANDARD_PHRASES", CategoryRoute::Soft),
+    ("MULTITOKEN_SPELLING", CategoryRoute::Hard),
+    ("NONSTANDARD_PHRASES", CategoryRoute::Hard),
     ("PLAIN_ENGLISH", CategoryRoute::Soft),
     ("PUNCTUATION", CategoryRoute::Hard),
     ("REDUNDANCY", CategoryRoute::Soft),
@@ -499,6 +503,8 @@ mod tests {
                 "SEMANTICS",
                 "MISC",
                 "AMERICAN_ENGLISH",
+                "NONSTANDARD_PHRASES",
+                "MULTITOKEN_SPELLING",
             ])
         );
         for soft in [
