@@ -295,6 +295,7 @@ fn hash_text(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::discriminant;
     use std::sync::Mutex as StdMutex;
 
     use crate::capture::{CaptureError, CursorRect};
@@ -619,13 +620,14 @@ mod tests {
         ));
         step(6).await;
         let flags = analyzer.current_flags();
-        for origin in [
-            FlagOrigin::Spelling,
-            FlagOrigin::Grammar,
-            FlagOrigin::AiTell,
-        ] {
+        let telltale = FlagOrigin::AiTell {
+            pattern_ids: Vec::new(),
+        };
+        for origin in [FlagOrigin::Spelling, FlagOrigin::Grammar, telltale] {
             assert!(
-                flags.iter().any(|flag| flag.origin == origin),
+                flags
+                    .iter()
+                    .any(|flag| discriminant(&flag.origin) == discriminant(&origin)),
                 "no {origin:?} flag: {flags:#?}"
             );
         }

@@ -69,7 +69,9 @@ fn routed(
 fn style_flag(found: Match, checker: &LoadedChecker, version: Option<RulesetVersion>) -> Flag {
     let id = format!("style:{}:{}:{}", checker.id().0, found.offset, found.length);
     Flag {
-        origin: FlagOrigin::Style(checker.citation().clone()),
+        origin: FlagOrigin::Style {
+            citation: checker.citation().clone(),
+        },
         source_detail: checker.citation().rule_id.0.clone(),
         ruleset_version: version,
         ..grammar_flag(id, found)
@@ -197,11 +199,13 @@ mod tests {
         let flag = &flags[0];
         assert_eq!(
             flag.origin,
-            FlagOrigin::Style(ClauseCitation {
-                clause_id: checker.citation().clause_id,
-                rule_id: RuleId("PASSIVE_VOICE_SIMPLE".to_owned()),
-                clause_text: ACTIVE_VOICE.to_owned(),
-            })
+            FlagOrigin::Style {
+                citation: ClauseCitation {
+                    clause_id: checker.citation().clause_id,
+                    rule_id: RuleId("PASSIVE_VOICE_SIMPLE".to_owned()),
+                    clause_text: ACTIVE_VOICE.to_owned(),
+                }
+            }
         );
         assert_eq!(
             flag.message,
@@ -274,7 +278,9 @@ mod tests {
         assert_eq!(endorsed.len(), 1, "{endorsed:#?}");
         assert_eq!(
             endorsed[0].origin,
-            FlagOrigin::Style(ruleset.checkers()[0].citation().clone())
+            FlagOrigin::Style {
+                citation: ruleset.checkers()[0].citation().clone()
+            }
         );
         assert_eq!(endorsed[0].suggestions, ["\u{201c}yes\u{201d}"]);
     }
@@ -328,7 +334,7 @@ mod tests {
                 register,
             );
             assert_eq!(flags.len(), 1, "{register}: {flags:#?}");
-            let FlagOrigin::Style(citation) = &flags[0].origin else {
+            let FlagOrigin::Style { citation } = &flags[0].origin else {
                 panic!("{register}: {flags:#?}");
             };
             assert_eq!(citation.clause_text, clause_text, "{register}");

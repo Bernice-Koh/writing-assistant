@@ -22,6 +22,8 @@ interface Flag {
   origin: FlagOrigin;
   /** Present on a style flag only: the engine holds the citation in the style origin itself. */
   citation?: ClauseCitation;
+  /** Present on a telltale only: the engine holds the pattern ids in the telltale origin itself. */
+  patternIds?: string[];
   span: Span;
   message: string;
   suggestions: string[];

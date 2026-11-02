@@ -114,7 +114,9 @@ pub fn scan(text: &str) -> Vec<Flag> {
                         "ai-tell:{}:{matcher_index}:{local_start}",
                         compiled.pattern.id
                     ),
-                    origin: FlagOrigin::AiTell,
+                    origin: FlagOrigin::AiTell {
+                        pattern_ids: vec![compiled.pattern.id.clone()],
+                    },
                     span: Span {
                         anchor: text.to_string(),
                         local_start,
@@ -185,7 +187,12 @@ mod tests {
             .iter()
             .find(|flag| flag.id.starts_with("ai-tell:significance-legacy-emphasis"))
             .unwrap();
-        assert_eq!(flag.origin, FlagOrigin::AiTell);
+        assert_eq!(
+            flag.origin,
+            FlagOrigin::AiTell {
+                pattern_ids: vec!["significance-legacy-emphasis".to_owned()]
+            }
+        );
     }
 
     #[test]
