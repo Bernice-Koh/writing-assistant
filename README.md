@@ -216,7 +216,8 @@ Two timeouts bound the requests. The warm-up check and the readiness poll, which
 and after a restart, keep a bound of 20 seconds, since the first check loads LanguageTool's rules
 cold, measured at 5.5 seconds. Every later check has a bound of one second, set from 1,000 warm
 checks in picky mode of sentences from public-domain prose, which took a median of 16.7 ms, a 99th
-percentile of 69.5 ms, and at most 108.3 ms. A check that runs past it fails for its sentence,
+percentile of 69.5 ms, and at most 108.3 ms, timed by the harness
+`crates/engine/examples/picky_latency.rs`. A check that runs past it fails for its sentence,
 which then has no grammar flags this time, a result distinct from a check that found nothing.
 
 ### Telltales

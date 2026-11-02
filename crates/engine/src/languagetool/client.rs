@@ -30,7 +30,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// median rose with length, from 13.4 ms up to ten words to 25.6 ms past fifty, and the five
 /// slowest checks were of sentences of 30 to 72 words. One second is about nine times the slowest
 /// check, a margin for a collection pause in the server's runtime or a loaded machine, at a cost of
-/// one second a sentence while the server has stopped answering.
+/// one second a sentence while the server has stopped answering. The harness that took the
+/// measurement is `crates/engine/examples/picky_latency.rs`.
 const STEADY_STATE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// LanguageTool's own category for rules that flag a misspelling, such as `MORFOLOGIK_RULE_EN_GB`.
