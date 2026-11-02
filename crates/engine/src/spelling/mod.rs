@@ -14,6 +14,8 @@
 pub mod error;
 mod tokens;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::BuildHasherDefault;
 use std::path::Path;
 
 use spellbook::Dictionary;
@@ -33,7 +35,7 @@ const MAX_SUGGESTIONS: usize = 5;
 /// [`Dictionary::add`], so a supplement word is checked and suggested through the same lookup as
 /// any other word, with no second word set to keep in sync.
 pub struct SpellChecker {
-    dictionary: Dictionary,
+    dictionary: Dictionary<BuildHasherDefault<DefaultHasher>>,
 }
 
 impl SpellChecker {
@@ -46,7 +48,11 @@ impl SpellChecker {
     ) -> Result<Self, SpellingError> {
         let aff = read_to_string(aff_path)?;
         let dic = read_to_string(dic_path)?;
-        let mut dictionary = Dictionary::new(&aff, &dic)
+        // Spellbook's suggester keeps its best roots in the order the word table yields them, so
+        // the default hasher's random seed makes a suggestion list differ between processes. A
+        // hasher with no seed makes the table's order, and with it every suggestion list, a
+        // function of the dictionary files alone.
+        let mut dictionary = Dictionary::new_with_hasher(&aff, &dic, BuildHasherDefault::default())
             .map_err(|error| SpellingError::ParseDictionary(error.to_string()))?;
 
         let supplement = read_to_string(supplement_path)?;
@@ -164,6 +170,23 @@ mod tests {
         let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
         let end = flag.span.local_start + flag.span.local_length;
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
+    /// Two separate loads stand in for two processes: with a seeded hasher each load drew its own
+    /// seed, so the two lists matched only by chance whenever roots tied at the suggester's
+    /// boundary.
+    #[test]
+    fn two_checkers_loaded_separately_suggest_the_same_corrections_in_the_same_order() {
+        let first = checker();
+        let second = checker();
+        for word in ["eror", "mispelling", "definately"] {
+            let suggestions = |checker: &SpellChecker| {
+                let flags = checker.check(word);
+                assert_eq!(flags.len(), 1, "{word}: {flags:#?}");
+                flags[0].suggestions.clone()
+            };
+            assert_eq!(suggestions(&first), suggestions(&second), "{word}");
+        }
     }
 
     #[test]
