@@ -1,6 +1,6 @@
-//! Suppression by severity, applied to one sentence's flags once every source has checked it. A
-//! flag's severity comes from [`FlagOrigin::severity`] and nowhere else. The steps run in this
-//! order:
+//! Suppression by severity, applied to one sentence's flags each time the analyzer assembles them
+//! for an update, over the flags of every source that has answered for it so far. A flag's severity
+//! comes from [`FlagOrigin::severity`] and nowhere else. The steps run in this order:
 //!
 //! 1. Every flag's span is resolved to a range within the sentence. A flag that does not resolve
 //!    is kept and takes no part in the steps after: suppression fires only on a confirmed overlap.

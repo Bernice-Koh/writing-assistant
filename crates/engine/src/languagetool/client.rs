@@ -17,9 +17,9 @@ use super::error::LanguageToolError;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Bounds each steady-state check, every check after the warm-up, so that a server that stops
-/// answering holds a recheck for this long per sentence rather than for [`REQUEST_TIMEOUT`]. A
-/// check still unanswered at the bound fails for its sentence, a failure distinct from a check
-/// that found nothing.
+/// answering holds the grammar stage for this long per sentence rather than for
+/// [`REQUEST_TIMEOUT`]. A check still unanswered at the bound fails for its sentence, a failure
+/// distinct from a check that found nothing.
 ///
 /// Set from a measurement on the development machine against the 6.6 server under the bundled
 /// runtime: 1,000 warm checks in picky mode, one sentence per request and in sequence, as the
