@@ -2,9 +2,11 @@
 //! sentence's form mode and its register. A match takes the first of these routes that holds:
 //!
 //! 1. A match in the spelling category is dropped, endorsed or not, since spelling has one source.
-//! 2. A match whose rule id is the matcher of a checker of the ruleset is endorsed. It becomes a
-//!    style flag citing the first such checker, in ascending order of id, that applies to the mode
-//!    and the register, and is dropped when none applies.
+//! 2. A match whose rule id is the matcher of a checker of the ruleset that applies to the mode and
+//!    the register is endorsed. It becomes a style flag citing the first such checker, in
+//!    ascending order of id. A checker that names the rule and does not apply is absent for the
+//!    sentence, so the match routes on: a clause's scope never switches off an error check in
+//!    another register.
 //! 3. A match of a rule LanguageTool tags picky is dropped. Picky mode is on for the style rules
 //!    the owner can endorse, and its rules in the hard categories, smart quotes among them, would
 //!    otherwise surface as grammar flags the default level never raised.
@@ -46,11 +48,11 @@ fn routed(
     if category == CategoryRoute::Spelling {
         return None;
     }
-    let endorsing = ruleset.checkers_of_languagetool_rule(&found.rule.id);
-    if !endorsing.is_empty() {
-        let checker = endorsing
-            .into_iter()
-            .find(|checker| checker.applies_to(mode, register))?;
+    let endorsing = ruleset
+        .checkers_of_languagetool_rule(&found.rule.id)
+        .into_iter()
+        .find(|checker| checker.applies_to(mode, register));
+    if let Some(checker) = endorsing {
         return Some(style_flag(found, checker, ruleset.version()));
     }
     if category != CategoryRoute::Hard || found.rule.is_picky() {
@@ -286,32 +288,42 @@ mod tests {
     }
 
     #[test]
-    fn a_checker_whose_modes_or_scope_exclude_the_sentence_raises_no_flag_for_its_rule() {
+    fn a_checker_whose_modes_or_scope_exclude_the_sentence_is_absent_and_the_match_routes_on() {
         let mut fragments_only = endorsing("PASSIVE_VOICE_SIMPLE");
         fragments_only.form_modes = BTreeSet::from([CheckableMode::Fragment]);
+        // The passive voice rule is picky, so its match routes on to a drop.
         let cases = [
-            (fragments_only, PASSIVE_VOICE_RESPONSE, FormMode::Prose),
+            (
+                fragments_only,
+                PASSIVE_VOICE_RESPONSE,
+                FormMode::Prose,
+                None,
+            ),
             (
                 endorsing("PASSIVE_VOICE_SIMPLE"),
                 PASSIVE_VOICE_RESPONSE,
                 FormMode::Code,
+                None,
             ),
             (
                 in_email_only(endorsing("PASSIVE_VOICE_SIMPLE")),
                 PASSIVE_VOICE_RESPONSE,
                 FormMode::Prose,
+                None,
             ),
-            // A hard category's match that a checker names routes through the checker alone.
+            // A hard category's rule of the default level routes on to a grammar flag.
             (
                 in_email_only(endorsing("GOT_GOTTEN")),
                 GOT_GOTTEN_RESPONSE,
                 FormMode::Prose,
+                Some(FlagOrigin::Grammar),
             ),
         ];
-        for (rule, response, mode) in cases {
+        for (rule, response, mode, expected) in cases {
             let ruleset = ruleset_of(&[(rule, ACTIVE_VOICE)]);
             let flags = route(matches_in(response), &ruleset, mode, "default");
-            assert!(flags.is_empty(), "{mode:?}: {flags:#?}");
+            let origins: Vec<FlagOrigin> = flags.iter().map(|flag| flag.origin.clone()).collect();
+            assert_eq!(origins, Vec::from_iter(expected), "{mode:?}: {flags:#?}");
         }
     }
 

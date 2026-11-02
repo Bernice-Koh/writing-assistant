@@ -17,9 +17,9 @@ use super::error::LanguageToolError;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Bounds each steady-state check, every check after the warm-up, so that a server that stops
-/// answering holds a recheck for this long per sentence rather than for [`REQUEST_TIMEOUT`]. A
-/// check still unanswered at the bound fails for its sentence, a failure distinct from a check
-/// that found nothing.
+/// answering holds the grammar stage for this long per sentence rather than for
+/// [`REQUEST_TIMEOUT`]. A check still unanswered at the bound fails for its sentence, a failure
+/// distinct from a check that found nothing.
 ///
 /// Set from a measurement on the development machine against the 6.6 server under the bundled
 /// runtime: 1,000 warm checks in picky mode, one sentence per request and in sequence, as the
@@ -30,7 +30,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// median rose with length, from 13.4 ms up to ten words to 25.6 ms past fifty, and the five
 /// slowest checks were of sentences of 30 to 72 words. One second is about nine times the slowest
 /// check, a margin for a collection pause in the server's runtime or a loaded machine, at a cost of
-/// one second a sentence while the server has stopped answering.
+/// one second a sentence while the server has stopped answering. The harness that took the
+/// measurement is `crates/engine/examples/picky_latency.rs`.
 const STEADY_STATE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// LanguageTool's own category for rules that flag a misspelling, such as `MORFOLOGIK_RULE_EN_GB`.
@@ -66,6 +67,10 @@ pub(super) enum CategoryRoute {
 /// #98 decided the hard categories, those of errors, and the soft ones, those of style. Every other
 /// category the files hold is soft, so that a category no decision covers surfaces only through an
 /// endorsed rule, and a category missing here, which a later release can add, routes as soft too.
+/// Two categories LanguageTool types as misspellings are hard: `NONSTANDARD_PHRASES` marks phrases
+/// as wrong as `CONFUSED_WORDS` does, and `MULTITOKEN_SPELLING` finds spelling mistakes in proper
+/// nouns of two to four tokens, which the single-word dictionary cannot see, so neither puts a
+/// second opinion on a span spelling already judges.
 /// No 6.6 category appears only in picky mode: each picky rule sits in a category that also holds
 /// rules of the default level, the hard categories among them.
 const CATEGORY_ROUTES: [(&str, CategoryRoute); 23] = [
@@ -79,8 +84,8 @@ const CATEGORY_ROUTES: [(&str, CategoryRoute); 23] = [
     ("CREATIVE_WRITING", CategoryRoute::Soft),
     ("GRAMMAR", CategoryRoute::Hard),
     ("MISC", CategoryRoute::Hard),
-    ("MULTITOKEN_SPELLING", CategoryRoute::Soft),
-    ("NONSTANDARD_PHRASES", CategoryRoute::Soft),
+    ("MULTITOKEN_SPELLING", CategoryRoute::Hard),
+    ("NONSTANDARD_PHRASES", CategoryRoute::Hard),
     ("PLAIN_ENGLISH", CategoryRoute::Soft),
     ("PUNCTUATION", CategoryRoute::Hard),
     ("REDUNDANCY", CategoryRoute::Soft),
@@ -499,6 +504,8 @@ mod tests {
                 "SEMANTICS",
                 "MISC",
                 "AMERICAN_ENGLISH",
+                "NONSTANDARD_PHRASES",
+                "MULTITOKEN_SPELLING",
             ])
         );
         for soft in [

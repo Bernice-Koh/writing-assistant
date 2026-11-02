@@ -1,10 +1,27 @@
 //! The analyzer, between capture and the overlay. It polls the document's text, waits for the
-//! typing pause, and splits the text into sentences. A sentence whose text the cache holds is
-//! served from it; any other is checked against spelling, the telltale catalogue, and
-//! LanguageTool, suppression by severity is applied to its flags, and the result is cached under a
-//! hash of its text. Every recheck publishes the whole document's flags on the watch channel the
-//! overlay subscribes to, each span's occurrence index counted from its sentence's position as it
-//! publishes. Checking keys to the pause because a flag on a half-typed word is noise.
+//! typing pause, and splits the text into sentences. Checking keys to the pause because a flag on
+//! a half-typed word is noise.
+//!
+//! Each recheck runs two stages, and each publishes the whole document's flags on the watch
+//! channel the overlay subscribes to. The deterministic stage runs spelling and the telltale
+//! catalogue over every sentence the cache holds no entry for, and publishes at once, with the
+//! grammar flags the cache holds for sentences whose grammar check completed on an earlier
+//! recheck. The grammar stage then sends LanguageTool every sentence whose grammar part is not
+//! complete, one at a time, and publishes a second update adding their grammar flags. It runs as a
+//! task of its own, so the poll goes on while LanguageTool answers, and spelling and telltale flags
+//! never wait on it.
+//!
+//! The cache holds each sentence's two parts under a hash of its text, as their sources raised
+//! them. Suppression by severity is applied each time the document's flags are assembled for a
+//! publish, over the parts in hand, so a soft flag that a grammar flag overlaps is in the first
+//! update and gone from the second. A grammar check that fails, times out, or meets LanguageTool
+//! degraded or absent leaves the sentence's grammar part incomplete, and the next recheck sends it
+//! again. Each span's occurrence index is counted from its sentence's position as each update is
+//! assembled.
+//!
+//! Every recheck carries a number. A new recheck aborts the grammar stage of the one before, and a
+//! stage publishes only while its number is the latest, so a stage that a newer recheck replaced
+//! never publishes over the newer text's flags.
 //!
 //! `sentences` covers the split, `dedupe` suppression. Both are private: [`Analyzer`] is the only
 //! public surface.
@@ -13,18 +30,21 @@ mod dedupe;
 mod sentences;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lru::LruCache;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
 use crate::flag::Flag;
-use crate::languagetool::LanguageToolSupervisor;
+use crate::languagetool::GrammarSource;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
@@ -43,8 +63,8 @@ const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 /// for the life of a long writing session.
 const CACHE_CAPACITY: usize = 1000;
 
-/// Runs the debounce, check, merge, and cache pipeline against a [`Capture`] backend's
-/// live text, keeping the latest merged and deduplicated [`Flag`] list for the whole document.
+/// Runs the debounce, the two checking stages, suppression, and the cache against a [`Capture`]
+/// backend's live text, keeping the latest suppressed [`Flag`] list for the whole document.
 pub struct Analyzer {
     inner: Arc<Inner>,
 }
@@ -52,25 +72,77 @@ pub struct Analyzer {
 struct Inner {
     capture: Arc<dyn Capture>,
     spelling: SpellChecker,
-    languagetool: Option<LanguageToolSupervisor>,
+    grammar: Option<Arc<dyn GrammarSource>>,
     ruleset: Arc<LoadedRuleset>,
     catalogue: Arc<Catalogue>,
     register: String,
-    /// The whole document's flags as the latest recheck published them, empty until the first
-    /// completes. The channel holds the analyzer's one copy of them, which a subscriber reads
-    /// through `borrow`.
+    /// The whole document's flags as the latest update published them, empty until the first. The
+    /// channel holds the analyzer's one copy of them, which a subscriber reads through `borrow`.
     flags_tx: watch::Sender<Vec<Flag>>,
-    cache: Mutex<LruCache<u64, Vec<Flag>>>,
-    /// Counts calls into [`check_sentence`], the work a cache hit skips. Test-only, and held per
-    /// instance rather than in a global, so tests running in parallel never share a count.
+    cache: Mutex<LruCache<u64, SentenceParts>>,
+    /// The number of the latest recheck, raised as each starts. Every publish compares its
+    /// recheck's number with this one under this lock, and the raise takes the same lock, so no
+    /// update of a recheck lands once a newer recheck has started.
+    latest_recheck: Mutex<u64>,
+    /// Counts the sentences the deterministic stage checked, the work a cache hit skips.
+    /// Test-only, and held per instance rather than in a global, so tests running in parallel never
+    /// share a count.
     #[cfg(test)]
-    check_sentence_calls: std::sync::atomic::AtomicUsize,
+    deterministic_checks: std::sync::atomic::AtomicUsize,
+    /// Every update published, in order. Test-only: the watch channel keeps only the latest.
+    #[cfg(test)]
+    updates: Mutex<Vec<Vec<Flag>>>,
+}
+
+/// One sentence's flags as the cache holds them, each part as its sources raised it, with no
+/// suppression applied.
+#[derive(Debug, Clone)]
+struct SentenceParts {
+    /// Spelling's and the telltale catalogue's flags.
+    deterministic: Vec<Flag>,
+    /// LanguageTool's flags, routed through the ruleset. `Some` once a grammar check of the
+    /// sentence has answered, which is the part's completion mark; `None` while no check has, which
+    /// sends the sentence to the grammar stage of every recheck until one does.
+    grammar: Option<Vec<Flag>>,
+}
+
+/// The document one recheck checks, owned so that its grammar stage's task can carry it.
+struct Recheck {
+    number: u64,
+    text: String,
+    sentences: Vec<DocumentSentence>,
+    /// Each sentence's parts in hand, in the order of `sentences`.
+    parts: Vec<SentenceParts>,
+}
+
+/// One sentence of a [`Recheck`]'s document.
+struct DocumentSentence {
+    /// Where the trimmed sentence sits in the document's text, in bytes.
+    range: Range<usize>,
+    /// The hash of the sentence's text, its key in the cache.
+    key: u64,
+}
+
+/// The stage of a recheck an update comes from, which its log line names.
+#[derive(Debug, Clone, Copy)]
+enum Stage {
+    Deterministic,
+    Grammar,
+}
+
+impl Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Deterministic => "deterministic",
+            Self::Grammar => "grammar",
+        }
+    }
 }
 
 impl Analyzer {
-    /// Starts polling `capture` in the background. `languagetool` is `None` when the subprocess
-    /// could not be started at all; a `Some` that later degrades fails every check, which
-    /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
+    /// Starts polling `capture` in the background. `grammar` is `None` when the LanguageTool
+    /// subprocess could not be started at all; a `Some` that later degrades fails every check,
+    /// which leaves every sentence's grammar part incomplete. `ruleset` is the ruleset loaded at
     /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
     /// when no version is loaded, and LanguageTool's matches route through its checkers.
     /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles: every
@@ -80,7 +152,7 @@ impl Analyzer {
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
-        languagetool: Option<LanguageToolSupervisor>,
+        grammar: Option<Arc<dyn GrammarSource>>,
         ruleset: Arc<LoadedRuleset>,
         catalogue: Arc<Catalogue>,
         register: String,
@@ -89,7 +161,7 @@ impl Analyzer {
         let inner = Arc::new(Inner {
             capture,
             spelling,
-            languagetool,
+            grammar,
             ruleset,
             catalogue,
             register,
@@ -98,30 +170,43 @@ impl Analyzer {
                 NonZeroUsize::new(CACHE_CAPACITY)
                     .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
             )),
+            latest_recheck: Mutex::new(0),
             #[cfg(test)]
-            check_sentence_calls: std::sync::atomic::AtomicUsize::new(0),
+            deterministic_checks: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            updates: Mutex::new(Vec::new()),
         });
         tokio::spawn(debounce_loop(Arc::clone(&inner)));
         Self { inner }
     }
 
-    /// The most recently computed, merged, and deduplicated flag set for the whole document, empty
-    /// until the first recheck completes, and notified every time a recheck finishes, so a
-    /// subscriber (the overlay's own flag-positioning task) reacts the moment new flags are ready
-    /// instead of polling on its own schedule. Delivers only the latest value, not every
-    /// intermediate one: a subscriber that is mid-reaction to one recheck when another completes
+    /// The most recently published, suppressed flag set for the whole document, empty until the
+    /// first update, and notified at every update, the deterministic stage's and the grammar
+    /// stage's, so a subscriber (the overlay's own flag-positioning task) reacts the moment new
+    /// flags are ready instead of polling on its own schedule. Delivers only the latest value, not
+    /// every intermediate one: a subscriber that is mid-reaction to one update when another lands
     /// sees the newer flags next, never a queue of stale ones to catch up on, which is the
     /// behaviour this receiver needs since only the current flag set is ever meaningful to render.
     pub fn subscribe(&self) -> watch::Receiver<Vec<Flag>> {
         self.inner.flags_tx.subscribe()
     }
 
-    /// How many times [`check_sentence`] actually ran real work, as opposed to a cache hit.
+    /// How many sentences the deterministic stage checked, as opposed to serving from the cache.
     #[cfg(test)]
-    fn check_sentence_call_count(&self) -> usize {
+    fn deterministic_check_count(&self) -> usize {
         self.inner
-            .check_sentence_calls
+            .deterministic_checks
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Every update published so far, in order.
+    #[cfg(test)]
+    fn updates(&self) -> Vec<Vec<Flag>> {
+        self.inner
+            .updates
+            .lock()
+            .expect("a poisoned lock here means another thread already panicked")
+            .clone()
     }
 }
 
@@ -130,6 +215,7 @@ async fn debounce_loop(inner: Arc<Inner>) {
     let mut last_seen_hash: Option<u64> = None;
     let mut quiet_since: Option<Instant> = None;
     let mut already_rechecked_this_quiet_period = false;
+    let mut grammar_stage: Option<JoinHandle<()>> = None;
 
     loop {
         interval.tick().await;
@@ -154,13 +240,86 @@ async fn debounce_loop(inner: Arc<Inner>) {
             continue;
         }
         already_rechecked_this_quiet_period = true;
-        recheck(&inner, &text).await;
+        // The previous recheck's checks were of text the document no longer holds.
+        if let Some(stale) = grammar_stage.take() {
+            stale.abort();
+        }
+        grammar_stage = recheck(&inner, text);
     }
 }
 
-async fn recheck(inner: &Inner, text: &str) {
-    let mut document_flags = Vec::new();
-    for (index, sentence) in sentences::split(text).into_iter().enumerate() {
+/// Runs the deterministic stage over `text` and publishes the first update, then spawns the
+/// grammar stage over the sentences whose grammar part is incomplete, returning its task. No
+/// stage is spawned with no grammar source or no such sentence.
+fn recheck(inner: &Arc<Inner>, text: String) -> Option<JoinHandle<()>> {
+    let number = start_recheck(inner);
+    let recheck = deterministic_stage(inner, number, text);
+    publish(
+        inner,
+        number,
+        Stage::Deterministic,
+        recheck.document_flags(inner),
+    );
+
+    let grammar = inner.grammar.clone()?;
+    if recheck.incomplete_sentences().is_empty() {
+        return None;
+    }
+    Some(tokio::spawn(grammar_stage(
+        Arc::clone(inner),
+        grammar,
+        recheck,
+    )))
+}
+
+/// Raises the latest recheck's number and returns it, the new recheck's.
+fn start_recheck(inner: &Inner) -> u64 {
+    let mut latest = inner
+        .latest_recheck
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked");
+    *latest += 1;
+    *latest
+}
+
+/// Publishes `flags` as `stage`'s update of recheck `number`, unless a newer recheck has started.
+fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
+    let latest = inner
+        .latest_recheck
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked");
+    if *latest != number {
+        log::debug!(
+            "recheck {number}'s {} stage publishes nothing, since recheck {latest} has started",
+            stage.name()
+        );
+        return;
+    }
+    log::debug!(
+        "recheck {number} published its {} stage's update of {} flags",
+        stage.name(),
+        flags.len()
+    );
+    #[cfg(test)]
+    inner
+        .updates
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked")
+        .push(flags.clone());
+    // The channel holds the only copy, and `send` discards the value while no receiver is
+    // subscribed, as before the overlay's flag-tracking task starts or with the engine headless in
+    // a test. `send_replace` stores it regardless.
+    inner.flags_tx.send_replace(flags);
+}
+
+/// Splits `text` into its sentences and gathers each one's parts: from the cache where it holds
+/// an entry, and otherwise from a fresh deterministic check, cached with its grammar part
+/// incomplete. An unchanged sentence whose entry aged out under the LRU's capacity is checked
+/// afresh, the correct fallback rather than showing no flags.
+fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
+    let mut sentences = Vec::new();
+    let mut parts = Vec::new();
+    for sentence in sentences::split(&text) {
         let key = hash_text(sentence.text);
         let cached = inner
             .cache
@@ -168,33 +327,150 @@ async fn recheck(inner: &Inner, text: &str) {
             .expect("a poisoned lock here means another thread already panicked")
             .get(&key)
             .cloned();
-        let sentence_flags = match cached {
-            Some(flags) => flags,
-            // A sentence new or edited since the cache last held it, or an unchanged one whose
-            // entry aged out under the LRU's capacity: either way, a fresh check is the correct
-            // fallback, not silently showing no flags.
+        let sentence_parts = cached.unwrap_or_else(|| {
+            let checked = SentenceParts {
+                deterministic: deterministic_flags(inner, sentence.text),
+                grammar: None,
+            };
+            inner
+                .cache
+                .lock()
+                .expect("a poisoned lock here means another thread already panicked")
+                .put(key, checked.clone());
+            checked
+        });
+        sentences.push(DocumentSentence {
+            range: sentence.start..sentence.start + sentence.text.len(),
+            key,
+        });
+        parts.push(sentence_parts);
+    }
+    Recheck {
+        number,
+        text,
+        sentences,
+        parts,
+    }
+}
+
+fn deterministic_flags(inner: &Inner, sentence: &str) -> Vec<Flag> {
+    #[cfg(test)]
+    inner
+        .deterministic_checks
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    // Every sentence is prose until form mode is classified per paragraph (#54).
+    let mut flags = inner.spelling.check(sentence);
+    flags.extend(
+        inner
+            .catalogue
+            .flags(sentence, FormMode::Prose, &inner.register),
+    );
+    flags
+}
+
+/// Sends `grammar` each sentence of `recheck` whose grammar part is incomplete, in document order
+/// and one at a time. Each answer is cached as it arrives, so a newer recheck that aborts the stage
+/// keeps the answers it already had. A text that two sentences share is sent once. Publishes the
+/// second update once any check has answered; with none answered, the first update already holds
+/// every flag in hand.
+async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut recheck: Recheck) {
+    let mut checked: HashMap<u64, Option<Vec<Flag>>> = HashMap::new();
+    let mut any_answered = false;
+    for index in recheck.incomplete_sentences() {
+        let key = recheck.sentences[index].key;
+        let known = checked.get(&key).cloned();
+        let grammar_flags = match known {
+            Some(grammar_flags) => grammar_flags,
             None => {
-                let flags = check_sentence(inner, sentence.text).await;
-                inner
-                    .cache
-                    .lock()
-                    .expect("a poisoned lock here means another thread already panicked")
-                    .put(key, flags.clone());
-                flags
+                let sentence = recheck.sentence(index);
+                let grammar_flags = check_grammar(&inner, grammar.as_ref(), sentence).await;
+                if let Some(flags) = &grammar_flags {
+                    let complete = SentenceParts {
+                        deterministic: recheck.parts[index].deterministic.clone(),
+                        grammar: Some(flags.clone()),
+                    };
+                    inner
+                        .cache
+                        .lock()
+                        .expect("a poisoned lock here means another thread already panicked")
+                        .put(key, complete);
+                }
+                checked.insert(key, grammar_flags.clone());
+                grammar_flags
             }
         };
-        let text_before_sentence = &text[..sentence.start];
-        document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
-            ruleset_version: inner.ruleset.version(),
-            catalogue_hash: Some(inner.catalogue.hash().clone()),
-            ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
-        }));
+        any_answered |= grammar_flags.is_some();
+        recheck.parts[index].grammar = grammar_flags;
+    }
+    if any_answered {
+        publish(
+            &inner,
+            recheck.number,
+            Stage::Grammar,
+            recheck.document_flags(&inner),
+        );
+    }
+}
+
+/// `sentence`'s grammar flags from `grammar`, or `None` when the check failed, which leaves the
+/// sentence's grammar part incomplete.
+async fn check_grammar(
+    inner: &Inner,
+    grammar: &dyn GrammarSource,
+    sentence: &str,
+) -> Option<Vec<Flag>> {
+    // Every sentence is prose until form mode is classified per paragraph (#54).
+    let checked = grammar
+        .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
+        .await;
+    match checked {
+        Ok(grammar_flags) => Some(grammar_flags),
+        Err(error) => {
+            log::debug!(
+                "the grammar check of a sentence of {} bytes failed, so it has no grammar flags \
+                 this time and is sent again on the next recheck: {error}",
+                sentence.len()
+            );
+            None
+        }
+    }
+}
+
+impl Recheck {
+    fn sentence(&self, index: usize) -> &str {
+        &self.text[self.sentences[index].range.clone()]
     }
 
-    // The channel holds the only copy, and `send` discards the value while no receiver is
-    // subscribed, as before the overlay's flag-tracking task starts or with the engine headless in
-    // a test. `send_replace` stores it regardless.
-    inner.flags_tx.send_replace(document_flags);
+    /// The indices of the sentences whose grammar part is incomplete.
+    fn incomplete_sentences(&self) -> Vec<usize> {
+        (0..self.parts.len())
+            .filter(|&index| self.parts[index].grammar.is_none())
+            .collect()
+    }
+
+    /// The whole document's flags from the parts in hand: for each sentence, its deterministic
+    /// part and its grammar part where complete, suppressed together, then scoped to the document
+    /// and stamped with the ruleset version and the catalogue hash in force.
+    fn document_flags(&self, inner: &Inner) -> Vec<Flag> {
+        let mut document_flags = Vec::new();
+        for (index, (sentence, parts)) in self.sentences.iter().zip(&self.parts).enumerate() {
+            let in_hand: Vec<Flag> = parts
+                .deterministic
+                .iter()
+                .chain(parts.grammar.iter().flatten())
+                .cloned()
+                .collect();
+            let text_before_sentence = &self.text[..sentence.range.start];
+            let suppressed = dedupe::apply(self.sentence(index), in_hand);
+            document_flags.extend(suppressed.into_iter().map(|flag| Flag {
+                ruleset_version: inner.ruleset.version(),
+                catalogue_hash: Some(inner.catalogue.hash().clone()),
+                ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
+            }));
+        }
+        document_flags
+    }
 }
 
 /// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
@@ -206,7 +482,8 @@ async fn recheck(inner: &Inner, text: &str) {
 /// The sentence's index, rather than the hash the cache is keyed by, because the index is the
 /// only part of a sentence's identity that separates two textually identical sentences. It shifts
 /// when a sentence is inserted earlier in the document, which re-keys the flags after it; that
-/// costs a remount of those underlines on the next emit, which is already a whole-set emit.
+/// costs a remount of those underlines on the next emit, which is already a whole-set emit. Within
+/// one recheck the index is fixed, so a flag in both of its updates has one id.
 fn with_document_scope(sentence_index: usize, flag: Flag) -> Flag {
     Flag {
         id: format!("{sentence_index}:{}", flag.id),
@@ -216,43 +493,14 @@ fn with_document_scope(sentence_index: usize, flag: Flag) -> Flag {
 
 /// Sets `flag`'s occurrence index from the document text before the sentence it was found in, by
 /// the rule on [`crate::flag::Span::occurrence`]: `matches` scans left to right and does not
-/// overlap, as the native backend's search does. Counted here, as each recheck publishes, and not
-/// cached with the flag, so a cached sentence that an identical one now precedes gets its new
+/// overlap, as the native backend's search does. Counted here, as each update is assembled, and
+/// not cached with the flag, so a cached sentence that an identical one now precedes gets its new
 /// index.
 fn with_occurrence(text_before_sentence: &str, mut flag: Flag) -> Flag {
     flag.span.occurrence = text_before_sentence
         .matches(flag.span.anchor.as_str())
         .count();
     flag
-}
-
-async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
-    #[cfg(test)]
-    inner
-        .check_sentence_calls
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-    // Every sentence is prose until form mode is classified per paragraph (#54).
-    let mut flags = inner.spelling.check(sentence);
-    flags.extend(
-        inner
-            .catalogue
-            .flags(sentence, FormMode::Prose, &inner.register),
-    );
-    if let Some(languagetool) = &inner.languagetool {
-        let checked = languagetool
-            .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
-            .await;
-        match checked {
-            Ok(grammar_flags) => flags.extend(grammar_flags),
-            Err(error) => log::debug!(
-                "the grammar check of a sentence of {} bytes failed, so it has no grammar flags \
-                 this time: {error}",
-                sentence.len()
-            ),
-        }
-    }
-    dedupe::apply(sentence, flags)
 }
 
 fn hash_text(text: &str) -> u64 {
@@ -269,6 +517,7 @@ mod tests {
 
     use crate::capture::{CaptureError, CursorRect};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
+    use crate::languagetool::LanguageToolError;
     use crate::store::Config;
     use crate::test_support::dictionary_path;
 
@@ -316,6 +565,114 @@ mod tests {
         }
     }
 
+    /// What [`FakeGrammar`] answers a check with.
+    #[derive(Debug, Clone, Copy)]
+    enum Answer {
+        /// A grammar flag on each occurrence in the sentence of each of its flagged words.
+        Flags,
+        /// A request that failed.
+        RequestFailure,
+        /// A check past its bound.
+        Timeout,
+        /// The answer of a supervisor whose restarts are exhausted.
+        Degraded,
+    }
+
+    /// A grammar source with no LanguageTool behind it. It records every sentence it is sent,
+    /// answers each as its [`Answer`] says, and while held keeps every check waiting until it is
+    /// released.
+    struct FakeGrammar {
+        flagged_words: Vec<&'static str>,
+        answer: StdMutex<Answer>,
+        sent: StdMutex<Vec<String>>,
+        held: watch::Sender<bool>,
+    }
+
+    impl FakeGrammar {
+        /// A source that answers with a grammar flag on each of `flagged_words`, unheld.
+        fn flagging(flagged_words: &[&'static str]) -> Arc<Self> {
+            Arc::new(Self {
+                flagged_words: flagged_words.to_vec(),
+                answer: StdMutex::new(Answer::Flags),
+                sent: StdMutex::new(Vec::new()),
+                held: watch::channel(false).0,
+            })
+        }
+
+        fn answer_with(&self, answer: Answer) {
+            *self.answer.lock().unwrap() = answer;
+        }
+
+        fn hold(&self) {
+            self.held.send_replace(true);
+        }
+
+        fn release(&self) {
+            self.held.send_replace(false);
+        }
+
+        /// Every sentence sent so far, in order.
+        fn sent(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        /// The flags of a check of `sentence` that answers: one grammar flag per occurrence of a
+        /// flagged word, numbered and anchored as LanguageTool's routing builds them, recording a
+        /// version the analyzer does not hold and no catalogue hash.
+        fn grammar_flags(&self, sentence: &str) -> Vec<Flag> {
+            let mut found: Vec<(usize, &str)> = self
+                .flagged_words
+                .iter()
+                .flat_map(|word| sentence.match_indices(word))
+                .collect();
+            found.sort();
+            found
+                .into_iter()
+                .enumerate()
+                .map(|(index, (byte_offset, word))| Flag {
+                    id: format!("grammar:{index}:TEST_RULE"),
+                    origin: FlagOrigin::Grammar,
+                    span: Span {
+                        anchor: sentence.to_owned(),
+                        local_start: sentence[..byte_offset].encode_utf16().count(),
+                        local_length: word.encode_utf16().count(),
+                        occurrence: 0,
+                    },
+                    message: "a grammar flag".to_owned(),
+                    suggestions: Vec::new(),
+                    source_detail: "TEST_RULE".to_owned(),
+                    ruleset_version: Some(RulesetVersion(99)),
+                    catalogue_hash: None,
+                })
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GrammarSource for FakeGrammar {
+        async fn check(
+            &self,
+            sentence: &str,
+            _ruleset: &LoadedRuleset,
+            _mode: FormMode,
+            _register: &str,
+        ) -> Result<Vec<Flag>, LanguageToolError> {
+            self.sent.lock().unwrap().push(sentence.to_owned());
+            let mut held = self.held.subscribe();
+            held.wait_for(|held| !held).await.unwrap();
+            let answer = *self.answer.lock().unwrap();
+            match answer {
+                Answer::Flags => Ok(self.grammar_flags(sentence)),
+                Answer::RequestFailure => {
+                    let unbuildable = reqwest::Client::new().get("not a url").build();
+                    Err(LanguageToolError::from(unbuildable.unwrap_err()))
+                }
+                Answer::Timeout => Err(LanguageToolError::CheckTimeout { timeout_ms: 1000 }),
+                Answer::Degraded => Err(LanguageToolError::Degraded),
+            }
+        }
+    }
+
     fn test_spell_checker() -> SpellChecker {
         SpellChecker::load(
             &dictionary_path("en_GB.aff"),
@@ -347,6 +704,19 @@ mod tests {
     /// The flags `analyzer` last published, read from a fresh subscription.
     fn published_flags(analyzer: &Analyzer) -> Vec<Flag> {
         analyzer.subscribe().borrow().clone()
+    }
+
+    fn is_telltale(flag: &Flag) -> bool {
+        matches!(flag.origin, FlagOrigin::AiTell { .. })
+    }
+
+    /// The texts `flags` flag with `origin`'s kind, in order.
+    fn flagged_by(flags: &[Flag], origin: &FlagOrigin) -> Vec<String> {
+        flags
+            .iter()
+            .filter(|flag| discriminant(&flag.origin) == discriminant(origin))
+            .map(flagged_text)
+            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -410,7 +780,7 @@ mod tests {
             "expected the first recheck to find the misspelling: {first_pass:#?}"
         );
         // Both sentences are new to the cache on this first pass, so both were checked for real.
-        assert_eq!(analyzer.check_sentence_call_count(), 2);
+        assert_eq!(analyzer.deterministic_check_count(), 2);
 
         // Only the second sentence changes; the first sentence's text is untouched.
         fake.set_text("This has a mispelling. This one has an eror too.");
@@ -429,7 +799,7 @@ mod tests {
         );
         // Only the one changed sentence should have gone through a real check this time; the
         // unchanged first sentence should have been served from the LRU cache instead.
-        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        assert_eq!(analyzer.deterministic_check_count(), 3);
     }
 
     #[tokio::test(start_paused = true)]
@@ -437,16 +807,16 @@ mod tests {
         let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
         let analyzer = analyzer_on(&fake);
         step(6).await;
-        assert_eq!(analyzer.check_sentence_call_count(), 2);
+        assert_eq!(analyzer.deterministic_check_count(), 2);
 
         fake.set_text("This has a mispelling. This one has an eror.");
         step(6).await;
-        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        assert_eq!(analyzer.deterministic_check_count(), 3);
 
         // The second sentence goes back to the text its first check cached.
         fake.set_text("This has a mispelling. This one is fine.");
         step(6).await;
-        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        assert_eq!(analyzer.deterministic_check_count(), 3);
         let flags = published_flags(&analyzer);
         let flagged: Vec<String> = flags.iter().map(flagged_text).collect();
         assert_eq!(flagged, ["mispelling"], "{flags:#?}");
@@ -486,6 +856,17 @@ mod tests {
             Arc::clone(fake) as Arc<dyn Capture>,
             test_spell_checker(),
             None,
+            Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
+            "default".to_owned(),
+        )
+    }
+
+    fn analyzer_with_grammar(fake: &Arc<FakeCapture>, grammar: &Arc<FakeGrammar>) -> Analyzer {
+        Analyzer::start(
+            Arc::clone(fake) as Arc<dyn Capture>,
+            test_spell_checker(),
+            Some(Arc::clone(grammar) as Arc<dyn GrammarSource>),
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
             "default".to_owned(),
@@ -539,14 +920,14 @@ mod tests {
         let analyzer = analyzer_on(&fake);
         step(6).await;
         assert_eq!(eror_spans(&analyzer), [eror_here(0)]);
-        assert_eq!(analyzer.check_sentence_call_count(), 2);
+        assert_eq!(analyzer.deterministic_check_count(), 2);
 
         // A copy inserted at the start moves the original to third place, and the cache serves
         // both copies.
         fake.set_text("An eror here. Fine start. An eror here.");
         step(6).await;
         assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
-        assert_eq!(analyzer.check_sentence_call_count(), 2);
+        assert_eq!(analyzer.deterministic_check_count(), 2);
         let cached = analyzer
             .inner
             .cache
@@ -556,62 +937,339 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(
-            cached.iter().all(|flag| flag.span.occurrence == 0),
+            cached
+                .deterministic
+                .iter()
+                .all(|flag| flag.span.occurrence == 0),
             "{cached:#?}"
         );
     }
 
+    /// Three sentences: a misspelling, a telltale, and a grammar error the fake flags on "go".
+    const THREE_SOURCES: &str = "This has a mispelling. It stands as a testament to the team. \
+                                 He go to school.";
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_update_holds_the_deterministic_flags_before_any_grammar_check_answers() {
+        let fake = Arc::new(FakeCapture::new(THREE_SOURCES));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        assert!(!grammar.sent().is_empty(), "the grammar stage is in flight");
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 1, "{updates:#?}");
+        let first = &updates[0];
+        assert_eq!(flagged_by(first, &FlagOrigin::Spelling), ["mispelling"]);
+        let telltales: Vec<String> = first
+            .iter()
+            .filter(|flag| is_telltale(flag))
+            .map(flagged_text)
+            .collect();
+        assert_eq!(telltales, ["stands as a testament to"], "{first:#?}");
+        assert!(
+            flagged_by(first, &FlagOrigin::Grammar).is_empty(),
+            "{first:#?}"
+        );
+
+        grammar.release();
+        step(1).await;
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        assert_eq!(grammar.sent().len(), 3);
+        let added: Vec<&Flag> = updates[1]
+            .iter()
+            .filter(|flag| !updates[0].contains(flag))
+            .collect();
+        assert_eq!(added.len(), 1, "{:#?}", updates[1]);
+        assert_eq!(added[0].origin, FlagOrigin::Grammar);
+        assert_eq!(added[0].id, "2:grammar:0:TEST_RULE");
+        assert_eq!(flagged_text(added[0]), "go");
+        assert!(
+            updates[0].iter().all(|flag| updates[1].contains(flag)),
+            "{updates:#?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_soft_flag_a_grammar_flag_overlaps_is_in_the_first_update_and_gone_from_the_second() {
+        let fake = Arc::new(FakeCapture::new("It stands as a testament to the team."));
+        let grammar = FakeGrammar::flagging(&["a testament"]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        grammar.release();
+        step(1).await;
+
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        assert!(updates[0].iter().any(is_telltale), "{:#?}", updates[0]);
+        assert!(!updates[1].iter().any(is_telltale), "{:#?}", updates[1]);
+        assert_eq!(
+            flagged_by(&updates[1], &FlagOrigin::Grammar),
+            ["a testament"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_soft_flag_a_spelling_flag_overlaps_is_absent_from_the_first_update() {
+        // The telltale runs from "It's not just" to "it's", over the misspelling between.
+        let misspelled = "It's not just a mispeling, it's a habit.";
+        let spelled = "It's not just a misspelling, it's a habit.";
+        let fake = Arc::new(FakeCapture::new(spelled));
+        let grammar = FakeGrammar::flagging(&[]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        let first = published_flags(&analyzer);
+        assert_eq!(
+            first.iter().filter(|flag| is_telltale(flag)).count(),
+            1,
+            "{first:#?}"
+        );
+
+        fake.set_text(misspelled);
+        step(6).await;
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        let first = &updates[1];
+        assert_eq!(flagged_by(first, &FlagOrigin::Spelling), ["mispeling"]);
+        assert!(!first.iter().any(is_telltale), "{first:#?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unchanged_complete_sentence_sends_no_check_and_its_grammar_flags_publish_first() {
+        let unchanged = "It stands as a testament to the team.";
+        let fake = Arc::new(FakeCapture::new(&format!("{unchanged} He go to school.")));
+        let grammar = FakeGrammar::flagging(&["a testament", "go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 2);
+        assert_eq!(grammar.sent(), [unchanged, "He go to school."]);
+
+        grammar.hold();
+        fake.set_text(&format!("{unchanged} She went to school."));
+        step(6).await;
+        assert_eq!(
+            grammar.sent(),
+            [unchanged, "He go to school.", "She went to school."]
+        );
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 3, "{updates:#?}");
+        let first = &updates[2];
+        assert_eq!(flagged_by(first, &FlagOrigin::Grammar), ["a testament"]);
+        assert!(!first.iter().any(is_telltale), "{first:#?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_or_timed_out_check_leaves_the_part_incomplete_and_the_next_recheck_resends() {
+        let sentence = "He go to school.";
+        for failure in [Answer::RequestFailure, Answer::Timeout] {
+            let fake = Arc::new(FakeCapture::new(sentence));
+            let grammar = FakeGrammar::flagging(&["go"]);
+            grammar.answer_with(failure);
+            let analyzer = analyzer_with_grammar(&fake, &grammar);
+            step(6).await;
+            assert_eq!(grammar.sent(), [sentence], "{failure:?}");
+            // No check answered, so the first update stands alone.
+            assert_eq!(analyzer.updates().len(), 1, "{failure:?}");
+
+            grammar.answer_with(Answer::Flags);
+            fake.set_text(&format!("{sentence} Fine start."));
+            step(6).await;
+            assert_eq!(
+                grammar.sent(),
+                [sentence, sentence, "Fine start."],
+                "{failure:?}"
+            );
+            assert_eq!(
+                flagged_by(&published_flags(&analyzer), &FlagOrigin::Grammar),
+                ["go"],
+                "{failure:?}"
+            );
+            assert_eq!(analyzer.deterministic_check_count(), 2, "{failure:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_degraded_source_marks_nothing_complete() {
+        let sentences = ["He go to school.", "Fine start."];
+        let fake = Arc::new(FakeCapture::new(&sentences.join(" ")));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        grammar.answer_with(Answer::Degraded);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(grammar.sent(), sentences);
+        assert_eq!(analyzer.updates().len(), 1);
+        for sentence in sentences {
+            let cache = analyzer.inner.cache.lock().unwrap();
+            let parts = cache.peek(&hash_text(sentence)).unwrap();
+            assert!(parts.grammar.is_none(), "{sentence}: {parts:#?}");
+        }
+
+        fake.set_text(&format!("{} Another one.", sentences.join(" ")));
+        step(6).await;
+        assert_eq!(
+            grammar.sent(),
+            [
+                sentences[0],
+                sentences[1],
+                sentences[0],
+                sentences[1],
+                "Another one."
+            ]
+        );
+        assert_eq!(analyzer.updates().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_edit_in_flight_rechecks_the_new_text_and_the_stale_stage_never_publishes() {
+        let stale = "He go to school.";
+        let current = "We go home.";
+        let fake = Arc::new(FakeCapture::new(stale));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(grammar.sent(), [stale]);
+        assert_eq!(analyzer.updates().len(), 1);
+
+        // The stale stage's check is still held when the edit lands.
+        fake.set_text(current);
+        step(6).await;
+        assert_eq!(grammar.sent(), [stale, current]);
+        assert_eq!(analyzer.updates().len(), 2);
+
+        grammar.release();
+        step(3).await;
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 3, "{updates:#?}");
+        let grammar_anchors: Vec<&str> = updates
+            .iter()
+            .flatten()
+            .filter(|flag| flag.origin == FlagOrigin::Grammar)
+            .map(|flag| flag.span.anchor.as_str())
+            .collect();
+        assert_eq!(grammar_anchors, [current], "{updates:#?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recheck_that_a_newer_one_replaced_publishes_nothing() {
+        let fake = Arc::new(FakeCapture::new(""));
+        let analyzer = analyzer_on(&fake);
+        let flags = FakeGrammar::flagging(&["go"]).grammar_flags("He go to school.");
+
+        let replaced = start_recheck(&analyzer.inner);
+        let latest = start_recheck(&analyzer.inner);
+        publish(&analyzer.inner, replaced, Stage::Grammar, flags.clone());
+        assert!(analyzer.updates().is_empty());
+        assert!(published_flags(&analyzer).is_empty());
+
+        publish(&analyzer.inner, latest, Stage::Grammar, flags.clone());
+        assert_eq!(published_flags(&analyzer), flags);
+        assert_eq!(analyzer.updates(), [flags]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_flag_in_both_updates_of_a_recheck_has_one_id() {
+        let fake = Arc::new(FakeCapture::new(
+            "He go to the shcool. It stands as a testament to the team.",
+        ));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        grammar.release();
+        step(1).await;
+
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        assert_eq!(updates[0].len(), 2, "{:#?}", updates[0]);
+        for flag in &updates[0] {
+            let again: Vec<&Flag> = updates[1]
+                .iter()
+                .filter(|later| later.id == flag.id)
+                .collect();
+            assert_eq!(again, [flag], "{updates:#?}");
+        }
+        let ids: Vec<&str> = updates[1].iter().map(|flag| flag.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "0:spelling:13",
+                "0:grammar:0:TEST_RULE",
+                "1:ai-tell:significance-legacy-emphasis:3:21",
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recheck_checks_exactly_the_sentences_with_no_complete_entry() {
+        let fake = Arc::new(FakeCapture::new(
+            "First one is here. Second one is here. Third one is here.",
+        ));
+        let grammar = FakeGrammar::flagging(&[]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(
+            grammar.sent(),
+            [
+                "First one is here.",
+                "Second one is here.",
+                "Third one is here."
+            ]
+        );
+        assert_eq!(analyzer.deterministic_check_count(), 3);
+
+        // One sentence edited, and one added twice, which is one text and so one check.
+        fake.set_text(
+            "First one is here. Second one changed. Third one is here. Fourth one is here. \
+             Fourth one is here.",
+        );
+        step(6).await;
+        assert_eq!(
+            grammar.sent()[3..],
+            ["Second one changed.", "Fourth one is here."]
+        );
+        assert_eq!(analyzer.deterministic_check_count(), 5);
+        assert_eq!(analyzer.updates().len(), 4);
+    }
+
     /// The flags an analyzer started with `ruleset_version` publishes for a misspelled sentence
-    /// and a telltale one, once the first sentence's cached result also holds a grammar flag. No
-    /// test runs LanguageTool, so the grammar flag enters where a checked sentence's grammar flags
-    /// wait between rechecks, carrying a version the analyzer does not hold and no catalogue hash.
-    /// Only the second sentence then changes, so the first is served from the cache.
+    /// and a telltale one, with a grammar flag the fake grammar source raises on the first
+    /// sentence, carrying a version the analyzer does not hold and no catalogue hash. Only the
+    /// second sentence then changes, so the first is served from the cache, its grammar part
+    /// complete.
     async fn flags_of_every_origin(ruleset_version: Option<RulesetVersion>) -> Vec<Flag> {
         let misspelled = "This has a mispelling.";
         let fake = Arc::new(FakeCapture::new(&format!(
             "{misspelled} It stands as a testament to the team."
         )));
-        let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
+        let grammar = FakeGrammar::flagging(&["This"]);
         let ruleset = ruleset_version.map_or_else(LoadedRuleset::empty, LoadedRuleset::empty_at);
         let analyzer = Analyzer::start(
-            capture,
+            Arc::clone(&fake) as Arc<dyn Capture>,
             test_spell_checker(),
-            None,
+            Some(Arc::clone(&grammar) as Arc<dyn GrammarSource>),
             Arc::new(ruleset),
             Arc::new(default_catalogue()),
             "default".to_owned(),
         );
         step(6).await;
 
-        let grammar = Flag {
-            id: "grammar:0:TEST_RULE".to_owned(),
-            origin: FlagOrigin::Grammar,
-            span: Span {
-                anchor: misspelled.to_owned(),
-                local_start: 0,
-                local_length: 4,
-                occurrence: 0,
-            },
-            message: "a grammar flag".to_owned(),
-            suggestions: Vec::new(),
-            source_detail: "TEST_RULE".to_owned(),
-            ruleset_version: Some(RulesetVersion(99)),
-            catalogue_hash: None,
-        };
-        {
-            let mut cache = analyzer.inner.cache.lock().unwrap();
-            let key = hash_text(misspelled);
-            let mut cached = cache
-                .get(&key)
-                .cloned()
-                .expect("the first recheck cached the sentence's flags");
-            cached.push(grammar);
-            cache.put(key, cached);
-        }
         fake.set_text(&format!(
             "{misspelled} It stands as a testament to the town."
         ));
         step(6).await;
+        assert_eq!(
+            grammar
+                .sent()
+                .iter()
+                .filter(|sent| *sent == misspelled)
+                .count(),
+            1
+        );
         let flags = published_flags(&analyzer);
         let telltale = FlagOrigin::AiTell {
             pattern_ids: Vec::new(),
@@ -734,16 +1392,19 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_fixed_document_publishes_its_pinned_flags_each_time_it_is_reached() {
         let fake = Arc::new(FakeCapture::new(PINNED_DOCUMENT));
+        let grammar = FakeGrammar::flagging(&[]);
         let analyzer = Analyzer::start(
             Arc::clone(&fake) as Arc<dyn Capture>,
             test_spell_checker(),
-            None,
+            Some(Arc::clone(&grammar) as Arc<dyn GrammarSource>),
             Arc::new(LoadedRuleset::empty_at(RulesetVersion(7))),
             Arc::new(default_catalogue()),
             "default".to_owned(),
         );
         step(6).await;
-        assert_eq!(published_flags(&analyzer), pinned_flags());
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        assert_eq!(updates[1], pinned_flags());
 
         fake.set_text("Something else entirely.");
         step(6).await;

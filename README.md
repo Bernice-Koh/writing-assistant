@@ -75,21 +75,32 @@ Neither checking stage calls a model or the network. LanguageTool is a subproces
 machine, reached over the loopback interface. The rewrite is local as well, and it runs only when
 the owner asks for one.
 
-Today both stages publish together at the end of a recheck, and the analyzer finds a change by
-polling the document every 200 ms. Separate publishes are planned for Phase 1, so that spelling
-and telltale flags stop waiting on LanguageTool. An event-driven trigger is planned for Phase 2:
-the capture backend's text-changed event marks the document as changed, and a slow safety poll
-covers controls that never raise the event.
+The two stages publish separately, each the whole document's flags. The deterministic stage
+publishes as soon as it has run, with the grammar flags already cached for sentences whose grammar
+check completed on an earlier recheck. The grammar stage then sends LanguageTool every sentence
+whose grammar check has not completed, one at a time while the analyzer keeps polling, and
+publishes a second update that adds their grammar flags. Spelling and telltale flags therefore
+never wait on LanguageTool. A recheck that starts while the previous recheck's grammar stage is
+still running stops that stage, which publishes nothing.
 
-Flags are cached per sentence by hash, which limits a recheck to the sentences that changed. One
-source failing degrades that source and never ends checking: with LanguageTool down, spelling and
-telltale flags continue.
+The analyzer finds a change by polling the document every 200 ms. An event-driven trigger is
+planned for Phase 2: the capture backend's text-changed event marks the document as changed, and a
+slow safety poll covers controls that never raise the event.
+
+Flags are cached per sentence by a hash of its text, in two parts: the deterministic stage's, and
+the grammar stage's, marked complete once LanguageTool has answered for the sentence. Each stage
+runs only on the sentences whose part is missing or incomplete, so an unchanged sentence never
+reaches LanguageTool twice, and a sentence whose check failed or timed out is sent again on the
+next recheck. One source failing degrades that source and never ends checking: with LanguageTool
+down, spelling and telltale flags continue.
 
 ### Severity and suppression
 
 Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft.
-Suppression runs on each sentence's flags once every source has checked it, in four steps, in
-this order:
+Suppression runs on each sentence's flags at every publish, over the flags of the sources that
+have answered for it so far, so a telltale that a grammar flag overlaps shows in the first update
+and leaves with the second, while one that a spelling flag overlaps never shows. It runs in four
+steps, in this order:
 
 1. Each flag's span is located within its sentence. A flag anchored on other text is kept and
    takes no part in the later steps, since suppression fires only on a confirmed overlap.
@@ -179,17 +190,21 @@ first of these routes that holds:
 2. A match of a rule that a checker of the loaded ruleset names is a style flag citing that
    checker's clause, with LanguageTool's message and replacements, when the checker declares the
    sentence's form mode and its register scope holds the register. Of two such checkers, the first
-   by id that applies cites the match, and with none applying the match is dropped.
+   by id that applies cites the match. A checker that does not apply is absent for the sentence,
+   and the match routes on, so a clause's scope never switches off an error check in another
+   register.
 3. A match of a picky rule is dropped, whatever its category, so picky mode adds no grammar flag
    the default level did not raise.
 4. A match in a hard category is a grammar flag. The hard categories are `GRAMMAR`,
-   `PUNCTUATION`, `CASING`, `TYPOGRAPHY`, `CONFUSED_WORDS`, `COMPOUNDING`, `SEMANTICS`, `MISC`, and
-   `AMERICAN_ENGLISH`.
+   `PUNCTUATION`, `CASING`, `TYPOGRAPHY`, `CONFUSED_WORDS`, `COMPOUNDING`, `SEMANTICS`, `MISC`,
+   `AMERICAN_ENGLISH`, `NONSTANDARD_PHRASES`, and `MULTITOKEN_SPELLING`. LanguageTool types the
+   last two as misspellings, but the first marks phrases as wrong as `CONFUSED_WORDS` does, and the
+   second finds spelling mistakes in proper nouns of two to four tokens, which the single-word
+   dictionary cannot see.
 5. Every other match is dropped. The soft categories are `STYLE`, `REDUNDANCY`, `PLAIN_ENGLISH`,
    `REPETITIONS_STYLE`, `COLLOCATIONS`, and `WIKIPEDIA`, with every other category that 6.6's
    `en-GB` rules hold: `APRIL`, `BRE_STYLE_OXFORD_SPELLING`, `CREATIVE_WRITING`,
-   `MULTITOKEN_SPELLING`, `NONSTANDARD_PHRASES`, `TEXT_ANALYSIS`, and `TON_ACADEMIC`. A category
-   a later release adds is soft as well.
+   `TEXT_ANALYSIS`, and `TON_ACADEMIC`. A category a later release adds is soft as well.
 
 The engine marks each of the 23 categories in one table, and a test holds the table to the list
 extracted from 6.6's rule files. No ruleset names a rule until Phase 3, so today LanguageTool
@@ -201,7 +216,8 @@ Two timeouts bound the requests. The warm-up check and the readiness poll, which
 and after a restart, keep a bound of 20 seconds, since the first check loads LanguageTool's rules
 cold, measured at 5.5 seconds. Every later check has a bound of one second, set from 1,000 warm
 checks in picky mode of sentences from public-domain prose, which took a median of 16.7 ms, a 99th
-percentile of 69.5 ms, and at most 108.3 ms. A check that runs past it fails for its sentence,
+percentile of 69.5 ms, and at most 108.3 ms, timed by the harness
+`crates/engine/examples/picky_latency.rs`. A check that runs past it fails for its sentence,
 which then has no grammar flags this time, a result distinct from a check that found nothing.
 
 ### Telltales
