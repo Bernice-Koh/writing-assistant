@@ -1,13 +1,13 @@
 //! The analyzer, between capture and the overlay. It polls the document's text, waits for the
-//! typing pause, splits the text into sentences, and checks the changed ones against spelling,
-//! the telltale catalogue, and LanguageTool. Suppression by severity is applied to each sentence's
-//! flags, the result is cached per sentence, and every recheck publishes the whole document's
-//! flags on the watch channel the overlay subscribes to, each span's occurrence index counted from
-//! its sentence's position as it publishes. Checking keys to the pause because a flag on a
-//! half-typed word is noise.
+//! typing pause, and splits the text into sentences. A sentence whose text the cache holds is
+//! served from it; any other is checked against spelling, the telltale catalogue, and
+//! LanguageTool, suppression by severity is applied to its flags, and the result is cached under a
+//! hash of its text. Every recheck publishes the whole document's flags on the watch channel the
+//! overlay subscribes to, each span's occurrence index counted from its sentence's position as it
+//! publishes. Checking keys to the pause because a flag on a half-typed word is noise.
 //!
-//! `sentences` covers the split and the diff, `dedupe` suppression. Both are private:
-//! [`Analyzer`] is the only public surface.
+//! `sentences` covers the split, `dedupe` suppression. Both are private: [`Analyzer`] is the only
+//! public surface.
 
 mod dedupe;
 mod sentences;
@@ -15,7 +15,7 @@ mod sentences;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lru::LruCache;
@@ -43,7 +43,7 @@ const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 /// for the life of a long writing session.
 const CACHE_CAPACITY: usize = 1000;
 
-/// Runs the debounce, diff, check, merge, and cache pipeline against a [`Capture`] backend's
+/// Runs the debounce, check, merge, and cache pipeline against a [`Capture`] backend's
 /// live text, keeping the latest merged and deduplicated [`Flag`] list for the whole document.
 pub struct Analyzer {
     inner: Arc<Inner>,
@@ -56,16 +56,11 @@ struct Inner {
     ruleset: Arc<LoadedRuleset>,
     catalogue: Arc<Catalogue>,
     register: String,
-    flags: RwLock<Vec<Flag>>,
-    /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
-    /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
-    /// this channel via `borrow`, so there is exactly one source of truth, not two that could
-    /// drift apart. Kept separate from `flags` rather than folding it into a single
-    /// `watch`-backed field because `current_flags` is a plain, lock-based read with no
-    /// subscription semantics, a simpler contract for a caller that only wants the value once.
+    /// The whole document's flags as the latest recheck published them, empty until the first
+    /// completes. The channel holds the analyzer's one copy of them, which a subscriber reads
+    /// through `borrow`.
     flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
-    previous_sentences: Mutex<Vec<String>>,
     /// Counts calls into [`check_sentence`], the work a cache hit skips. Test-only, and held per
     /// instance rather than in a global, so tests running in parallel never share a count.
     #[cfg(test)]
@@ -98,13 +93,11 @@ impl Analyzer {
             ruleset,
             catalogue,
             register,
-            flags: RwLock::new(Vec::new()),
             flags_tx,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_CAPACITY)
                     .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
             )),
-            previous_sentences: Mutex::new(Vec::new()),
             #[cfg(test)]
             check_sentence_calls: std::sync::atomic::AtomicUsize::new(0),
         });
@@ -112,23 +105,13 @@ impl Analyzer {
         Self { inner }
     }
 
-    /// The most recently computed, merged, and deduplicated flag set for the whole document.
-    /// Empty until the first recheck completes.
-    pub fn current_flags(&self) -> Vec<Flag> {
-        self.inner
-            .flags
-            .read()
-            .expect("a poisoned lock here means another thread already panicked; propagating that panic is correct, not recovering silently")
-            .clone()
-    }
-
-    /// Notified with the complete, merged, and deduplicated flag set every time a recheck
-    /// finishes, so a subscriber (the overlay's own flag-positioning task) reacts the moment new
-    /// flags are ready instead of polling [`Self::current_flags`] on its own schedule. Delivers
-    /// only the latest value, not every intermediate one: a subscriber that is mid-reaction to
-    /// one recheck when another completes sees the newer flags next, never a queue of stale ones
-    /// to catch up on, which is the behaviour this receiver needs since only the current flag set
-    /// is ever meaningful to render.
+    /// The most recently computed, merged, and deduplicated flag set for the whole document, empty
+    /// until the first recheck completes, and notified every time a recheck finishes, so a
+    /// subscriber (the overlay's own flag-positioning task) reacts the moment new flags are ready
+    /// instead of polling on its own schedule. Delivers only the latest value, not every
+    /// intermediate one: a subscriber that is mid-reaction to one recheck when another completes
+    /// sees the newer flags next, never a queue of stale ones to catch up on, which is the
+    /// behaviour this receiver needs since only the current flag set is ever meaningful to render.
     pub fn subscribe(&self) -> watch::Receiver<Vec<Flag>> {
         self.inner.flags_tx.subscribe()
     }
@@ -176,41 +159,22 @@ async fn debounce_loop(inner: Arc<Inner>) {
 }
 
 async fn recheck(inner: &Inner, text: &str) {
-    let current_sentences = sentences::split(text);
-    let current_texts: Vec<String> = current_sentences
-        .iter()
-        .map(|sentence| sentence.text.clone())
-        .collect();
-    let changed = {
-        let mut previous = inner
-            .previous_sentences
-            .lock()
-            .expect("a poisoned lock here means another thread already panicked");
-        let changed = sentences::changed_indices(&previous, &current_texts);
-        *previous = current_texts;
-        changed
-    };
-
     let mut document_flags = Vec::new();
-    for (index, sentence) in current_sentences.iter().enumerate() {
-        let key = hash_text(&sentence.text);
-        let cached = if changed.contains(&index) {
-            None
-        } else {
-            inner
-                .cache
-                .lock()
-                .expect("a poisoned lock here means another thread already panicked")
-                .get(&key)
-                .cloned()
-        };
+    for (index, sentence) in sentences::split(text).into_iter().enumerate() {
+        let key = hash_text(sentence.text);
+        let cached = inner
+            .cache
+            .lock()
+            .expect("a poisoned lock here means another thread already panicked")
+            .get(&key)
+            .cloned();
         let sentence_flags = match cached {
             Some(flags) => flags,
-            // Either the diff marked this sentence changed, or it did not but the cache had no
-            // entry for it (first run, or an entry aged out under the LRU's capacity): either
-            // way, a fresh check is the correct fallback, not silently showing no flags.
+            // A sentence new or edited since the cache last held it, or an unchanged one whose
+            // entry aged out under the LRU's capacity: either way, a fresh check is the correct
+            // fallback, not silently showing no flags.
             None => {
-                let flags = check_sentence(inner, &sentence.text).await;
+                let flags = check_sentence(inner, sentence.text).await;
                 inner
                     .cache
                     .lock()
@@ -227,15 +191,10 @@ async fn recheck(inner: &Inner, text: &str) {
         }));
     }
 
-    *inner
-        .flags
-        .write()
-        .expect("a poisoned lock here means another thread already panicked") =
-        document_flags.clone();
-    // A subscriber-free channel (the overlay's flag-tracking task not running yet, or the engine
-    // running headless in a test) has no receivers left; `send` reporting that is expected, not an error
-    // worth logging.
-    let _ = inner.flags_tx.send(document_flags);
+    // The channel holds the only copy, and `send` discards the value while no receiver is
+    // subscribed, as before the overlay's flag-tracking task starts or with the engine headless in
+    // a test. `send_replace` stores it regardless.
+    inner.flags_tx.send_replace(document_flags);
 }
 
 /// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
@@ -396,6 +355,11 @@ mod tests {
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
     }
 
+    /// The flags `analyzer` last published, read from a fresh subscription.
+    fn published_flags(analyzer: &Analyzer) -> Vec<Flag> {
+        analyzer.subscribe().borrow().clone()
+    }
+
     #[tokio::test(start_paused = true)]
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
@@ -412,7 +376,7 @@ mod tests {
         // Let the loop see the initial text and start its quiet timer; no recheck yet.
         step(1).await;
         assert!(
-            analyzer.current_flags().is_empty(),
+            published_flags(&analyzer).is_empty(),
             "no recheck should fire before the quiet threshold elapses"
         );
 
@@ -421,14 +385,14 @@ mod tests {
         fake.set_text("This has a mispelling, still.");
         step(1).await;
         assert!(
-            analyzer.current_flags().is_empty(),
+            published_flags(&analyzer).is_empty(),
             "the edit should have reset the quiet timer"
         );
 
         // Now let it sit unchanged long enough (comfortably past QUIET_THRESHOLD) for the reset
         // timer to elapse.
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         assert!(
             flags.iter().any(|flag| flagged_text(flag) == "mispelling"),
             "expected a recheck to have found the misspelling by now: {flags:#?}"
@@ -449,7 +413,7 @@ mod tests {
         );
 
         step(6).await;
-        let first_pass = analyzer.current_flags();
+        let first_pass = published_flags(&analyzer);
         assert!(
             first_pass
                 .iter()
@@ -462,7 +426,7 @@ mod tests {
         // Only the second sentence changes; the first sentence's text is untouched.
         fake.set_text("This has a mispelling. This one has an eror too.");
         step(6).await;
-        let second_pass = analyzer.current_flags();
+        let second_pass = published_flags(&analyzer);
 
         assert!(
             second_pass
@@ -477,6 +441,26 @@ mod tests {
         // Only the one changed sentence should have gone through a real check this time; the
         // unchanged first sentence should have been served from the LRU cache instead.
         assert_eq!(analyzer.check_sentence_call_count(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sentence_whose_text_returns_to_a_cached_value_is_served_from_the_cache() {
+        let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 2);
+
+        fake.set_text("This has a mispelling. This one has an eror.");
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 3);
+
+        // The second sentence goes back to the text its first check cached.
+        fake.set_text("This has a mispelling. This one is fine.");
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        let flags = published_flags(&analyzer);
+        let flagged: Vec<String> = flags.iter().map(flagged_text).collect();
+        assert_eq!(flagged, ["mispelling"], "{flags:#?}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -496,7 +480,7 @@ mod tests {
         );
 
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         let misspellings: Vec<&Flag> = flags
             .iter()
             .filter(|flag| flagged_text(flag) == "eror")
@@ -521,8 +505,7 @@ mod tests {
 
     /// The spans of the published flags on "eror", in the order the analyzer published them.
     fn eror_spans(analyzer: &Analyzer) -> Vec<Span> {
-        analyzer
-            .current_flags()
+        published_flags(analyzer)
             .into_iter()
             .filter(|flag| flagged_text(flag) == "eror")
             .map(|flag| flag.span)
@@ -569,12 +552,12 @@ mod tests {
         assert_eq!(eror_spans(&analyzer), [eror_here(0)]);
         assert_eq!(analyzer.check_sentence_call_count(), 2);
 
-        // A copy inserted at the start moves the original to third place, where the diff marks it
-        // unchanged and the cache serves it.
+        // A copy inserted at the start moves the original to third place, and the cache serves
+        // both copies.
         fake.set_text("An eror here. Fine start. An eror here.");
         step(6).await;
         assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
-        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        assert_eq!(analyzer.check_sentence_call_count(), 2);
         let cached = analyzer
             .inner
             .cache
@@ -640,7 +623,7 @@ mod tests {
             "{misspelled} It stands as a testament to the town."
         ));
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         let telltale = FlagOrigin::AiTell {
             pattern_ids: Vec::new(),
         };
@@ -678,6 +661,106 @@ mod tests {
                 "{flags:#?}"
             );
         }
+    }
+
+    /// Five sentences: a misspelling, a telltale, and two identical misspelled sentences around a
+    /// clean one.
+    const PINNED_DOCUMENT: &str = "This has a mispelling. It stands as a testament to the team. \
+                                   An eror here. Fine start. An eror here.";
+
+    /// The flags an analyzer at ruleset version 7 publishes for [`PINNED_DOCUMENT`], pinned field
+    /// by field from its output, so a change to how a recheck chooses the sentences it checks
+    /// shows here as a change to what it publishes. The catalogue hash is read from the compiled
+    /// catalogue rather than pinned, since an edit to the catalogue changes it without touching
+    /// the analyzer.
+    fn pinned_flags() -> Vec<Flag> {
+        let catalogue_hash = Some(default_catalogue().hash().clone());
+        let eror = |id: &str, occurrence| Flag {
+            id: id.to_owned(),
+            origin: FlagOrigin::Spelling,
+            span: eror_here(occurrence),
+            message: "\"eror\" is not in the dictionary".to_owned(),
+            suggestions: ["err", "error", "er or", "er-or", "emperor"]
+                .map(str::to_owned)
+                .to_vec(),
+            source_detail: "en_GB plus the Singapore supplement".to_owned(),
+            ruleset_version: Some(RulesetVersion(7)),
+            catalogue_hash: catalogue_hash.clone(),
+        };
+        vec![
+            Flag {
+                id: "0:spelling:11".to_owned(),
+                origin: FlagOrigin::Spelling,
+                span: Span {
+                    anchor: "This has a mispelling.".to_owned(),
+                    local_start: 11,
+                    local_length: 10,
+                    occurrence: 0,
+                },
+                message: "\"mispelling\" is not in the dictionary".to_owned(),
+                suggestions: [
+                    "misspelling",
+                    "dispelling",
+                    "mi spelling",
+                    "mi-spelling",
+                    "mis-selling",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                source_detail: "en_GB plus the Singapore supplement".to_owned(),
+                ruleset_version: Some(RulesetVersion(7)),
+                catalogue_hash: catalogue_hash.clone(),
+            },
+            Flag {
+                id: "1:ai-tell:significance-legacy-emphasis:3:21".to_owned(),
+                origin: FlagOrigin::AiTell {
+                    pattern_ids: [
+                        "significance-legacy-emphasis",
+                        "copula-avoidance",
+                        "ai-vocabulary-words",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
+                },
+                span: Span {
+                    anchor: "It stands as a testament to the team.".to_owned(),
+                    local_start: 3,
+                    local_length: 24,
+                    occurrence: 0,
+                },
+                message: "Puffs up an ordinary fact by tying it to significance, legacy, or a \
+                          broader trend"
+                    .to_owned(),
+                suggestions: Vec::new(),
+                source_detail: "humanizer SKILL.md section 1, Wikipedia:Signs of AI writing"
+                    .to_owned(),
+                ruleset_version: Some(RulesetVersion(7)),
+                catalogue_hash: catalogue_hash.clone(),
+            },
+            eror("2:spelling:3", 0),
+            eror("4:spelling:3", 1),
+        ]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fixed_document_publishes_its_pinned_flags_each_time_it_is_reached() {
+        let fake = Arc::new(FakeCapture::new(PINNED_DOCUMENT));
+        let analyzer = Analyzer::start(
+            Arc::clone(&fake) as Arc<dyn Capture>,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty_at(RulesetVersion(7))),
+            Arc::new(default_catalogue()),
+            "default".to_owned(),
+        );
+        step(6).await;
+        assert_eq!(published_flags(&analyzer), pinned_flags());
+
+        fake.set_text("Something else entirely.");
+        step(6).await;
+        fake.set_text(PINNED_DOCUMENT);
+        step(6).await;
+        assert_eq!(published_flags(&analyzer), pinned_flags());
     }
 
     #[tokio::test(start_paused = true)]

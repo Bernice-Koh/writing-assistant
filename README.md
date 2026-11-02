@@ -779,7 +779,7 @@ candidates over fresh items, with its size set by a power calculation written be
 |---|---|
 | Engine | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), `thiserror`, `log` with `env_logger`, and `sha2` for content hashes |
 | Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
-| Checking | spellbook, `unicode-segmentation`, `regex`, `similar`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
+| Checking | spellbook, `unicode-segmentation`, `regex`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
 | Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories`. The app loads it once at startup; its controls arrive with the settings shell in Phase 3 |
 | Store | [SQLite](https://sqlite.org) 3.53.2 through [`rusqlite`](https://github.com/rusqlite/rusqlite) 0.40 with its `bundled` feature, which compiles SQLite into the engine, so a machine with no SQLite installed builds the workspace |
