@@ -179,7 +179,9 @@ first of these routes that holds:
 2. A match of a rule that a checker of the loaded ruleset names is a style flag citing that
    checker's clause, with LanguageTool's message and replacements, when the checker declares the
    sentence's form mode and its register scope holds the register. Of two such checkers, the first
-   by id that applies cites the match, and with none applying the match is dropped.
+   by id that applies cites the match. A checker that does not apply is absent for the sentence,
+   and the match routes on, so a clause's scope never switches off an error check in another
+   register.
 3. A match of a picky rule is dropped, whatever its category, so picky mode adds no grammar flag
    the default level did not raise.
 4. A match in a hard category is a grammar flag. The hard categories are `GRAMMAR`,
