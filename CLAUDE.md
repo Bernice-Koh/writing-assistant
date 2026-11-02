@@ -26,9 +26,10 @@ Current top level:
 - `.github/`: the CI workflow.
 - `crates/`: two of the three members of the Cargo workspace; see `docs/CONVENTIONS.md`.
   `crates/engine` is the engine library, `wa-engine`: capture, spelling, LanguageTool
-  subprocess management, the telltale matcher, the analyzer, the flag types, the settings
-  file, and the SQLite store's file, thread, migration runner, and insert-only guard, whose
-  tables so far are `schema_version`, `passages`, the Card and ruleset tables, `candidates`,
+  subprocess management, the rule layer with the telltale catalogue on it, the analyzer, the
+  flag types, the settings file, and the SQLite store's file, thread, migration runner, and
+  insert-only guard, whose tables so far are `schema_version`, `passages`, the Card and ruleset
+  tables, `candidates`,
   `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes a passage
   or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event
   until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
@@ -39,9 +40,9 @@ Current top level:
   planned.
 - `src-tauri/`: the Tauri app, the workspace's third member, kept at the path the Tauri CLI
   expects: the overlay, the commands, and the setup that starts the engine.
-  `src-tauri/resources/` holds the committed dictionaries and telltale catalogue, which the
-  engine also reads from there; the LanguageTool distribution and its Java runtime are
-  gitignored there and built by `src-tauri/scripts/build-languagetool-jre.ps1`.
+  `src-tauri/resources/` holds the committed dictionaries, telltale catalogue, and spelling
+  variant table, which the engine also reads from there; the LanguageTool distribution and its
+  Java runtime are gitignored there and built by `src-tauri/scripts/build-languagetool-jre.ps1`.
 - `src/`: the React and TypeScript frontend: the overlay and the main window.
 - `extension/`: the browser extension behind the web capture backend, which the app does not
   start today. Microsoft Word is captured natively (see

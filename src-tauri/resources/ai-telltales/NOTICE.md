@@ -48,10 +48,53 @@ does not attempt:
 
 ## Matching notes
 
-Phrase matching in `style::ai_tell` is case-insensitive and flags every occurrence of a phrase. An
-edge of a phrase that is a letter or digit matches only at a word boundary, so `here is a` does not
-match inside "there is a". A phrase or regex alternative that `SKILL.md` gives in its `-ize`
-spelling is accepted in its `-ise` spelling as well.
+Each pattern is a rule on the engine's rule layer, written in `patterns.json` in the rule's own
+form: a phrase list or a regex, over spans, under the forbidden band, declared for prose and
+fragment paragraphs in every register. Beside its rule a pattern holds its id, its description, its
+source citation and its raw flag, and it serves no Style Card clause. A flag carries the pattern's
+id in its origin and the pattern's source citation as its detail.
+
+Phrase matching is case-insensitive and flags every occurrence of a phrase. An edge of a phrase
+that is a letter or digit matches only at a word boundary, so `here is a` does not match inside
+"there is a", and an apostrophe between two letters is inside a word, so a phrase does not match
+beside one. A phrase or regex alternative that `SKILL.md` gives in its `-ize` spelling is accepted
+in its `-ise` spelling as well.
+
+Word writes curly apostrophes and quotation marks, and the phrases are written with straight
+ones, so a phrase reads each curly mark in the text as its straight form: `you're absolutely right`
+matches "you’re absolutely right". A regex reads the text as written, so the one regex that names
+an apostrophe, pattern 9's (negative parallelism), names the curly form beside the straight one.
+
+The raw flag turns that mapping off for its pattern, whose phrases then match the text as written.
+Pattern 19 (curly quotes) alone carries it: its two phrases are the curly quotation marks
+themselves, which the mapping would erase.
+
+A single-word entry carries the prefix flag and is written as its stem, which matches every word
+that starts with it and flags the whole word, so `intric` flags "intricately". The stem is the
+shortest prefix for which every word that starts with it, among the vendored `en_GB` dictionary's
+words with their affixes applied and the Singapore supplement's, is an inflection or a derivative
+of the entry's word. A test per stem lists the words it covers and a word the prefix one letter
+shorter would wrongly cover:
+
+| Stem | Pattern | Entry it replaces | One letter shorter also covers |
+|---|---|---|---|
+| `intric` | 7, AI vocabulary | `intricate` and `intricacies` | `intrigue` |
+| `pivota` | 7, AI vocabulary | `pivotal` | `pivot`, the word `pivotal` derives from |
+| `breatht` | 4, promotional language | `breathtaking` | `breath` |
+| `exemplif` | 4, promotional language | `exemplifies` | `exempli`, the Latin of "exempli causa" |
+
+`must-visit` is two words joined by a hyphen and `certainly!` is a word closed by a mark, so
+neither is a single-word entry, and both match whole.
+
+Each pattern has a toggle in the settings file, `config.json` under the data root, keyed by its id
+under `telltale_toggles`. A pattern the toggles omit takes its default: every pattern is on except
+pattern 19, which is off because Word autoformats every straight quotation mark into a curly one.
+Pattern 14 (em and en dashes) fires on an en dash in a number range, a second case a toggle serves.
+
+The content hash every flag records beside the ruleset version is the SHA-256 of `patterns.json`'s
+bytes followed by those of the variant-pair table,
+`src-tauri/resources/spelling-variants/pairs.json`, so an edit to either file is told from a
+ruleset change.
 
 A phrase belongs to exactly one pattern, which a test on the catalogue enforces. Two phrases were
 first encoded under two patterns each. `boasts a` is kept under pattern 8 (copula avoidance), beside
