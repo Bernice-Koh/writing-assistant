@@ -489,6 +489,7 @@ mod tests {
                 anchor: "word".to_owned(),
                 local_start: 0,
                 local_length: 4,
+                occurrence: 0,
             },
             message: "test".to_owned(),
             suggestions: Vec::new(),

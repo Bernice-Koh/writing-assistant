@@ -86,6 +86,7 @@ fn grammar_flag(id: String, found: Match) -> Flag {
             anchor: found.sentence,
             local_start: found.offset,
             local_length: found.length,
+            occurrence: 0,
         },
         message: found.message,
         suggestions: found
@@ -213,6 +214,7 @@ mod tests {
                 anchor: "The report was written by the committee.".to_owned(),
                 local_start: 0,
                 local_length: 39,
+                occurrence: 0,
             }
         );
         assert_eq!(flag.source_detail, "PASSIVE_VOICE_SIMPLE");
@@ -237,6 +239,7 @@ mod tests {
                     anchor: "I gotten used to it.".to_owned(),
                     local_start: 2,
                     local_length: 6,
+                    occurrence: 0,
                 }
             );
             assert_eq!(flag.suggestions, ["got"]);

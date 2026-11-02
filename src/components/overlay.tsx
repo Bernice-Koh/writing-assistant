@@ -6,6 +6,7 @@ interface Span {
   anchor: string;
   localStart: number;
   localLength: number;
+  occurrence: number;
 }
 
 type FlagOrigin = "spelling" | "grammar" | "style" | "aiTell";
@@ -52,10 +53,10 @@ const UNDERLINE_BORDER: Record<FlagOrigin, string> = {
 
 /**
  * Renders one underline per {@link CursorRect} the backend already resolved for each flag, and a
- * card with the flag's message and suggestions, under the cited clause's text on a style flag,
- * while the native hover loop (`overlay::track_hover` in `src-tauri/src/overlay.rs`) reports the
- * cursor sitting over one. Coordinates arrive in CSS pixels, already relative to this window's own
- * top-left: the overlay window is itself positioned at the document view's origin, and
+ * card with the flag's message, when it has one, and suggestions, under the cited clause's text on
+ * a style flag, while the native hover loop (`overlay::track_hover` in `src-tauri/src/overlay.rs`)
+ * reports the cursor sitting over one. Coordinates arrive in CSS pixels, already relative to this
+ * window's own top-left: the overlay window is itself positioned at the document view's origin, and
  * `overlay::relative_flags` divides UI Automation's physical pixels down by the window's scale
  * factor. No translation and no unit conversion happens here, since React renders a bare number in
  * a style as a CSS pixel, the space these are already in.
@@ -160,7 +161,7 @@ function FlagCard({ positioned }: { positioned: PositionedFlag }) {
           {positioned.flag.citation.clauseText}
         </div>
       )}
-      <div>{positioned.flag.message}</div>
+      {positioned.flag.message !== "" && <div>{positioned.flag.message}</div>}
       {positioned.flag.suggestions.length > 0 && (
         <ul style={{ margin: "4px 0 0", paddingLeft: 16 }}>
           {positioned.flag.suggestions.map((suggestion) => (

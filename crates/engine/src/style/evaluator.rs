@@ -394,6 +394,7 @@ fn span_in(text: &str, range: Range<usize>) -> Span {
         anchor: text.to_owned(),
         local_start: text[..range.start].encode_utf16().count(),
         local_length: text[range].encode_utf16().count(),
+        occurrence: 0,
     }
 }
 

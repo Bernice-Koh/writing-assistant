@@ -237,9 +237,11 @@ engine does not know which backend served a request.
 A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
 code units, never as an absolute offset. UI Automation's character counting drifts across Word's
 auto-numbered list markers, and a short move from a freshly found anchor never crosses one. The
-same span positions an underline and replaces text. An anchor resolves to its first occurrence, so
-two identical sentences in one document resolve to the same place today; an occurrence index is
-planned for Phase 1.
+same span positions an underline and replaces text. Every span also carries an occurrence index,
+the number of earlier occurrences of its anchor in the document, which the analyzer counts as it
+publishes. The native backend still resolves an anchor to its first occurrence, so two identical
+sentences in one document resolve to the same place until #107 carries the index through the
+capture contract.
 
 ### Native capture
 

@@ -233,6 +233,7 @@ mod tests {
                 anchor: anchor.to_string(),
                 local_start,
                 local_length,
+                occurrence: 0,
             },
             message: "test flag".to_string(),
             suggestions: Vec::new(),
@@ -448,6 +449,7 @@ mod tests {
                 anchor: sentence.to_owned(),
                 local_start: 4,
                 local_length: 27,
+                occurrence: 0,
             },
             source_detail: "pattern-a, pattern-b, pattern-c".to_owned(),
             ..second

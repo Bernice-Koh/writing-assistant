@@ -119,6 +119,7 @@ pub fn scan(text: &str) -> Vec<Flag> {
                         anchor: text.to_string(),
                         local_start,
                         local_length: found.as_str().encode_utf16().count(),
+                        occurrence: 0,
                     },
                     message: compiled.pattern.description.clone(),
                     suggestions: Vec::new(),
