@@ -1,0 +1,5 @@
+# One release for every checkout and for the CI gate. docs/CONVENTIONS.md has the bump rule.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
