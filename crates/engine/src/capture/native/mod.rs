@@ -28,6 +28,7 @@ use windows::Win32::UI::Accessibility::{
 };
 
 use crate::capture::{CaptureError, CursorRect};
+use crate::flag::Span;
 use client::Uia;
 use error::NativeCaptureError;
 use focus::FocusHandler;
@@ -102,19 +103,11 @@ impl crate::capture::Capture for NativeCapture {
         self.request(Signal::GetCursorRect).await
     }
 
-    async fn replace(
-        &self,
-        anchor: &str,
-        local_start: usize,
-        local_length: usize,
-        replacement: &str,
-    ) -> Result<(), CaptureError> {
-        let anchor = anchor.to_owned();
+    async fn replace(&self, span: &Span, replacement: &str) -> Result<(), CaptureError> {
+        let span = span.clone();
         let replacement = replacement.to_owned();
         self.request(|reply| Signal::Replace {
-            anchor,
-            local_start,
-            local_length,
+            span,
             replacement,
             reply,
         })
@@ -125,20 +118,10 @@ impl crate::capture::Capture for NativeCapture {
         self.request(Signal::GetDocumentViewRect).await
     }
 
-    async fn span_rect(
-        &self,
-        anchor: &str,
-        local_start: usize,
-        local_length: usize,
-    ) -> Result<Vec<CursorRect>, CaptureError> {
-        let anchor = anchor.to_owned();
-        self.request(|reply| Signal::GetSpanRects {
-            anchor,
-            local_start,
-            local_length,
-            reply,
-        })
-        .await
+    async fn span_rect(&self, span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
+        let span = span.clone();
+        self.request(|reply| Signal::GetSpanRects { span, reply })
+            .await
     }
 }
 
@@ -164,17 +147,13 @@ enum Signal {
     GetText(oneshot::Sender<Result<String, CaptureError>>),
     GetCursorRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
     Replace {
-        anchor: String,
-        local_start: usize,
-        local_length: usize,
+        span: Span,
         replacement: String,
         reply: oneshot::Sender<Result<(), CaptureError>>,
     },
     GetDocumentViewRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
     GetSpanRects {
-        anchor: String,
-        local_start: usize,
-        local_length: usize,
+        span: Span,
         reply: oneshot::Sender<Result<Vec<CursorRect>, CaptureError>>,
     },
 }
@@ -317,18 +296,17 @@ fn run(
                 let _ = reply.send(result);
             }
             Signal::Replace {
-                anchor,
-                local_start,
-                local_length,
+                span,
                 replacement,
                 reply,
             } => {
                 let result = match &current_scope {
                     Some(scope) => insert::replace_within(
                         &scope.element,
-                        &anchor,
-                        local_start,
-                        local_length,
+                        &span.anchor,
+                        span.occurrence,
+                        span.local_start,
+                        span.local_length,
                         &replacement,
                     )
                     .map(|method| log::info!("replace succeeded via {method:?}"))
@@ -346,18 +324,14 @@ fn run(
                 };
                 let _ = reply.send(result);
             }
-            Signal::GetSpanRects {
-                anchor,
-                local_start,
-                local_length,
-                reply,
-            } => {
+            Signal::GetSpanRects { span, reply } => {
                 let result = match &current_scope {
                     Some(scope) => insert::select::find_within_range(
                         &scope.element,
-                        &anchor,
-                        local_start,
-                        local_length,
+                        &span.anchor,
+                        span.occurrence,
+                        span.local_start,
+                        span.local_length,
                     )
                     .and_then(|range| cursor::span_rects(&range))
                     .map_err(CaptureError::from),

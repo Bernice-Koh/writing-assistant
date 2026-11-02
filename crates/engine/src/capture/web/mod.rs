@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::capture::{Capture, CaptureError, CursorRect};
+use crate::flag::Span;
 use error::WebCaptureError;
 use message::{ClientMessage, ServerMessage};
 
@@ -145,17 +146,17 @@ impl Capture for WebCapture {
         Err(CaptureError::Unsupported)
     }
 
-    async fn replace(
-        &self,
-        anchor: &str,
-        local_start: usize,
-        local_length: usize,
-        replacement: &str,
-    ) -> Result<(), CaptureError> {
+    /// Answers [`CaptureError::Unsupported`] for a span past its anchor's first occurrence
+    /// without sending anything, since the extension resolves the first occurrence and its
+    /// protocol carries no index.
+    async fn replace(&self, span: &Span, replacement: &str) -> Result<(), CaptureError> {
+        if span.occurrence > 0 {
+            return Err(CaptureError::Unsupported);
+        }
         let message = ServerMessage::Replace {
-            anchor: anchor.to_owned(),
-            local_start,
-            local_length,
+            anchor: span.anchor.clone(),
+            local_start: span.local_start,
+            local_length: span.local_length,
             replacement: replacement.to_owned(),
         };
         match self.request(message).await? {
@@ -169,12 +170,7 @@ impl Capture for WebCapture {
         Err(CaptureError::Unsupported)
     }
 
-    async fn span_rect(
-        &self,
-        _anchor: &str,
-        _local_start: usize,
-        _local_length: usize,
-    ) -> Result<Vec<CursorRect>, CaptureError> {
+    async fn span_rect(&self, _span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
         Err(CaptureError::Unsupported)
     }
 }
@@ -275,6 +271,15 @@ mod tests {
         client.send(Message::Text(payload)).await.expect("sends");
     }
 
+    fn span(anchor: &str, local_start: usize, local_length: usize, occurrence: usize) -> Span {
+        Span {
+            anchor: anchor.to_owned(),
+            local_start,
+            local_length,
+            occurrence,
+        }
+    }
+
     #[tokio::test]
     async fn cursor_rect_is_always_unsupported() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
@@ -292,7 +297,18 @@ mod tests {
     #[tokio::test]
     async fn span_rect_is_always_unsupported() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
-        let result = capture.span_rect("anchor", 0, 1).await;
+        for occurrence in [0, 1] {
+            let result = capture.span_rect(&span("anchor", 0, 1, occurrence)).await;
+            assert!(matches!(result, Err(CaptureError::Unsupported)));
+        }
+    }
+
+    #[tokio::test]
+    async fn replace_past_the_first_occurrence_is_unsupported_before_any_request() {
+        // No extension is connected, so a request would fail as a communication error; an
+        // unsupported answer shows the backend refused the span before sending anything.
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let result = capture.replace(&span("anchor", 0, 6, 1), "target").await;
         assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 
@@ -335,7 +351,8 @@ mod tests {
     async fn replace_found_succeeds() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
         let mut client = connect_test_client(capture.local_addr()).await;
-        let call = tokio::spawn(async move { capture.replace("anchor", 0, 6, "target").await });
+        let call =
+            tokio::spawn(async move { capture.replace(&span("anchor", 0, 6, 0), "target").await });
 
         let request = next_server_message(&mut client).await;
         assert_eq!(
@@ -356,7 +373,8 @@ mod tests {
     async fn replace_not_found_maps_to_text_not_found() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
         let mut client = connect_test_client(capture.local_addr()).await;
-        let call = tokio::spawn(async move { capture.replace("missing", 0, 1, "x").await });
+        let call =
+            tokio::spawn(async move { capture.replace(&span("missing", 0, 1, 0), "x").await });
 
         next_server_message(&mut client).await;
         reply_with(&mut client, ClientMessage::ReplaceResult { found: false }).await;
@@ -369,7 +387,8 @@ mod tests {
     async fn an_unexpected_reply_error_names_the_kind_and_not_the_draft() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
         let mut client = connect_test_client(capture.local_addr()).await;
-        let call = tokio::spawn(async move { capture.replace("anchor", 0, 6, "target").await });
+        let call =
+            tokio::spawn(async move { capture.replace(&span("anchor", 0, 6, 0), "target").await });
 
         next_server_message(&mut client).await;
         reply_with(

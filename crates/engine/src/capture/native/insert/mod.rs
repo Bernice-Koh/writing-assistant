@@ -174,7 +174,9 @@ const FALLBACK_ANCHOR_BYTES: usize = 64;
 /// guaranteed present and, being much longer than `target` alone, far less likely to collide
 /// with unrelated text elsewhere: the same anchor-over-bare-search reasoning `select_within`
 /// already establishes for `select_range`'s list-marker-drift problem, applied here to a
-/// non-uniqueness problem instead of a counting-drift one.
+/// non-uniqueness problem instead of a counting-drift one. The window is addressed at the last
+/// occurrence the search reaches in `before`, which is the window itself unless an earlier
+/// occurrence overlaps it.
 ///
 /// Falls back to `replace_span` itself, inheriting its non-uniqueness risk, only in the
 /// degenerate case where `before` does not actually end with `target`, meaning something
@@ -210,9 +212,11 @@ fn replace_last_typed_by_anchor(
     let local_start = anchor.len() - target.len();
     let local_start_utf16 = anchor[..local_start].encode_utf16().count();
     let local_length_utf16 = target.encode_utf16().count();
+    let occurrence = before.matches(anchor).count().saturating_sub(1);
     replace_within(
         element,
         anchor,
+        occurrence,
         local_start_utf16,
         local_length_utf16,
         replacement,
@@ -220,19 +224,21 @@ fn replace_last_typed_by_anchor(
 }
 
 /// Replaces the exact `[local_start, local_start + local_length)` character span measured from
-/// the start of the first occurrence of `anchor` with `replacement`, via
-/// `select::select_within` rather than the document-absolute `select::select_range`. The robust
-/// choice whenever a suitable anchor is available. See `select_within`'s documentation for why
-/// `select_range`'s absolute counting drifts near Word's auto-numbered list items, and why
-/// anchoring locally avoids the problem.
+/// the start of the occurrence of `anchor` that `occurrence` names, by the rule
+/// [`select::find_within_range`] states, with `replacement`, via `select::select_within` rather
+/// than the document-absolute `select::select_range`. The robust choice whenever a suitable
+/// anchor is available. See `select_within`'s documentation for why `select_range`'s absolute
+/// counting drifts near Word's auto-numbered list items, and why anchoring locally avoids the
+/// problem.
 pub fn replace_within(
     element: &IUIAutomationElement,
     anchor: &str,
+    occurrence: usize,
     local_start: usize,
     local_length: usize,
     replacement: &str,
 ) -> Result<InsertionMethod, NativeCaptureError> {
-    select::select_within(element, anchor, local_start, local_length)?;
+    select::select_within(element, anchor, occurrence, local_start, local_length)?;
     sleep(SELECTION_SETTLE_DELAY);
     let before = current_text(element).unwrap_or_default();
 
@@ -248,7 +254,7 @@ pub fn replace_within(
     // fail to find it. Skip re-selecting in that case and paste straight into the gap the
     // cleanup leaves behind.
     if !restore_after_failed_attempt(element, &before) {
-        select::select_within(element, anchor, local_start, local_length)?;
+        select::select_within(element, anchor, occurrence, local_start, local_length)?;
         sleep(SELECTION_SETTLE_DELAY);
     }
     let clipboard_result = clipboard::paste_text(replacement);
