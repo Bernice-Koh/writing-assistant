@@ -303,13 +303,7 @@ mod tests {
             Err(CaptureError::Unsupported)
         }
 
-        async fn replace(
-            &self,
-            _anchor: &str,
-            _local_start: usize,
-            _local_length: usize,
-            _replacement: &str,
-        ) -> Result<(), CaptureError> {
+        async fn replace(&self, _span: &Span, _replacement: &str) -> Result<(), CaptureError> {
             Ok(())
         }
 
@@ -317,12 +311,7 @@ mod tests {
             Err(CaptureError::Unsupported)
         }
 
-        async fn span_rect(
-            &self,
-            _anchor: &str,
-            _local_start: usize,
-            _local_length: usize,
-        ) -> Result<Vec<CursorRect>, CaptureError> {
+        async fn span_rect(&self, _span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
             Err(CaptureError::Unsupported)
         }
     }

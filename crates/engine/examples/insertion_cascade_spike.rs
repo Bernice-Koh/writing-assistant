@@ -156,7 +156,8 @@ fn run_live_replace_test(also_test_last_typed: bool) {
             "  targeting its 2nd word {second_word:?} (local offset {word_start} within {typed:?}) via replace_within (mid-sentence, not at the cursor), replacing with {span_replacement:?}"
         );
         sleep(SETTLE_DELAY);
-        let span_result = replace_within(&element, typed, word_start, word_len, &span_replacement);
+        let span_result =
+            replace_within(&element, typed, 0, word_start, word_len, &span_replacement);
         sleep(SETTLE_DELAY);
         report_replace(
             "replace-within (anchor-relative, live-detected, mid-sentence)",
@@ -310,9 +311,9 @@ fn run_selection_diagnostic() {
         // than added to `typed_start`.
         let local_start = typed[..local_offset].encode_utf16().count();
         println!(
-            "  select_within({typed:?}, {local_start}, {word_len}) targeting its 2nd word {second_word:?} (anchor-relative)..."
+            "  select_within({typed:?}, 0, {local_start}, {word_len}) targeting its 2nd word {second_word:?} (anchor-relative)..."
         );
-        match select::select_within(&element, typed, local_start, word_len) {
+        match select::select_within(&element, typed, 0, local_start, word_len) {
             Err(error) => println!("    select_within failed: {error}"),
             Ok(()) => {
                 sleep(SETTLE_DELAY);

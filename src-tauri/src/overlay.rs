@@ -256,20 +256,15 @@ pub fn track_flags(
 }
 
 /// Resolves each of `flags`' on-screen rectangles through `capture`, in absolute screen
-/// coordinates. A flag whose span cannot currently be resolved on screen (`span_rect` errors, or
-/// returns no rectangles) is dropped rather than rendered with no known position: most likely the
-/// document has moved on since the analyzer found it, and the text it names is no longer there.
+/// coordinates, each at the occurrence of its anchor that its span's index names. A flag whose
+/// span cannot currently be resolved on screen (`span_rect` errors, or returns no rectangles) is
+/// dropped rather than rendered with no known position. The usual cause is a document edited
+/// since the analyzer checked it, which no longer holds the anchor, or no longer holds it as many
+/// times as the index counts.
 async fn resolve_positions(capture: &Arc<dyn Capture>, flags: Vec<Flag>) -> Vec<PositionedFlag> {
     let mut positioned = Vec::with_capacity(flags.len());
     for flag in flags {
-        match capture
-            .span_rect(
-                &flag.span.anchor,
-                flag.span.local_start,
-                flag.span.local_length,
-            )
-            .await
-        {
+        match capture.span_rect(&flag.span).await {
             Ok(rects) if !rects.is_empty() => positioned.push(PositionedFlag { flag, rects }),
             Ok(_) => log::debug!("flag {} resolved to no on-screen rectangles", flag.id),
             Err(error) => {

@@ -73,9 +73,11 @@ impl SpellChecker {
     ///
     /// Each flag anchors on `text` itself, carrying the word's own offset into it, rather than on
     /// the bare misspelled word. [`crate::capture::Capture::span_rect`] and
-    /// [`crate::capture::Capture::replace`] both resolve an anchor to its *first* occurrence, so a
-    /// word misspelled twice anchored on itself produces two flags addressing the same first
-    /// occurrence: one underline drawn twice and the second misspelling left unmarked. Grammar
+    /// [`crate::capture::Capture::replace`] both resolve an anchor at the occurrence its index
+    /// names, and the analyzer counts that index over the text before the sentence, so a word
+    /// misspelled twice in one sentence and anchored on itself produces two flags with the same
+    /// anchor and index, addressing one occurrence: one underline drawn twice and the second
+    /// misspelling left unmarked. Grammar
     /// flags already anchor on their sentence for the same reason (see `languagetool::client`).
     ///
     /// Capitalisation is left to `Dictionary::check`, whose casing rules match Hunspell's on the

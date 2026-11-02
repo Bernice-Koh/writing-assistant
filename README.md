@@ -259,9 +259,12 @@ code units, never as an absolute offset. UI Automation's character counting drif
 auto-numbered list markers, and a short move from a freshly found anchor never crosses one. The
 same span positions an underline and replaces text. Every span also carries an occurrence index,
 the number of earlier occurrences of its anchor in the document, which the analyzer counts as it
-publishes. The native backend still resolves an anchor to its first occurrence, so two identical
-sentences in one document resolve to the same place until #107 carries the index through the
-capture contract.
+publishes, and the trait takes the whole span, so no call addresses an anchor without its index.
+The native backend resolves the anchor at that occurrence by the analyzer's counting rule: a
+case-sensitive `FindText` from the document's start, each later search resuming at the end of the
+previous match. Two identical sentences in one document resolve to their own places, and a
+document edited so that it no longer holds the occurrence answers text-not-found, which drops the
+underline.
 
 ### Native capture
 
@@ -288,7 +291,9 @@ The web backend is a WebSocket server that a Manifest V3 browser extension conne
 server accepts one extension origin. The extension's content script reads and replaces the text
 of the focused editable element on `github.com` and `mail.google.com`. The backend answers every
 positioning call as unsupported, since a content script cannot convert a DOM position to screen
-coordinates. The app does not start it today.
+coordinates. The content script replaces at an anchor's first occurrence and its messages carry
+no occurrence index, so the backend answers a replacement past the first occurrence as
+unsupported. The app does not start it today.
 
 Not yet decided: whether the web backend stays. Phase 2 verifies Gmail compose and a GitHub
 comment box through native capture. On a pass, the web backend and the extension are deleted.
