@@ -26,7 +26,7 @@ use crate::capture::Capture;
 use crate::flag::Flag;
 use crate::languagetool::LanguageToolSupervisor;
 use crate::spelling::SpellChecker;
-use crate::style::ai_tell;
+use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
 use crate::style::ruleset::LoadedRuleset;
 
@@ -54,6 +54,7 @@ struct Inner {
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
     ruleset: Arc<LoadedRuleset>,
+    catalogue: Arc<Catalogue>,
     register: String,
     flags: RwLock<Vec<Flag>>,
     /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
@@ -77,6 +78,7 @@ impl Analyzer {
     /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
     /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
     /// when no version is loaded, and LanguageTool's matches route through its checkers.
+    /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles.
     /// `register` is the register every sentence is checked under, the settings' default register
     /// until capture supplies the surface's (#58).
     pub fn start(
@@ -84,6 +86,7 @@ impl Analyzer {
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
         ruleset: Arc<LoadedRuleset>,
+        catalogue: Arc<Catalogue>,
         register: String,
     ) -> Self {
         let (flags_tx, _) = watch::channel(Vec::new());
@@ -92,6 +95,7 @@ impl Analyzer {
             spelling,
             languagetool,
             ruleset,
+            catalogue,
             register,
             flags: RwLock::new(Vec::new()),
             flags_tx,
@@ -267,10 +271,14 @@ async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
         .check_sentence_calls
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+    // Every sentence is prose until form mode is classified per paragraph (#54).
     let mut flags = inner.spelling.check(sentence);
-    flags.extend(ai_tell::scan(sentence));
+    flags.extend(
+        inner
+            .catalogue
+            .flags(sentence, FormMode::Prose, &inner.register),
+    );
     if let Some(languagetool) = &inner.languagetool {
-        // Every sentence is prose until form mode is classified per paragraph (#54).
         let checked = languagetool
             .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
             .await;
@@ -300,7 +308,13 @@ mod tests {
 
     use crate::capture::{CaptureError, CursorRect};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
+    use crate::store::Config;
     use crate::test_support::dictionary_path;
+
+    /// The catalogue compiled from the toggles the settings file is first written with.
+    fn default_catalogue() -> Catalogue {
+        Catalogue::load(&Config::default())
+    }
 
     struct FakeCapture {
         text: StdMutex<String>,
@@ -389,6 +403,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -427,6 +442,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -473,6 +489,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -495,6 +512,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         )
     }
@@ -586,6 +604,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(ruleset),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
         step(6).await;

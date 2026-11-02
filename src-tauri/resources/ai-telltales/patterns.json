@@ -3,275 +3,431 @@
     "id": "significance-legacy-emphasis",
     "category": "content",
     "description": "Puffs up an ordinary fact by tying it to significance, legacy, or a broader trend",
-    "match_phrases": [
-      "stands as a testament",
-      "serves as a testament",
-      "is a testament to",
-      "is a reminder of",
-      "a vital role",
-      "a significant role",
-      "a crucial role",
-      "a pivotal role",
-      "a key role",
-      "a pivotal moment",
-      "underscores its importance",
-      "underscores its significance",
-      "highlights its importance",
-      "highlights its significance",
-      "reflects broader",
-      "symbolising its ongoing",
-      "symbolizing its ongoing",
-      "symbolising its enduring",
-      "symbolizing its enduring",
-      "symbolising its lasting",
-      "symbolizing its lasting",
-      "contributing to the broader",
-      "setting the stage for",
-      "marking a shift",
-      "represents a shift",
-      "marks a shift",
-      "key turning point",
-      "evolving landscape",
-      "focal point",
-      "indelible mark",
-      "deeply rooted"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "stands as a testament", "prefix": false },
+        { "phrase": "serves as a testament", "prefix": false },
+        { "phrase": "is a testament to", "prefix": false },
+        { "phrase": "is a reminder of", "prefix": false },
+        { "phrase": "a vital role", "prefix": false },
+        { "phrase": "a significant role", "prefix": false },
+        { "phrase": "a crucial role", "prefix": false },
+        { "phrase": "a pivotal role", "prefix": false },
+        { "phrase": "a key role", "prefix": false },
+        { "phrase": "a pivotal moment", "prefix": false },
+        { "phrase": "underscores its importance", "prefix": false },
+        { "phrase": "underscores its significance", "prefix": false },
+        { "phrase": "highlights its importance", "prefix": false },
+        { "phrase": "highlights its significance", "prefix": false },
+        { "phrase": "reflects broader", "prefix": false },
+        { "phrase": "symbolising its ongoing", "prefix": false },
+        { "phrase": "symbolizing its ongoing", "prefix": false },
+        { "phrase": "symbolising its enduring", "prefix": false },
+        { "phrase": "symbolizing its enduring", "prefix": false },
+        { "phrase": "symbolising its lasting", "prefix": false },
+        { "phrase": "symbolizing its lasting", "prefix": false },
+        { "phrase": "contributing to the broader", "prefix": false },
+        { "phrase": "setting the stage for", "prefix": false },
+        { "phrase": "marking a shift", "prefix": false },
+        { "phrase": "represents a shift", "prefix": false },
+        { "phrase": "marks a shift", "prefix": false },
+        { "phrase": "key turning point", "prefix": false },
+        { "phrase": "evolving landscape", "prefix": false },
+        { "phrase": "focal point", "prefix": false },
+        { "phrase": "indelible mark", "prefix": false },
+        { "phrase": "deeply rooted", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 1, Wikipedia:Signs of AI writing"
   },
   {
     "id": "notability-media-emphasis",
     "category": "content",
     "description": "Hits the reader over the head with claims of notability or media coverage",
-    "match_phrases": [
-      "independent coverage",
-      "local media outlets",
-      "regional media outlets",
-      "national media outlets",
-      "written by a leading expert",
-      "active social media presence"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "independent coverage", "prefix": false },
+        { "phrase": "local media outlets", "prefix": false },
+        { "phrase": "regional media outlets", "prefix": false },
+        { "phrase": "national media outlets", "prefix": false },
+        { "phrase": "written by a leading expert", "prefix": false },
+        { "phrase": "active social media presence", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 2, Wikipedia:Signs of AI writing"
   },
   {
     "id": "superficial-ing-endings",
     "category": "content",
     "description": "Tacks a present-participle clause onto a sentence for fake depth rather than a real point",
-    "match_regex": ",\\s*(highlighting|underscoring|emphasi[sz]ing|ensuring|reflecting|symboli[sz]ing|contributing to|cultivating|fostering|encompassing|showcasing)\\b",
+    "matcher": {
+      "kind": "regex",
+      "source": ",\\s*(highlighting|underscoring|emphasi[sz]ing|ensuring|reflecting|symboli[sz]ing|contributing to|cultivating|fostering|encompassing|showcasing)\\b"
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 3, Wikipedia:Signs of AI writing"
   },
   {
     "id": "promotional-language",
     "category": "content",
     "description": "Advertisement-like language, especially for places and cultural topics",
-    "match_phrases": [
-      "nestled in",
-      "nestled within",
-      "in the heart of",
-      "must-visit",
-      "breathtaking",
-      "stunning natural beauty",
-      "renowned for its",
-      "exemplifies",
-      "commitment to excellence",
-      "vibrant culture",
-      "rich cultural heritage"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "nestled in", "prefix": false },
+        { "phrase": "nestled within", "prefix": false },
+        { "phrase": "in the heart of", "prefix": false },
+        { "phrase": "must-visit", "prefix": false },
+        { "phrase": "breathtaking", "prefix": false },
+        { "phrase": "stunning natural beauty", "prefix": false },
+        { "phrase": "renowned for its", "prefix": false },
+        { "phrase": "exemplifies", "prefix": false },
+        { "phrase": "commitment to excellence", "prefix": false },
+        { "phrase": "vibrant culture", "prefix": false },
+        { "phrase": "rich cultural heritage", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 4, Wikipedia:Signs of AI writing"
   },
   {
     "id": "vague-attributions",
     "category": "content",
     "description": "Attributes an opinion to a vague, uncited authority",
-    "match_phrases": [
-      "industry reports",
-      "observers have cited",
-      "observers have noted",
-      "experts argue",
-      "experts believe",
-      "some critics argue"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "industry reports", "prefix": false },
+        { "phrase": "observers have cited", "prefix": false },
+        { "phrase": "observers have noted", "prefix": false },
+        { "phrase": "experts argue", "prefix": false },
+        { "phrase": "experts believe", "prefix": false },
+        { "phrase": "some critics argue", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 5, Wikipedia:Signs of AI writing"
   },
   {
     "id": "challenges-future-prospects",
     "category": "content",
     "description": "Formulaic closing section framing ordinary facts as challenges and future outlook",
-    "match_phrases": ["despite these challenges", "challenges and legacy", "future outlook"],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "despite these challenges", "prefix": false },
+        { "phrase": "challenges and legacy", "prefix": false },
+        { "phrase": "future outlook", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 6, Wikipedia:Signs of AI writing"
   },
   {
     "id": "ai-vocabulary-words",
     "category": "language-and-grammar",
     "description": "A word that appears far more often in post-2023 text than in ordinary human writing",
-    "match_phrases": [
-      "delve into",
-      "tapestry of",
-      "testament to",
-      "underscore the",
-      "underscores the",
-      "intricate",
-      "intricacies",
-      "pivotal",
-      "interplay of",
-      "interplay between",
-      "fostering a",
-      "garner attention",
-      "garnered attention",
-      "enduring legacy",
-      "align with",
-      "aligns with"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "delve into", "prefix": false },
+        { "phrase": "tapestry of", "prefix": false },
+        { "phrase": "testament to", "prefix": false },
+        { "phrase": "underscore the", "prefix": false },
+        { "phrase": "underscores the", "prefix": false },
+        { "phrase": "intricate", "prefix": false },
+        { "phrase": "intricacies", "prefix": false },
+        { "phrase": "pivotal", "prefix": false },
+        { "phrase": "interplay of", "prefix": false },
+        { "phrase": "interplay between", "prefix": false },
+        { "phrase": "fostering a", "prefix": false },
+        { "phrase": "garner attention", "prefix": false },
+        { "phrase": "garnered attention", "prefix": false },
+        { "phrase": "enduring legacy", "prefix": false },
+        { "phrase": "align with", "prefix": false },
+        { "phrase": "aligns with", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 7, Wikipedia:Signs of AI writing"
   },
   {
     "id": "copula-avoidance",
     "category": "language-and-grammar",
     "description": "Substitutes an elaborate construction for a plain \"is\" or \"are\"",
-    "match_phrases": [
-      "serves as a",
-      "serves as the",
-      "stands as a",
-      "stands as the",
-      "boasts a",
-      "boasts an"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "serves as a", "prefix": false },
+        { "phrase": "serves as the", "prefix": false },
+        { "phrase": "stands as a", "prefix": false },
+        { "phrase": "stands as the", "prefix": false },
+        { "phrase": "boasts a", "prefix": false },
+        { "phrase": "boasts an", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 8, Wikipedia:Signs of AI writing"
   },
   {
     "id": "negative-parallelism",
     "category": "language-and-grammar",
     "description": "The \"it's not just X, it's Y\" construction, overused as a rhetorical device",
-    "match_regex": "(?i)\\bit'?s not (?:just|merely|only)\\b[^,.;]{1,80}?,?\\s*it'?s\\b",
+    "matcher": {
+      "kind": "regex",
+      "source": "(?i)\\bit'?s not (?:just|merely|only)\\b[^,.;]{1,80}?,?\\s*it'?s\\b"
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 9, Wikipedia:Signs of AI writing"
   },
   {
     "id": "em-en-dashes",
     "category": "style",
     "description": "An em dash, en dash, or spaced double hyphen used as a dash, one of the most reliable AI tells",
-    "match_phrases": ["—", "–", " -- "],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "—", "prefix": false },
+        { "phrase": "–", "prefix": false },
+        { "phrase": " -- ", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 14, Wikipedia:Signs of AI writing"
   },
   {
     "id": "inline-header-lists",
     "category": "style",
     "description": "A bullet list where each item opens with a bolded label followed by a colon",
-    "match_regex": "(?m)^\\s*[-*]\\s+\\*\\*[^*\\n]+:\\*\\*",
+    "matcher": { "kind": "regex", "source": "(?m)^\\s*[-*]\\s+\\*\\*[^*\\n]+:\\*\\*" },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 16, Wikipedia:Signs of AI writing"
   },
   {
     "id": "emojis",
     "category": "style",
     "description": "An emoji used to decorate a heading or bullet point in prose",
-    "match_regex": "[🌀-🫿☀-➿🇦-🇿]",
+    "matcher": { "kind": "regex", "source": "[🌀-🫿☀-➿🇦-🇿]" },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 18, Wikipedia:Signs of AI writing"
   },
   {
     "id": "curly-quotes",
     "category": "style",
     "description": "A curly (typographic) quotation mark rather than a straight one",
-    "match_phrases": ["“", "”"],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "“", "prefix": false },
+        { "phrase": "”", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": true,
     "source": "humanizer SKILL.md section 19, Wikipedia:Signs of AI writing"
   },
   {
     "id": "collaborative-communication-artifacts",
     "category": "communication",
     "description": "Chatbot correspondence pasted into content rather than rewritten as content",
-    "match_phrases": [
-      "i hope this helps",
-      "of course!",
-      "certainly!",
-      "would you like me to",
-      "let me know if",
-      "here is a"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "i hope this helps", "prefix": false },
+        { "phrase": "of course!", "prefix": false },
+        { "phrase": "certainly!", "prefix": false },
+        { "phrase": "would you like me to", "prefix": false },
+        { "phrase": "let me know if", "prefix": false },
+        { "phrase": "here is a", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 20, Wikipedia:Signs of AI writing"
   },
   {
     "id": "knowledge-cutoff-speculative-gapfill",
     "category": "communication",
     "description": "A knowledge-cutoff disclaimer, or a guess dressed up as fact to cover a missing source",
-    "match_phrases": [
-      "up to my last training update",
-      "while specific details are limited",
-      "while specific details are scarce",
-      "based on available information",
-      "not publicly available",
-      "maintains a low profile",
-      "keeps personal details private",
-      "prefers to stay out of the spotlight",
-      "it is believed that"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "up to my last training update", "prefix": false },
+        { "phrase": "while specific details are limited", "prefix": false },
+        { "phrase": "while specific details are scarce", "prefix": false },
+        { "phrase": "based on available information", "prefix": false },
+        { "phrase": "not publicly available", "prefix": false },
+        { "phrase": "maintains a low profile", "prefix": false },
+        { "phrase": "keeps personal details private", "prefix": false },
+        { "phrase": "prefers to stay out of the spotlight", "prefix": false },
+        { "phrase": "it is believed that", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 21, Wikipedia:Signs of AI writing"
   },
   {
     "id": "sycophantic-tone",
     "category": "communication",
     "description": "Overly positive, people-pleasing language",
-    "match_phrases": ["great question", "that's an excellent point", "you're absolutely right"],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "great question", "prefix": false },
+        { "phrase": "that's an excellent point", "prefix": false },
+        { "phrase": "you're absolutely right", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 22, Wikipedia:Signs of AI writing"
   },
   {
     "id": "filler-phrases",
     "category": "filler-and-hedging",
     "description": "A padded phrase with a shorter, plainer equivalent",
-    "match_phrases": [
-      "in order to",
-      "due to the fact that",
-      "at this point in time",
-      "in the event that",
-      "has the ability to",
-      "it is important to note that"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "in order to", "prefix": false },
+        { "phrase": "due to the fact that", "prefix": false },
+        { "phrase": "at this point in time", "prefix": false },
+        { "phrase": "in the event that", "prefix": false },
+        { "phrase": "has the ability to", "prefix": false },
+        { "phrase": "it is important to note that", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 23, Wikipedia:Signs of AI writing"
   },
   {
     "id": "excessive-hedging",
     "category": "filler-and-hedging",
     "description": "Multiple hedging qualifiers stacked on one claim",
-    "match_phrases": [
-      "could potentially possibly",
-      "it could potentially be argued",
-      "may possibly"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "could potentially possibly", "prefix": false },
+        { "phrase": "it could potentially be argued", "prefix": false },
+        { "phrase": "may possibly", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 24, Wikipedia:Signs of AI writing"
   },
   {
     "id": "generic-positive-conclusions",
     "category": "filler-and-hedging",
     "description": "A vague, upbeat closing line that says nothing specific",
-    "match_phrases": [
-      "the future looks bright",
-      "exciting times lie ahead",
-      "a major step in the right direction",
-      "represents a major step forward"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "the future looks bright", "prefix": false },
+        { "phrase": "exciting times lie ahead", "prefix": false },
+        { "phrase": "a major step in the right direction", "prefix": false },
+        { "phrase": "represents a major step forward", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 25, Wikipedia:Signs of AI writing"
   },
   {
     "id": "persuasive-authority-tropes",
     "category": "filler-and-hedging",
     "description": "Pretends to cut through noise to a deeper truth, then just restates an ordinary point",
-    "match_phrases": [
-      "the real question is",
-      "at its core,",
-      "what really matters",
-      "the deeper issue",
-      "the heart of the matter"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "the real question is", "prefix": false },
+        { "phrase": "at its core,", "prefix": false },
+        { "phrase": "what really matters", "prefix": false },
+        { "phrase": "the deeper issue", "prefix": false },
+        { "phrase": "the heart of the matter", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 27, Wikipedia:Signs of AI writing"
   },
   {
     "id": "signposting-announcements",
     "category": "filler-and-hedging",
     "description": "Announces what is about to be explained instead of just explaining it",
-    "match_phrases": [
-      "let's dive in",
-      "let's dive into",
-      "let's explore",
-      "let's break this down",
-      "here's what you need to know",
-      "without further ado"
-    ],
+    "matcher": {
+      "kind": "phraseList",
+      "entries": [
+        { "phrase": "let's dive in", "prefix": false },
+        { "phrase": "let's dive into", "prefix": false },
+        { "phrase": "let's explore", "prefix": false },
+        { "phrase": "let's break this down", "prefix": false },
+        { "phrase": "here's what you need to know", "prefix": false },
+        { "phrase": "without further ado", "prefix": false }
+      ]
+    },
+    "unit": "span",
+    "band": { "kind": "forbidden" },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
     "source": "humanizer SKILL.md section 28, Wikipedia:Signs of AI writing"
   }
 ]

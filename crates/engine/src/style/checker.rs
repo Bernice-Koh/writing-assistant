@@ -1,6 +1,7 @@
 //! The checker: a Style Card clause made mechanical, as the clause's id and a [`Rule`]. The rule is
 //! the part the engine evaluates: a matcher, a unit and a band, declared for the form modes and
-//! the registers it runs in. #96 gives each telltale pattern a rule under its pattern id.
+//! the registers it runs in. Each pattern of the telltale catalogue, in `ai_tell`, is a rule too,
+//! under its pattern id.
 //!
 //! A checker is data. The store holds it as its serde JSON and takes its content hash over those
 //! bytes (#82), so every part round-trips through serde, and the modes and the registers are

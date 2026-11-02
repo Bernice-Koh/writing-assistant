@@ -1,8 +1,8 @@
 //! The shared unit every checking source produces and the analyzer, the Tauri command layer, and
 //! the overlay all consume. Three unrelated modules produce a [`Flag`] today: spelling,
-//! LanguageTool, and the AI-telltale matcher in `style`. The rule layer's checkers are the fourth,
-//! and arrive with #95 and #100. Owning the type inside any one of them would make the others
-//! reach sideways across the crate for it, so it lives here instead.
+//! LanguageTool, and the rule layer in `style`, through the telltale catalogue and the ruleset's
+//! checkers. Owning the type inside any one of them would make the others reach sideways across
+//! the crate for it, so it lives here instead.
 //!
 //! Every type a [`Flag`] holds derives `Serialize` (camelCase on the wire, per this repo's
 //! TypeScript naming convention) so the app's positioned flag, which carries one, can cross the

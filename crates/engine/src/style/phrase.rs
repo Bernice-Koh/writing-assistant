@@ -1,7 +1,7 @@
 //! The phrase-list matcher. Each entry is compiled once into a regex of its own, built with
-//! `regex::escape`, as the telltale catalogue's matcher in `ai_tell` builds one per phrase. One
-//! alternation of every entry would find only one of two entries that overlap, as "is a testament
-//! to" and "testament to" do, since a regex search yields matches that do not overlap.
+//! `regex::escape`. One alternation of every entry would find only one of two entries that
+//! overlap, as "is a testament to" and "testament to" do, since a regex search yields matches that
+//! do not overlap.
 //!
 //! The match is case-insensitive and needs no lowercased copy of the text, which would yield
 //! offsets into the copy, wrong for the original wherever lowercasing changes a character's byte
@@ -13,7 +13,9 @@
 //! differs. Each of those marks is one character and one UTF-16 code unit, as its straight form is,
 //! and three bytes where its straight form is one, so a byte offset into the copy is wrong for the
 //! text as written. A match's byte range is carried back to the text as written through the
-//! character positions the two share, and no offset into the copy leaves the matcher.
+//! character positions the two share, and no offset into the copy leaves the matcher. A list whose
+//! entries are curly marks themselves, as the telltale catalogue's `curly-quotes` pattern is, is
+//! compiled to read the text as written instead, since the copy holds no curly mark to match.
 //!
 //! An apostrophe between two letters is inside a word, so an edge of an entry that is a letter
 //! does not match beside one: "don" does not match in "don't" or "don’t". The `regex` crate's
@@ -34,14 +36,24 @@ use regex::Regex;
 
 use super::checker::PhraseEntry;
 
-/// The rest of a word after a prefix entry, in the searched copy, where every apostrophe is
-/// straight.
-const REST_OF_WORD: &str = r"(?:[\p{Alphabetic}\p{N}]|'\p{Alphabetic})*";
+/// The rest of a word after a prefix entry. An apostrophe is straight in the searched copy, and
+/// may be curly in text read as written.
+const REST_OF_WORD: &str = r"(?:[\p{Alphabetic}\p{N}]|['\x{2018}\x{2019}]\p{Alphabetic})*";
 
 #[derive(Debug)]
 pub(super) struct PhraseMatcher {
     /// One per entry, in the list's order.
     entry_regexes: Vec<Regex>,
+    curly_marks: CurlyMarks,
+}
+
+/// How a phrase list reads the curly apostrophes and quotation marks in the text it searches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CurlyMarks {
+    /// Each as its straight form, since the entries are written with straight ones.
+    AsStraight,
+    /// As written, for a list whose entries are curly marks.
+    AsWritten,
 }
 
 /// Why a phrase list did not compile.
@@ -54,7 +66,10 @@ pub(super) enum PhraseError {
 }
 
 impl PhraseMatcher {
-    pub(super) fn compile(entries: &[PhraseEntry]) -> Result<Self, PhraseError> {
+    pub(super) fn compile(
+        entries: &[PhraseEntry],
+        curly_marks: CurlyMarks,
+    ) -> Result<Self, PhraseError> {
         let entry_regexes = entries
             .iter()
             .enumerate()
@@ -65,14 +80,20 @@ impl PhraseMatcher {
                 Regex::new(&entry_regex_source(entry)).map_err(PhraseError::Regex)
             })
             .collect::<Result<_, _>>()?;
-        Ok(Self { entry_regexes })
+        Ok(Self {
+            entry_regexes,
+            curly_marks,
+        })
     }
 
     /// The byte range of every occurrence of every entry in `text`, ordered by start and then by
     /// end. Two entries that match the same text, as one listed twice in different case does,
     /// yield it once.
     pub(super) fn find(&self, text: &str) -> Vec<Range<usize>> {
-        let straight = StraightMarks::of(text);
+        let straight = match self.curly_marks {
+            CurlyMarks::AsStraight => StraightMarks::of(text),
+            CurlyMarks::AsWritten => StraightMarks::as_written(text),
+        };
         let mut ranges: Vec<Range<usize>> = self
             .entry_regexes
             .iter()
@@ -112,17 +133,19 @@ fn matches_outside_words(regex: &Regex, text: &str) -> Vec<Range<usize>> {
 }
 
 /// Whether a letter at an edge of `range` in `text` has beside it, outside the range, an
-/// apostrophe with a letter on its other side.
+/// apostrophe, straight or curly, with a letter on its other side.
 fn has_an_edge_inside_a_word(text: &str, range: &Range<usize>) -> bool {
     let is_letter = |character: Option<char>| character.is_some_and(char::is_alphabetic);
+    let is_apostrophe =
+        |character: Option<char>| matches!(character, Some('\'' | '\u{2018}' | '\u{2019}'));
     let matched = &text[range.clone()];
     let mut before = text[..range.start].chars().rev();
     let mut after = text[range.end..].chars();
     let start_inside = is_letter(matched.chars().next())
-        && before.next() == Some('\'')
+        && is_apostrophe(before.next())
         && is_letter(before.next());
     let end_inside = is_letter(matched.chars().next_back())
-        && after.next() == Some('\'')
+        && is_apostrophe(after.next())
         && is_letter(after.next());
     start_inside || end_inside
 }
@@ -149,10 +172,7 @@ impl<'t> StraightMarks<'t> {
             .chars()
             .all(|character| straight_form(character) == character)
         {
-            return Self {
-                searched: Cow::Borrowed(text),
-                character_offsets: Vec::new(),
-            };
+            return Self::as_written(text);
         }
         let mut searched = String::with_capacity(text.len());
         let mut character_offsets = Vec::with_capacity(text.len() + 1);
@@ -164,6 +184,14 @@ impl<'t> StraightMarks<'t> {
         Self {
             searched: Cow::Owned(searched),
             character_offsets,
+        }
+    }
+
+    /// `text` searched as it is written, with no mark read as another.
+    fn as_written(text: &'t str) -> Self {
+        Self {
+            searched: Cow::Borrowed(text),
+            character_offsets: Vec::new(),
         }
     }
 
@@ -229,7 +257,7 @@ fn entry_regex_source(entry: &PhraseEntry) -> String {
 mod tests {
     use super::*;
 
-    fn matcher(phrases: &[&str], prefix: bool) -> PhraseMatcher {
+    fn reading(phrases: &[&str], prefix: bool, curly_marks: CurlyMarks) -> PhraseMatcher {
         let entries: Vec<PhraseEntry> = phrases
             .iter()
             .map(|phrase| PhraseEntry {
@@ -237,7 +265,16 @@ mod tests {
                 prefix,
             })
             .collect();
-        PhraseMatcher::compile(&entries).unwrap()
+        PhraseMatcher::compile(&entries, curly_marks).unwrap()
+    }
+
+    fn matcher(phrases: &[&str], prefix: bool) -> PhraseMatcher {
+        reading(phrases, prefix, CurlyMarks::AsStraight)
+    }
+
+    /// The telltale catalogue's `curly-quotes` phrases, read as written.
+    fn curly_quotes() -> PhraseMatcher {
+        reading(&["\u{201C}", "\u{201D}"], false, CurlyMarks::AsWritten)
     }
 
     /// The telltale catalogue's `em-en-dashes` phrases.
@@ -394,7 +431,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            PhraseMatcher::compile(&entries),
+            PhraseMatcher::compile(&entries, CurlyMarks::AsStraight),
             Err(PhraseError::PrefixNotOneWord { entry_index: 1 })
         ));
         let empty = [PhraseEntry {
@@ -402,7 +439,7 @@ mod tests {
             prefix: true,
         }];
         assert!(matches!(
-            PhraseMatcher::compile(&empty),
+            PhraseMatcher::compile(&empty, CurlyMarks::AsStraight),
             Err(PhraseError::PrefixNotOneWord { entry_index: 0 })
         ));
         // Without the flag, a phrase of many words compiles as it always has.
@@ -508,5 +545,37 @@ mod tests {
     fn an_entry_listed_twice_matches_each_occurrence_once() {
         let twice = matcher(&["boasts a", "Boasts A"], false);
         assert_eq!(matched(&twice, "The town boasts a harbour."), ["boasts a"]);
+    }
+
+    #[test]
+    fn a_list_read_as_written_matches_each_curly_mark_and_no_straight_one() {
+        // Each entry is one punctuation mark, which needs no word boundary, so a mark matches
+        // against the letter it opens or closes.
+        let text = "She said \u{201C}yes\u{201D}, then \"no\", then \u{201C}maybe.\u{201D}";
+        let ranges = curly_quotes().find(text);
+        assert_eq!(
+            matched(&curly_quotes(), text),
+            ["\u{201C}", "\u{201D}", "\u{201C}", "\u{201D}"]
+        );
+        assert!(ranges.iter().all(|range| range.len() == 3), "{ranges:?}");
+        assert!(matched(&curly_quotes(), "She said \"no\".").is_empty());
+    }
+
+    #[test]
+    fn a_list_of_curly_marks_read_as_straight_ones_matches_nothing() {
+        let curly = reading(&["\u{201C}", "\u{201D}"], false, CurlyMarks::AsStraight);
+        assert!(matched(&curly, "She said \u{201C}yes\u{201D}.").is_empty());
+    }
+
+    #[test]
+    fn a_list_read_as_written_keeps_a_curly_apostrophe_between_letters_inside_the_word() {
+        let entry = reading(&["don"], false, CurlyMarks::AsWritten);
+        assert!(matched(&entry, "I don\u{2019}t know.").is_empty());
+        assert!(matched(&entry, "I don\u{2018}t know.").is_empty());
+        let prefix = reading(&["intricate"], true, CurlyMarks::AsWritten);
+        assert_eq!(
+            matched(&prefix, "The intricate\u{2019}s charm."),
+            ["intricate\u{2019}s"]
+        );
     }
 }

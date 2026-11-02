@@ -211,7 +211,13 @@ mod tests {
 
     use super::*;
     use crate::flag::{ClauseCitation, ClauseId, RuleId, Span};
-    use crate::style::ai_tell;
+    use crate::style::ai_tell::Catalogue;
+    use crate::style::checker::FormMode;
+
+    /// The telltales every pattern of the catalogue raises in `sentence`.
+    fn scan(sentence: &str) -> Vec<Flag> {
+        Catalogue::every_pattern().flags(sentence, FormMode::Prose, "default")
+    }
 
     fn flag(origin: FlagOrigin, anchor: &str, local_start: usize, local_length: usize) -> Flag {
         Flag {
@@ -306,7 +312,7 @@ mod tests {
         // Both tells cover the same text, ", ensuring". Each carries its own offset into the
         // sentence, so a grammar flag on the second leaves the first standing.
         let sentence = "The plan grew, ensuring reach, ensuring scale.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         assert_eq!(tells.len(), 2, "{tells:#?}");
         let second_ensuring = sentence.rfind("ensuring").unwrap();
         let grammar = flag(FlagOrigin::Grammar, sentence, second_ensuring, 8);
@@ -377,7 +383,7 @@ mod tests {
         // pattern in the group.
         let sentence = "This is a testament to the team.";
         let on_testament = style(sentence, 5, 17); // "is a testament to"
-        let mut flags = ai_tell::scan(sentence);
+        let mut flags = scan(sentence);
         assert_eq!(flags.len(), 2, "{flags:#?}");
         flags.push(on_testament.clone());
         let result = apply(sentence, flags);
@@ -421,7 +427,7 @@ mod tests {
     #[test]
     fn nested_telltales_collapse_onto_the_widest_span_with_its_message() {
         let sentence = "This is a testament to the team.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         let mut matched: Vec<String> = tells.iter().map(flagged_text).collect();
         matched.sort();
         assert_eq!(matched, ["is a testament to", "testament to"], "{tells:#?}");
@@ -487,7 +493,7 @@ mod tests {
         // Two groups: "is a testament to" holding "testament to", and "stands as a testament"
         // holding "stands as" and partly overlapping a second "testament to".
         let sentence = "Our work is a testament to the team, and it stands as a testament to grit.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         assert_eq!(tells.len(), 5, "{tells:#?}");
 
         let result = apply(sentence, tells);

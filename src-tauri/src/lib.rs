@@ -12,6 +12,7 @@ use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, LanguageToolSupervisor};
 use wa_engine::spelling::SpellChecker;
 use wa_engine::store::{self, config, Config, Store, StoreError};
+use wa_engine::style::ai_tell::{self, Catalogue};
 use wa_engine::style::ruleset::LoadedRuleset;
 
 use overlay::{PositionedFlag, SharedFlags};
@@ -70,20 +71,23 @@ pub fn run() {
         .expect("the webview runtime is a hard requirement, with no degraded mode to fall back to");
 }
 
-/// Loads the settings, opens the store, loads the ruleset from it, loads spelling, starts
-/// LanguageTool best-effort, starts the analyzer against `capture`, and starts the two background
-/// tasks that turn the analyzer's own flag stream into what the overlay renders and hit-tests.
-/// Split out of `run`'s `setup` closure because it `.await`s.
+/// Loads the settings, compiles the telltale catalogue from them, opens the store, loads the
+/// ruleset from it, loads spelling, starts LanguageTool best-effort, starts the analyzer against
+/// `capture`, and starts the two background tasks that turn the analyzer's own flag stream into
+/// what the overlay renders and hit-tests. Split out of `run`'s `setup` closure because it
+/// `.await`s.
 async fn start_checking_pipeline(
     app: tauri::AppHandle,
     capture: Arc<dyn Capture>,
     shared_flags: SharedFlags,
 ) {
     // Read once, with no watcher: an edit made while the app runs takes effect at the next start.
-    // Managed beside the capture backend for the readers that arrive with the telltale toggles
-    // and the register map. The analyzer checks every sentence under the default register.
+    // Managed beside the capture backend for the reader that arrives with the register map. The
+    // analyzer checks every sentence under the default register, against the telltale catalogue
+    // compiled from the toggles.
     let settings = load_settings();
     let register = settings.default_register.clone();
+    let catalogue = Arc::new(load_catalogue(&settings));
     app.manage(settings);
     let store = open_store().await;
     // Read once, like the settings: a version published while the app runs is in force from the
@@ -131,6 +135,7 @@ async fn start_checking_pipeline(
         spelling,
         languagetool,
         Arc::clone(&ruleset),
+        catalogue,
         register,
     ));
     overlay::track_flags(
@@ -168,6 +173,30 @@ fn load_settings() -> Config {
             Config::default()
         }
     }
+}
+
+/// The telltale catalogue's patterns that `settings` switch on, compiled once. Logs one `info` line
+/// naming how many are on and each pattern switched off.
+fn load_catalogue(settings: &Config) -> Catalogue {
+    let catalogue = Catalogue::load(settings);
+    let off: Vec<&str> = ai_tell::pattern_ids()
+        .filter(|id| {
+            !catalogue
+                .enabled_pattern_ids()
+                .any(|enabled| enabled == *id)
+        })
+        .collect();
+    log::info!(
+        "loaded the telltale catalogue with {} of {} patterns on; off: {}",
+        catalogue.enabled_pattern_ids().count(),
+        ai_tell::pattern_ids().count(),
+        if off.is_empty() {
+            "none".to_owned()
+        } else {
+            off.join(", ")
+        }
+    );
+    catalogue
 }
 
 /// The store under the data root, or `None` when it cannot be opened, since a fault in the store
