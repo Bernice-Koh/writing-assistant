@@ -116,10 +116,10 @@ pub struct RuleId(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RulesetVersion(pub i64);
 
-/// The content hash of the telltale catalogue's compiled bytes, as a lowercase hex digest. The
-/// algorithm is chosen where the hash is taken, when the catalogue loads on the rule engine (#96).
-/// Lowercase so that two hashes of the same bytes compare equal as strings, in the store and in
-/// the bench.
+/// The content hash of the rule data compiled into the engine, as a lowercase hex digest, taken by
+/// the recipe on [`Flag::catalogue_hash`]. Named for the telltale catalogue, the first of the two
+/// data files it covers. Lowercase so that two hashes of the same bytes compare equal as strings,
+/// in the store and in the bench.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct CatalogueHash(String);
 
@@ -167,9 +167,13 @@ pub struct Flag {
     /// The ruleset version in force when the flag was raised, whatever its origin. `None` until a
     /// ruleset is loaded (#95).
     pub ruleset_version: Option<RulesetVersion>,
-    /// The telltale catalogue's content hash when the flag was raised, whatever its origin, so a
-    /// catalogue change can be told apart from a ruleset change. `None` until the catalogue loads
-    /// on the rule engine (#96).
+    /// The content hash of the rule data compiled into the engine when the flag was raised,
+    /// whatever its origin: the SHA-256 of the telltale catalogue's bytes,
+    /// `src-tauri/resources/ai-telltales/patterns.json`, followed by the variant-pair table's,
+    /// `src-tauri/resources/spelling-variants/pairs.json`, as lowercase hex. An edit to either
+    /// data file changes it and an edit to the ruleset does not, so the two are told apart. The
+    /// analyzer sets it on every flag it publishes; a checking source builds its flags with
+    /// `None`.
     pub catalogue_hash: Option<CatalogueHash>,
 }
 

@@ -7,6 +7,10 @@
 //! the file in the rule's own serialised form. It serves no Style Card clause, so it is compiled
 //! under its pattern id, and its flags keep their own origin, which carries the id. The app
 //! compiles the patterns the settings switch on once, at startup, into one [`Catalogue`].
+//!
+//! The catalogue's bytes and the variant-pair table's are the rule data compiled into the engine,
+//! and one content hash over both, taken once, is recorded on every flag beside the ruleset
+//! version, so an edit to either file is told from a ruleset change.
 
 use std::sync::OnceLock;
 
@@ -15,7 +19,9 @@ use serde::Deserialize;
 use super::checker::{FormMode, Rule};
 use super::evaluator::{Evaluator, RuleOwner, Violation};
 use super::phrase::CurlyMarks;
-use crate::flag::{Flag, FlagOrigin};
+use super::variants;
+use crate::flag::{CatalogueHash, Flag, FlagOrigin};
+use crate::hash::sha256_hex;
 use crate::store::Config;
 
 // Compiled in rather than read from the resource directory at run time, so the app and `wa`
@@ -54,6 +60,17 @@ pub fn pattern_ids() -> impl Iterator<Item = &'static str> {
     patterns().iter().map(|pattern| pattern.id.as_str())
 }
 
+/// The SHA-256 of the catalogue's bytes followed by the variant-pair table's, as compiled in,
+/// computed once.
+fn rule_data_hash() -> &'static CatalogueHash {
+    static HASH: OnceLock<CatalogueHash> = OnceLock::new();
+    HASH.get_or_init(|| {
+        let bytes = [CATALOGUE_JSON.as_bytes(), variants::PAIRS_JSON.as_bytes()].concat();
+        CatalogueHash::from_hex(&sha256_hex(&bytes))
+            .expect("sha256_hex writes 64 lowercase hex digits")
+    })
+}
+
 /// The catalogue's patterns that the settings switch on, each compiled once.
 #[derive(Debug)]
 pub struct Catalogue {
@@ -84,6 +101,13 @@ impl Catalogue {
             })
             .collect();
         Self { patterns }
+    }
+
+    /// The content hash of the rule data compiled into the engine, which every flag the analyzer
+    /// publishes records as its [`Flag::catalogue_hash`]. The toggles do not change it: it is
+    /// taken over the files' bytes, whichever patterns are switched on.
+    pub fn hash(&self) -> &'static CatalogueHash {
+        rule_data_hash()
     }
 
     /// The id of each pattern switched on, in catalogue order.
@@ -118,7 +142,7 @@ impl Catalogue {
 impl CompiledPattern {
     /// The telltale for `violation` of this pattern. It cites no clause and carries no
     /// replacement: the catalogue holds phrasings to cut, not substitutions. The analyzer stamps
-    /// the ruleset version as it publishes.
+    /// the ruleset version and the catalogue hash as it publishes.
     fn flag(&self, violation: Violation) -> Flag {
         let pattern = self.pattern;
         Flag {
@@ -528,6 +552,40 @@ mod tests {
             );
             assert_eq!(compiled.evaluator.rule(), &compiled.pattern.rule);
         }
+    }
+
+    /// A file of the vendored resources, read from disk as the repository holds it.
+    fn resource(path: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../src-tauri/resources")
+                .join(path),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_hash_is_the_sha256_of_the_catalogue_followed_by_the_variant_table() {
+        let catalogue = resource("ai-telltales/patterns.json");
+        let pairs = resource("spelling-variants/pairs.json");
+        let hash = Catalogue::load(&Config::default()).hash();
+        assert_eq!(
+            hash.as_str(),
+            sha256_hex(&[catalogue.as_slice(), &pairs].concat())
+        );
+        assert_ne!(
+            hash.as_str(),
+            sha256_hex(&[pairs.as_slice(), &catalogue].concat())
+        );
+        assert_ne!(hash.as_str(), sha256_hex(&catalogue));
+    }
+
+    #[test]
+    fn the_hash_is_computed_once_and_is_the_same_whichever_patterns_are_on() {
+        let every = Catalogue::every_pattern();
+        let none = Catalogue::compiled(|_| false);
+        assert!(std::ptr::eq(every.hash(), none.hash()));
+        assert_eq!(none.enabled_pattern_ids().count(), 0);
     }
 
     #[test]

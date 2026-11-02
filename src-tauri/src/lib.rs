@@ -176,7 +176,7 @@ fn load_settings() -> Config {
 }
 
 /// The telltale catalogue's patterns that `settings` switch on, compiled once. Logs one `info` line
-/// naming how many are on and each pattern switched off.
+/// naming how many are on, each pattern switched off, and the rule data's content hash.
 fn load_catalogue(settings: &Config) -> Catalogue {
     let catalogue = Catalogue::load(settings);
     let off: Vec<&str> = ai_tell::pattern_ids()
@@ -187,14 +187,15 @@ fn load_catalogue(settings: &Config) -> Catalogue {
         })
         .collect();
     log::info!(
-        "loaded the telltale catalogue with {} of {} patterns on; off: {}",
+        "loaded the telltale catalogue with {} of {} patterns on, off: {}; rule data hash {}",
         catalogue.enabled_pattern_ids().count(),
         ai_tell::pattern_ids().count(),
         if off.is_empty() {
             "none".to_owned()
         } else {
             off.join(", ")
-        }
+        },
+        catalogue.hash().as_str()
     );
     catalogue
 }

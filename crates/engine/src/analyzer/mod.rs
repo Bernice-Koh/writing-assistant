@@ -78,9 +78,10 @@ impl Analyzer {
     /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
     /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
     /// when no version is loaded, and LanguageTool's matches route through its checkers.
-    /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles.
-    /// `register` is the register every sentence is checked under, the settings' default register
-    /// until capture supplies the surface's (#58).
+    /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles: every
+    /// flag the analyzer publishes carries its hash whatever its origin, beside the ruleset
+    /// version. `register` is the register every sentence is checked under, the settings' default
+    /// register until capture supplies the surface's (#58).
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
@@ -221,6 +222,7 @@ async fn recheck(inner: &Inner, text: &str) {
         let text_before_sentence = &text[..sentence.start];
         document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
             ruleset_version: inner.ruleset.version(),
+            catalogue_hash: Some(inner.catalogue.hash().clone()),
             ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
         }));
     }
@@ -590,8 +592,8 @@ mod tests {
     /// The flags an analyzer started with `ruleset_version` publishes for a misspelled sentence
     /// and a telltale one, once the first sentence's cached result also holds a grammar flag. No
     /// test runs LanguageTool, so the grammar flag enters where a checked sentence's grammar flags
-    /// wait between rechecks, carrying a version the analyzer does not hold. Only the second
-    /// sentence then changes, so the first is served from the cache.
+    /// wait between rechecks, carrying a version the analyzer does not hold and no catalogue hash.
+    /// Only the second sentence then changes, so the first is served from the cache.
     async fn flags_of_every_origin(ruleset_version: Option<RulesetVersion>) -> Vec<Flag> {
         let misspelled = "This has a mispelling.";
         let fake = Arc::new(FakeCapture::new(&format!(
@@ -662,6 +664,20 @@ mod tests {
                 .all(|flag| flag.ruleset_version == Some(RulesetVersion(7))),
             "{flags:#?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_published_flag_carries_the_catalogue_hash_beside_the_ruleset_version() {
+        let hash = default_catalogue().hash().clone();
+        for version in [Some(RulesetVersion(7)), None] {
+            let flags = flags_of_every_origin(version).await;
+            assert!(
+                flags.iter().all(|flag| {
+                    flag.catalogue_hash.as_ref() == Some(&hash) && flag.ruleset_version == version
+                }),
+                "{flags:#?}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
