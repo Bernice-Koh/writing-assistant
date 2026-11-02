@@ -680,6 +680,106 @@ mod tests {
         }
     }
 
+    /// Five sentences: a misspelling, a telltale, and two identical misspelled sentences around a
+    /// clean one.
+    const PINNED_DOCUMENT: &str = "This has a mispelling. It stands as a testament to the team. \
+                                   An eror here. Fine start. An eror here.";
+
+    /// The flags an analyzer at ruleset version 7 publishes for [`PINNED_DOCUMENT`], pinned field
+    /// by field from its output, so a change to how a recheck chooses the sentences it checks
+    /// shows here as a change to what it publishes. The catalogue hash is read from the compiled
+    /// catalogue rather than pinned, since an edit to the catalogue changes it without touching
+    /// the analyzer.
+    fn pinned_flags() -> Vec<Flag> {
+        let catalogue_hash = Some(default_catalogue().hash().clone());
+        let eror = |id: &str, occurrence| Flag {
+            id: id.to_owned(),
+            origin: FlagOrigin::Spelling,
+            span: eror_here(occurrence),
+            message: "\"eror\" is not in the dictionary".to_owned(),
+            suggestions: ["err", "error", "er or", "er-or", "emperor"]
+                .map(str::to_owned)
+                .to_vec(),
+            source_detail: "en_GB plus the Singapore supplement".to_owned(),
+            ruleset_version: Some(RulesetVersion(7)),
+            catalogue_hash: catalogue_hash.clone(),
+        };
+        vec![
+            Flag {
+                id: "0:spelling:11".to_owned(),
+                origin: FlagOrigin::Spelling,
+                span: Span {
+                    anchor: "This has a mispelling.".to_owned(),
+                    local_start: 11,
+                    local_length: 10,
+                    occurrence: 0,
+                },
+                message: "\"mispelling\" is not in the dictionary".to_owned(),
+                suggestions: [
+                    "misspelling",
+                    "dispelling",
+                    "mi spelling",
+                    "mi-spelling",
+                    "mis-selling",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                source_detail: "en_GB plus the Singapore supplement".to_owned(),
+                ruleset_version: Some(RulesetVersion(7)),
+                catalogue_hash: catalogue_hash.clone(),
+            },
+            Flag {
+                id: "1:ai-tell:significance-legacy-emphasis:3:21".to_owned(),
+                origin: FlagOrigin::AiTell {
+                    pattern_ids: [
+                        "significance-legacy-emphasis",
+                        "copula-avoidance",
+                        "ai-vocabulary-words",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
+                },
+                span: Span {
+                    anchor: "It stands as a testament to the team.".to_owned(),
+                    local_start: 3,
+                    local_length: 24,
+                    occurrence: 0,
+                },
+                message: "Puffs up an ordinary fact by tying it to significance, legacy, or a \
+                          broader trend"
+                    .to_owned(),
+                suggestions: Vec::new(),
+                source_detail: "humanizer SKILL.md section 1, Wikipedia:Signs of AI writing"
+                    .to_owned(),
+                ruleset_version: Some(RulesetVersion(7)),
+                catalogue_hash: catalogue_hash.clone(),
+            },
+            eror("2:spelling:3", 0),
+            eror("4:spelling:3", 1),
+        ]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fixed_document_publishes_its_pinned_flags_each_time_it_is_reached() {
+        let fake = Arc::new(FakeCapture::new(PINNED_DOCUMENT));
+        let analyzer = Analyzer::start(
+            Arc::clone(&fake) as Arc<dyn Capture>,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty_at(RulesetVersion(7))),
+            Arc::new(default_catalogue()),
+            "default".to_owned(),
+        );
+        step(6).await;
+        assert_eq!(analyzer.current_flags(), pinned_flags());
+
+        fake.set_text("Something else entirely.");
+        step(6).await;
+        fake.set_text(PINNED_DOCUMENT);
+        step(6).await;
+        assert_eq!(analyzer.current_flags(), pinned_flags());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn with_no_ruleset_loaded_every_published_flag_carries_no_version() {
         let flags = flags_of_every_origin(None).await;
