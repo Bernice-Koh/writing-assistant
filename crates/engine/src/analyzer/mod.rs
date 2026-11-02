@@ -24,7 +24,7 @@ use tokio::time::Instant;
 
 use crate::capture::Capture;
 use crate::flag::Flag;
-use crate::languagetool::LanguageToolSupervisor;
+use crate::languagetool::GrammarSource;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
@@ -52,7 +52,7 @@ pub struct Analyzer {
 struct Inner {
     capture: Arc<dyn Capture>,
     spelling: SpellChecker,
-    languagetool: Option<LanguageToolSupervisor>,
+    grammar: Option<Arc<dyn GrammarSource>>,
     ruleset: Arc<LoadedRuleset>,
     catalogue: Arc<Catalogue>,
     register: String,
@@ -68,9 +68,9 @@ struct Inner {
 }
 
 impl Analyzer {
-    /// Starts polling `capture` in the background. `languagetool` is `None` when the subprocess
-    /// could not be started at all; a `Some` that later degrades fails every check, which
-    /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
+    /// Starts polling `capture` in the background. `grammar` is `None` when the LanguageTool
+    /// subprocess could not be started at all; a `Some` that later degrades fails every check,
+    /// which `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
     /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
     /// when no version is loaded, and LanguageTool's matches route through its checkers.
     /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles: every
@@ -80,7 +80,7 @@ impl Analyzer {
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
-        languagetool: Option<LanguageToolSupervisor>,
+        grammar: Option<Arc<dyn GrammarSource>>,
         ruleset: Arc<LoadedRuleset>,
         catalogue: Arc<Catalogue>,
         register: String,
@@ -89,7 +89,7 @@ impl Analyzer {
         let inner = Arc::new(Inner {
             capture,
             spelling,
-            languagetool,
+            grammar,
             ruleset,
             catalogue,
             register,
@@ -239,8 +239,8 @@ async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
             .catalogue
             .flags(sentence, FormMode::Prose, &inner.register),
     );
-    if let Some(languagetool) = &inner.languagetool {
-        let checked = languagetool
+    if let Some(grammar) = &inner.grammar {
+        let checked = grammar
             .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
             .await;
         match checked {

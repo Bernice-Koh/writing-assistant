@@ -2,7 +2,8 @@
 //! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant and its
 //! picky mode. `process` covers the subprocess itself; `client` the HTTP API, the shape of a
 //! response and the route of each of LanguageTool's categories; `routing` the turn of one
-//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset.
+//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset. The analyzer reaches
+//! the checks through [`GrammarSource`], which the supervisor implements.
 
 mod client;
 pub mod error;
@@ -28,8 +29,33 @@ use crate::style::ruleset::LoadedRuleset;
 /// commits to running without grammar checking rather than restarting forever.
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 
+/// The grammar stage's source of one sentence's flags, which the analyzer calls. A trait object
+/// rather than the supervisor itself, so the analyzer's tests answer, hold, fail and time out
+/// checks with no LanguageTool subprocess. [`LanguageToolSupervisor`] is the implementation the app
+/// runs.
+#[async_trait::async_trait]
+pub trait GrammarSource: Send + Sync {
+    /// Runs the grammar stage's check of `sentence`, one sentence of form mode `mode` under
+    /// `register`, and routes LanguageTool's matches through `ruleset` into flags. An empty list
+    /// is a check that found nothing to flag.
+    ///
+    /// # Errors
+    /// When the subprocess is degraded or the request fails or times out, which fails the check for
+    /// this sentence. The analyzer treats a failure as no grammar flags this time, leaves the
+    /// sentence's grammar part incomplete so that the next recheck sends it again, and keeps
+    /// serving the other sources' flags, so a down LanguageTool never stops checking.
+    async fn check(
+        &self,
+        sentence: &str,
+        ruleset: &LoadedRuleset,
+        mode: FormMode,
+        register: &str,
+    ) -> Result<Vec<Flag>, LanguageToolError>;
+}
+
 /// Owns a running LanguageTool subprocess and the client talking to it. Cloning is cheap
-/// (`Arc`-backed) and safe to share across the async runtime: [`Self::check`] takes `&self`.
+/// (`Arc`-backed) and safe to share across the async runtime: [`GrammarSource::check`] takes
+/// `&self`.
 #[derive(Clone)]
 pub struct LanguageToolSupervisor {
     inner: Arc<Inner>,
@@ -74,16 +100,11 @@ impl LanguageToolSupervisor {
 
         Ok(Self { inner })
     }
+}
 
-    /// Runs the grammar stage's check of `sentence`, one sentence of form mode `mode` under
-    /// `register`, and routes LanguageTool's matches through `ruleset` into flags. An empty list
-    /// is a check that found nothing to flag.
-    ///
-    /// # Errors
-    /// When the subprocess is degraded or the request fails, which fails the check for this
-    /// sentence. The caller treats a failure as no grammar flags this time and keeps serving the
-    /// other sources' flags, so a down LanguageTool never stops checking.
-    pub async fn check(
+#[async_trait::async_trait]
+impl GrammarSource for LanguageToolSupervisor {
+    async fn check(
         &self,
         sentence: &str,
         ruleset: &LoadedRuleset,
@@ -116,7 +137,8 @@ async fn supervise(inner: Arc<Inner>, mut current: Child) {
 /// [`MAX_RESTART_ATTEMPTS`] attempts shared across the supervisor's whole lifetime, not reset per
 /// call. Returns the new child once one attempt both spawns and becomes ready, or `None` once the
 /// budget is exhausted, after which [`Inner::degraded`] is set and every later
-/// [`LanguageToolSupervisor::check`] call answers `None` without trying the subprocess again.
+/// [`GrammarSource::check`] call answers [`LanguageToolError::Degraded`] without trying the
+/// subprocess again.
 async fn respawn(inner: &Inner) -> Option<Child> {
     loop {
         let attempts = inner.restart_attempts.fetch_add(1, Ordering::SeqCst) + 1;

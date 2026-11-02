@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{self, Capture};
-use wa_engine::languagetool::{self, LanguageToolSupervisor};
+use wa_engine::languagetool::{self, GrammarSource, LanguageToolSupervisor};
 use wa_engine::spelling::SpellChecker;
 use wa_engine::store::{self, config, Config, Store, StoreError};
 use wa_engine::style::ai_tell::{self, Catalogue};
@@ -114,13 +114,13 @@ async fn start_checking_pipeline(
     .expect("the vendored dictionary pair and supplement are well-formed, checked in CI");
 
     let languagetool_paths = languagetool::default_paths(&resources_dir);
-    let languagetool = match LanguageToolSupervisor::start(
+    let grammar: Option<Arc<dyn GrammarSource>> = match LanguageToolSupervisor::start(
         languagetool_paths,
         LANGUAGETOOL_PREFERRED_PORT,
     )
     .await
     {
-        Ok(supervisor) => Some(supervisor),
+        Ok(supervisor) => Some(Arc::new(supervisor)),
         Err(error) => {
             log::warn!(
                 "LanguageTool could not start, degrading to spelling and AI-tell flags only: \
@@ -133,7 +133,7 @@ async fn start_checking_pipeline(
     let analyzer = Arc::new(Analyzer::start(
         Arc::clone(&capture),
         spelling,
-        languagetool,
+        grammar,
         Arc::clone(&ruleset),
         catalogue,
         register,
