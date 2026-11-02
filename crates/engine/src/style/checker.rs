@@ -118,7 +118,8 @@ pub enum CheckableMode {
     Fragment,
 }
 
-/// The form mode of a paragraph, classified from its structure (#54).
+/// The form mode of a paragraph, classified from its structure by
+/// [`crate::analyzer::form_mode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FormMode {
     Prose,
