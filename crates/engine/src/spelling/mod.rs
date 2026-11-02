@@ -2,8 +2,17 @@
 //! `en_GB` in its `-ise` form, with a Singapore word list on top. The word list is plain words
 //! merged into the same dictionary, with no affix file of its own. Provenance and licensing for
 //! the vendored dictionary pair are recorded in `src-tauri/resources/dictionaries/NOTICE.md`.
+//!
+//! Spelling skips a token shaped like a URL, a path or an identifier, whatever the form mode of
+//! the paragraph that holds it, since such a token is not prose. The token is the run of
+//! non-whitespace characters that holds the word, and it is skipped when it holds a scheme
+//! separator, a slash, an at sign, a dot between letters or an underscore, or has a capital letter
+//! directly after a lowercase one. A full stop after the token's last letter, as at the end of a
+//! sentence, is not a dot between letters. Only the token is skipped: a misspelt word beside it is
+//! still flagged.
 
 pub mod error;
+mod tokens;
 
 use std::path::Path;
 
@@ -57,9 +66,10 @@ impl SpellChecker {
         Ok(Self { dictionary })
     }
 
-    /// Checks every alphabetic word in `text` against the dictionary, returning one [`Flag`] per
-    /// word absent from both `en_GB` and the Singapore supplement, each carrying the corrections
-    /// spellbook suggests, up to `MAX_SUGGESTIONS`.
+    /// Checks every alphabetic word in `text` outside a skipped token, by the rule on this module,
+    /// against the dictionary, returning one [`Flag`] per word absent from both `en_GB` and the
+    /// Singapore supplement, each carrying the corrections spellbook suggests, up to
+    /// `MAX_SUGGESTIONS`.
     ///
     /// Each flag anchors on `text` itself, carrying the word's own offset into it, rather than on
     /// the bare misspelled word. [`crate::capture::Capture::span_rect`] and
@@ -79,11 +89,20 @@ impl SpellChecker {
     /// apostrophe included, at its offset in the text as written. The `OCONV` line gives every
     /// suggestion the curly apostrophe, whichever one the word was typed with.
     pub fn check(&self, text: &str) -> Vec<Flag> {
+        let skipped_tokens = tokens::skipped_tokens(text);
+        let in_skipped_token = |byte_start: usize| {
+            skipped_tokens
+                .iter()
+                .any(|token| token.contains(&byte_start))
+        };
         let mut flags = Vec::new();
         let mut local_start = 0;
-        for word in text.split_word_bounds() {
+        for (byte_start, word) in text.split_word_bound_indices() {
             let local_length = word.encode_utf16().count();
-            if word.chars().any(char::is_alphabetic) && !self.dictionary.check(word) {
+            if word.chars().any(char::is_alphabetic)
+                && !in_skipped_token(byte_start)
+                && !self.dictionary.check(word)
+            {
                 flags.push(self.flag_for(text, word, local_start, local_length));
             }
             local_start += local_length;
@@ -264,6 +283,64 @@ mod tests {
             assert_eq!(flags.len(), 1, "{flags:#?}");
             assert_eq!(flags[0].suggestions.first().unwrap(), "doesn\u{2019}t");
         }
+    }
+
+    /// One token of each shape the skip rule names, in the rule's order: a scheme separator, a
+    /// slash, an at sign, a dot between letters, an underscore, and a capital after a lowercase
+    /// letter.
+    const SKIPPED_TOKENS: [&str; 6] = [
+        "https://exampel.com/pth",
+        "src/analyzr",
+        "naem@exampel.com",
+        "overlay.tsx",
+        "get_current_flags",
+        "FlagOrigin",
+    ];
+
+    #[test]
+    fn each_skipped_token_holds_a_segment_the_dictionary_rejects() {
+        // Without one, finding no flag on the token would test the dictionary and not the rule.
+        let checker = checker();
+        for token in SKIPPED_TOKENS {
+            let rejected = token.split_word_bounds().any(|segment| {
+                segment.chars().any(char::is_alphabetic) && !checker.dictionary.check(segment)
+            });
+            assert!(rejected, "{token}");
+        }
+    }
+
+    #[test]
+    fn a_url_path_or_identifier_shaped_token_is_skipped_in_prose_and_in_a_fragment() {
+        // The checker has no notion of form mode, so a sentence and a list item reach it alike.
+        // `iPhone` is in `en_GB.dic`, so it shows only that the rule does not break a stored word.
+        let checker = checker();
+        for token in SKIPPED_TOKENS.into_iter().chain(["iPhone"]) {
+            for text in [
+                format!("Read {token} first, then {token}."),
+                format!("- {token}"),
+            ] {
+                let flags = checker.check(&text);
+                assert!(flags.is_empty(), "{text}: {flags:#?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_misspelt_word_beside_a_skipped_token_is_still_flagged() {
+        let checker = checker();
+        for token in SKIPPED_TOKENS {
+            let flags = checker.check(&format!("We recieve {token} daily."));
+            assert_eq!(flags.len(), 1, "{token}: {flags:#?}");
+            assert_eq!(flagged_text(&flags[0]), "recieve");
+        }
+    }
+
+    #[test]
+    fn a_misspelt_word_that_ends_a_sentence_is_flagged() {
+        // A full stop after the last letter is not a dot between letters.
+        let flags = checker().check("Tomorrow we recieve.");
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(&flags[0]), "recieve");
     }
 
     #[test]
