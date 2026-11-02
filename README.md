@@ -68,12 +68,19 @@ half-typed word is noise.
 | Stage | Work | State |
 |---|---|---|
 | Deterministic | Spelling, the telltale catalogue, and the Card's checkers. Publishes first | Spelling and telltales run today. Card checkers: planned, Phase 3 |
-| Grammar | LanguageTool on the same sentences. Publishes second, with suppression applied | Runs today |
+| Grammar | LanguageTool on the same sentences, those of prose paragraphs. Publishes second, with suppression applied | Runs today |
 | Rewrite | On request only: the local base model with the Card in its prompt, each candidate screened before it is shown | Planned, Phase 4 |
 
 Neither checking stage calls a model or the network. LanguageTool is a subprocess on the same
 machine, reached over the loopback interface. The rewrite is local as well, and it runs only when
 the owner asks for one.
+
+A recheck splits the document into paragraphs on the marks capture delivers, a carriage return
+from Word and a newline from a browser, with a carriage return followed by a newline as one mark,
+and drops a paragraph that is empty or whitespace. Each paragraph has a form mode, prose, fragment
+or code (see The rule layer), and splits into its sentences, each checked under its paragraph's
+mode: spelling and the telltale catalogue run on prose and fragments, LanguageTool on prose alone,
+and nothing on code.
 
 The two stages publish separately, each the whole document's flags. The deterministic stage
 publishes as soon as it has run, with the grammar flags already cached for sentences whose grammar
@@ -87,9 +94,11 @@ The analyzer finds a change by polling the document every 200 ms. An event-drive
 planned for Phase 2: the capture backend's text-changed event marks the document as changed, and a
 slow safety poll covers controls that never raise the event.
 
-Flags are cached per sentence by a hash of its text, in two parts: the deterministic stage's, and
-the grammar stage's, marked complete once LanguageTool has answered for the sentence. Each stage
-runs only on the sentences whose part is missing or incomplete, so an unchanged sentence never
+Flags are cached per sentence by a hash of its paragraph's form mode and its text, so one text in
+a prose paragraph and in a fragment has an entry for each. An entry has two parts: the
+deterministic stage's, and the grammar stage's, marked complete once LanguageTool has answered for
+the sentence, or complete and empty from the start for a sentence of a fragment or of code. Each
+stage runs only on the sentences whose part is missing or incomplete, so an unchanged sentence never
 reaches LanguageTool twice, and a sentence whose check failed or timed out is sent again on the
 next recheck. One source failing degrades that source and never ends checking: with LanguageTool
 down, spelling and telltale flags continue.
@@ -126,9 +135,10 @@ A checker is a Style Card clause made mechanical: the clause's id and a rule. Th
 matcher, a unit, and a band, and it declares the form modes it runs in, prose or fragment, and a
 register scope, which is every register when unset. The engine holds a checker as data with every
 part in the table, and evaluates every matcher and band but the LanguageTool rule id, which the
-grammar stage evaluates (planned, Phase 1). Each telltale pattern runs on the engine as a rule of
-its own, under its pattern id and with no clause (see Telltales). Nothing runs a checker yet.
-Planned for Phase 1: the analyzer passes that run checkers.
+grammar stage evaluates: a match of a rule that a checker names raises that checker's style flag
+(see Grammar). Each telltale pattern runs on the engine as a rule of its own, under its pattern id
+and with no clause (see Telltales). No other matcher runs until the analyzer's passes for checkers
+land (planned, Phase 1).
 
 | Part | Values |
 |---|---|
@@ -173,12 +183,42 @@ records the version in force when it was raised, whatever its origin, beside the
 the rule data compiled into the engine (see Telltales). A style flag cites its
 clause's id, its checker's rule id, which is the checker's content hash or LanguageTool's id for a
 LanguageTool rule, and the clause's text from the Card version current at load. Nothing publishes
-a ruleset until Phase 3, and nothing runs a checker until the analyzer's passes for checkers
-(planned, Phase 1).
+a ruleset until Phase 3. The grammar stage evaluates a rule-id checker and raises its style flag,
+and no other matcher runs until the analyzer's passes for checkers land (planned, Phase 1).
 
-Form mode is classified per paragraph from its structure: prose, fragment, or code (planned,
-Phase 1). Bands apply to prose, phrase bans to prose and fragments, and nothing runs on code.
-Today no form mode exists and all text is checked alike.
+Form mode is classified per paragraph from its structure, in one pass over the document's
+paragraphs in order, and decides what runs on the paragraph's sentences.
+
+| Mode | The paragraph | What runs on it |
+|---|---|---|
+| Code | Lies in a fenced block, the fence lines included; is indented by a tab or four spaces; or is symbol-dense | Nothing |
+| Fragment | Is a bulleted or numbered list item or a heading, or is a short line that ends without terminal punctuation | Spelling, the telltale catalogue, and every checker that declares fragment |
+| Prose | Is anything else, a paragraph of complete sentences among it | Spelling, LanguageTool, the telltale catalogue, and every checker that declares prose |
+
+A fence opens on a line that starts with three or more backticks or tildes, after any indentation,
+and closes on a line that holds only a run of the same character at least as long; a fence that
+never closes runs to the end of the document. Outside a fence, the first of these rules that holds
+decides:
+
+1. A line indented by a tab or four spaces is code.
+2. A list item or a heading is a fragment. A list item opens, after any indentation, with a
+   bullet, a hyphen, an asterisk or a plus sign, or with a number or a letter and a full stop or a
+   closing parenthesis, and then a space or a tab. A heading opens with a run of hashes and a
+   space. The marker declares the structure, and as a symbol it would otherwise carry a short item
+   over the density threshold.
+3. A line whose symbols, the non-whitespace characters that are neither letters nor digits, are
+   more than a quarter of its non-whitespace characters is code.
+4. A line under 40 characters that ends without a full stop, a question mark, an exclamation mark
+   or an ellipsis, or a closing quotation mark or bracket after one, is a fragment.
+5. Everything else is prose.
+
+The two thresholds were measured on this repository's sources and documentation, and the engine
+records the measurements beside them. A prose paragraph has no terminal punctuation while the owner
+types its sentence, and the length threshold keeps it prose past its first few words. Word's UI
+Automation text delivers a bulleted item with a bullet, U+2022, and a space before the item's
+text. Bands apply to prose and phrase bans to prose and fragments, by the modes each checker
+declares. A token shaped like a URL, a path or an identifier is skipped by spelling whatever its
+paragraph's mode.
 
 ### Grammar
 
@@ -208,9 +248,10 @@ first of these routes that holds:
 
 The engine marks each of the 23 categories in one table, and a test holds the table to the list
 extracted from 6.6's rule files. No ruleset names a rule until Phase 3, so today LanguageTool
-raises grammar flags alone, from its hard categories and its rules of the default level. Every
-sentence is checked as prose under the settings' default register until form mode is classified
-(planned, Phase 1) and capture supplies the surface's register (planned, Phase 2).
+raises grammar flags alone, from its hard categories and its rules of the default level. Each
+sentence is checked under its paragraph's form mode, and only a prose paragraph's sentences reach
+LanguageTool (see The rule layer). Every sentence is checked under the settings' default register
+until capture supplies the surface's register (planned, Phase 2).
 
 Two timeouts bound the requests. The warm-up check and the readiness poll, which run at startup
 and after a restart, keep a bound of 20 seconds, since the first check loads LanguageTool's rules
