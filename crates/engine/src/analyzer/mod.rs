@@ -1,13 +1,13 @@
 //! The analyzer, between capture and the overlay. It polls the document's text, waits for the
-//! typing pause, splits the text into sentences, and checks the changed ones against spelling,
-//! the telltale catalogue, and LanguageTool. Suppression by severity is applied to each sentence's
-//! flags, the result is cached per sentence, and every recheck publishes the whole document's
-//! flags on the watch channel the overlay subscribes to, each span's occurrence index counted from
-//! its sentence's position as it publishes. Checking keys to the pause because a flag on a
-//! half-typed word is noise.
+//! typing pause, and splits the text into sentences. A sentence whose text the cache holds is
+//! served from it; any other is checked against spelling, the telltale catalogue, and
+//! LanguageTool, suppression by severity is applied to its flags, and the result is cached under a
+//! hash of its text. Every recheck publishes the whole document's flags on the watch channel the
+//! overlay subscribes to, each span's occurrence index counted from its sentence's position as it
+//! publishes. Checking keys to the pause because a flag on a half-typed word is noise.
 //!
-//! `sentences` covers the split and the diff, `dedupe` suppression. Both are private:
-//! [`Analyzer`] is the only public surface.
+//! `sentences` covers the split, `dedupe` suppression. Both are private: [`Analyzer`] is the only
+//! public surface.
 
 mod dedupe;
 mod sentences;
@@ -43,7 +43,7 @@ const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 /// for the life of a long writing session.
 const CACHE_CAPACITY: usize = 1000;
 
-/// Runs the debounce, diff, check, merge, and cache pipeline against a [`Capture`] backend's
+/// Runs the debounce, check, merge, and cache pipeline against a [`Capture`] backend's
 /// live text, keeping the latest merged and deduplicated [`Flag`] list for the whole document.
 pub struct Analyzer {
     inner: Arc<Inner>,
@@ -65,7 +65,6 @@ struct Inner {
     /// subscription semantics, a simpler contract for a caller that only wants the value once.
     flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
-    previous_sentences: Mutex<Vec<String>>,
     /// Counts calls into [`check_sentence`], the work a cache hit skips. Test-only, and held per
     /// instance rather than in a global, so tests running in parallel never share a count.
     #[cfg(test)]
@@ -104,7 +103,6 @@ impl Analyzer {
                 NonZeroUsize::new(CACHE_CAPACITY)
                     .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
             )),
-            previous_sentences: Mutex::new(Vec::new()),
             #[cfg(test)]
             check_sentence_calls: std::sync::atomic::AtomicUsize::new(0),
         });
@@ -176,41 +174,22 @@ async fn debounce_loop(inner: Arc<Inner>) {
 }
 
 async fn recheck(inner: &Inner, text: &str) {
-    let current_sentences = sentences::split(text);
-    let current_texts: Vec<String> = current_sentences
-        .iter()
-        .map(|sentence| sentence.text.clone())
-        .collect();
-    let changed = {
-        let mut previous = inner
-            .previous_sentences
-            .lock()
-            .expect("a poisoned lock here means another thread already panicked");
-        let changed = sentences::changed_indices(&previous, &current_texts);
-        *previous = current_texts;
-        changed
-    };
-
     let mut document_flags = Vec::new();
-    for (index, sentence) in current_sentences.iter().enumerate() {
-        let key = hash_text(&sentence.text);
-        let cached = if changed.contains(&index) {
-            None
-        } else {
-            inner
-                .cache
-                .lock()
-                .expect("a poisoned lock here means another thread already panicked")
-                .get(&key)
-                .cloned()
-        };
+    for (index, sentence) in sentences::split(text).into_iter().enumerate() {
+        let key = hash_text(sentence.text);
+        let cached = inner
+            .cache
+            .lock()
+            .expect("a poisoned lock here means another thread already panicked")
+            .get(&key)
+            .cloned();
         let sentence_flags = match cached {
             Some(flags) => flags,
-            // Either the diff marked this sentence changed, or it did not but the cache had no
-            // entry for it (first run, or an entry aged out under the LRU's capacity): either
-            // way, a fresh check is the correct fallback, not silently showing no flags.
+            // A sentence new or edited since the cache last held it, or an unchanged one whose
+            // entry aged out under the LRU's capacity: either way, a fresh check is the correct
+            // fallback, not silently showing no flags.
             None => {
-                let flags = check_sentence(inner, &sentence.text).await;
+                let flags = check_sentence(inner, sentence.text).await;
                 inner
                     .cache
                     .lock()
@@ -480,6 +459,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_sentence_whose_text_returns_to_a_cached_value_is_served_from_the_cache() {
+        let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 2);
+
+        fake.set_text("This has a mispelling. This one has an eror.");
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 3);
+
+        // The second sentence goes back to the text its first check cached.
+        fake.set_text("This has a mispelling. This one is fine.");
+        step(6).await;
+        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        let flags = analyzer.current_flags();
+        let flagged: Vec<String> = flags.iter().map(flagged_text).collect();
+        assert_eq!(flagged, ["mispelling"], "{flags:#?}");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn the_same_misspelling_in_two_sentences_gets_two_distinct_ids() {
         // Each sentence is checked on its own, so both flags arrive numbered from that
         // sentence's own start. Without a document-level scope they are both `spelling:3`,
@@ -569,12 +568,12 @@ mod tests {
         assert_eq!(eror_spans(&analyzer), [eror_here(0)]);
         assert_eq!(analyzer.check_sentence_call_count(), 2);
 
-        // A copy inserted at the start moves the original to third place, where the diff marks it
-        // unchanged and the cache serves it.
+        // A copy inserted at the start moves the original to third place, and the cache serves
+        // both copies.
         fake.set_text("An eror here. Fine start. An eror here.");
         step(6).await;
         assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
-        assert_eq!(analyzer.check_sentence_call_count(), 3);
+        assert_eq!(analyzer.check_sentence_call_count(), 2);
         let cached = analyzer
             .inner
             .cache
