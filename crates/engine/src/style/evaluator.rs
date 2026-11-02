@@ -14,23 +14,26 @@ use thiserror::Error;
 
 use super::band;
 use super::checker::{Band, Checker, FormMode, Matcher, Rule, Unit};
-use super::phrase::{PhraseError, PhraseMatcher};
+use super::phrase::{CurlyMarks, PhraseError, PhraseMatcher};
 use super::variants::{UnknownConvention, VariantMatcher};
 use crate::flag::{ClauseId, Span};
 use crate::words::words;
 
 /// What a rule belongs to, which names it wherever the rule itself is not quoted, as in a compile
-/// error. #96 adds a telltale pattern's id.
+/// error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleOwner {
     /// The checker that serves this Style Card clause.
     Clause(ClauseId),
+    /// The telltale catalogue's pattern of this id.
+    Pattern(String),
 }
 
 impl fmt::Display for RuleOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Clause(clause_id) => write!(formatter, "the checker for clause {}", clause_id.0),
+            Self::Pattern(pattern_id) => write!(formatter, "the telltale pattern {pattern_id}"),
         }
     }
 }
@@ -191,29 +194,37 @@ enum CompiledMatcher {
 
 impl Evaluator {
     /// Checks the rule's band, compiles its regex, or one regex per phrase, and resolves its
-    /// preferred spelling convention, here and once, so an evaluation compiles nothing. A failure
-    /// names `owner`.
+    /// preferred spelling convention, here and once, so an evaluation compiles nothing. A phrase
+    /// list reads each curly apostrophe and quotation mark as its straight form. A failure names
+    /// `owner`.
     pub fn compile(owner: RuleOwner, rule: Rule) -> Result<Self, CompileError> {
+        Self::compile_reading(owner, rule, CurlyMarks::AsStraight)
+    }
+
+    /// [`compile`](Self::compile), with a phrase list reading curly marks as `curly_marks` says.
+    pub(super) fn compile_reading(
+        owner: RuleOwner,
+        rule: Rule,
+        curly_marks: CurlyMarks,
+    ) -> Result<Self, CompileError> {
         if let Some(fault) = band_fault(&rule.band) {
             return Err(CompileError::MalformedBand { owner, fault });
         }
         let matcher = match &rule.matcher {
-            Matcher::PhraseList { entries } => {
-                CompiledMatcher::Phrases(PhraseMatcher::compile(entries).map_err(|error| {
-                    match error {
-                        PhraseError::Regex(source) => CompileError::Phrase {
+            Matcher::PhraseList { entries } => CompiledMatcher::Phrases(
+                PhraseMatcher::compile(entries, curly_marks).map_err(|error| match error {
+                    PhraseError::Regex(source) => CompileError::Phrase {
+                        owner: owner.clone(),
+                        source,
+                    },
+                    PhraseError::PrefixNotOneWord { entry_index } => {
+                        CompileError::PrefixNotOneWord {
                             owner: owner.clone(),
-                            source,
-                        },
-                        PhraseError::PrefixNotOneWord { entry_index } => {
-                            CompileError::PrefixNotOneWord {
-                                owner: owner.clone(),
-                                entry_index,
-                            }
+                            entry_index,
                         }
                     }
-                })?)
-            }
+                })?,
+            ),
             Matcher::Regex { source } => {
                 CompiledMatcher::Regex(Regex::new(source).map_err(|error| CompileError::Regex {
                     owner: owner.clone(),
@@ -571,6 +582,37 @@ pub(super) mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("clause 4"), "{error}");
+    }
+
+    #[test]
+    fn a_rule_of_a_telltale_pattern_that_does_not_compile_fails_naming_the_pattern() {
+        let owner = RuleOwner::Pattern("negative-parallelism".to_owned());
+        let error =
+            Evaluator::compile(owner.clone(), rule(regex("(an unclosed group"))).unwrap_err();
+        assert_eq!(error.owner(), &owner);
+        assert!(
+            error
+                .to_string()
+                .starts_with("the regex of the telltale pattern negative-parallelism does not"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_phrase_list_compiled_to_read_curly_marks_as_written_matches_them_alone() {
+        let text = ["\u{201C}Yes,\u{201D} she said, and \"no\" twice."];
+        let curly = || rule(phrases(&["\u{201C}", "\u{201D}"]));
+        let owner = RuleOwner::Pattern("curly-quotes".to_owned());
+        let as_written =
+            Evaluator::compile_reading(owner.clone(), curly(), CurlyMarks::AsWritten).unwrap();
+        let flagged: Vec<String> = violations(&as_written, &text)
+            .iter()
+            .map(|violation| flagged_text(&violation.span))
+            .collect();
+        assert_eq!(flagged, ["\u{201C}", "\u{201D}"]);
+        // Read as straight ones, the text holds no curly mark for the entries to match.
+        let as_straight = Evaluator::compile(owner, curly()).unwrap();
+        assert!(violations(&as_straight, &text).is_empty());
     }
 
     #[test]

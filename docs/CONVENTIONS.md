@@ -31,9 +31,15 @@ The Tauri binary does not double as a command-line tool. `wa` runs the engine wi
 for the app's scheduler, the Python project, and the owner by hand. Its subcommands cover the
 screen, generation, embedding, synthesis, export, ingest, and backup.
 
-Built today: in the engine, capture, spelling, LanguageTool, the telltale matcher, the
-analyzer, the flag types, the settings file, and the store; in the app, the overlay and one
-command. The store has its file, the thread that owns its connection, the migration runner, the
+Built today: in the engine, capture, spelling, LanguageTool, the rule layer, the analyzer, the
+flag types, the settings file, and the store; in the app, the overlay and one command. The rule
+layer has the checker model: a checker is a Style Card clause's id and a rule, and a rule is a
+matcher (a phrase list, a regex, a LanguageTool rule id, a spelling variant, or a word count), a
+unit (a span, a sentence, a paragraph, or the document), and a band (forbidden, a count with a
+minimum and a maximum, or a rate per hundred words), declared for the form modes and the
+registers it runs in. The telltale catalogue's patterns run on it as rules, each under its pattern
+id with no clause; LanguageTool's matches route through the loaded ruleset's checkers, and the
+analyzer passes that run the other checkers arrive with #100. The store has its file, the thread that owns its connection, the migration runner, the
 insert-only guard, and the tables `schema_version`, `passages`, those of the Card and the ruleset,
 `candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes
 a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an
@@ -47,7 +53,8 @@ is the store's one creator.
 
 The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file
 exists once in the repository. The engine reaches them by relative path: its tests read the
-dictionary pair, and the telltale catalogue is compiled in with `include_str!`.
+dictionary pair, and the telltale catalogue and the spelling variant table are compiled in with
+`include_str!`.
 
 Two rules follow from the split:
 
@@ -103,8 +110,8 @@ credentials.
   for integration tests against the public API only.
 - Frontend: Vitest. No test file exists yet; the dependency and its CI step arrive with the
   first one.
-- The deterministic code gets thorough unit tests: spelling, the telltale matcher, span
-  resolution through an anchor, and the rule layer and the screen as they land. It carries
+- The deterministic code gets thorough unit tests: spelling, the rule layer and the telltale
+  catalogue on it, span resolution through an anchor, and the screen as it lands. It carries
   the correctness guarantees and is cheap to test.
 - Tests never reach a live service. The Anthropic API, the training service, the LanguageTool
   subprocess, and llama-server are mocked.

@@ -1,8 +1,8 @@
 //! The shared unit every checking source produces and the analyzer, the Tauri command layer, and
 //! the overlay all consume. Three unrelated modules produce a [`Flag`] today: spelling,
-//! LanguageTool, and the AI-telltale matcher in `style`. The rule layer's checkers are the fourth,
-//! and arrive with #95 and #100. Owning the type inside any one of them would make the others
-//! reach sideways across the crate for it, so it lives here instead.
+//! LanguageTool, and the rule layer in `style`, through the telltale catalogue and the ruleset's
+//! checkers. Owning the type inside any one of them would make the others reach sideways across
+//! the crate for it, so it lives here instead.
 //!
 //! Every type a [`Flag`] holds derives `Serialize` (camelCase on the wire, per this repo's
 //! TypeScript naming convention) so the app's positioned flag, which carries one, can cross the
@@ -43,24 +43,38 @@ pub struct Span {
 ///
 /// A style flag's [`ClauseCitation`] is held in the `Style` variant rather than in an optional
 /// field on [`Flag`], so a style flag cannot be built without a citation and no other origin can
-/// carry one, and code that matches a style flag has its citation with no `Option` to unwrap. On
-/// the wire the origin stays a bare string, and the citation sits beside it on the flag as
-/// `citation`, present on a style flag only.
+/// carry one, and code that matches a style flag has its citation with no `Option` to unwrap. A
+/// telltale's pattern ids are held in the `AiTell` variant for the same reason. On the wire the
+/// origin stays a bare string, and the variant's field sits beside it on the flag: `citation` on a
+/// style flag only, and `patternIds` on a telltale only.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "origin", content = "citation")]
+#[serde(
+    tag = "origin",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FlagOrigin {
     Spelling,
     Grammar,
     /// A match from a checker of the loaded ruleset, citing the Style Card clause it serves.
-    Style(ClauseCitation),
-    AiTell,
+    Style {
+        citation: ClauseCitation,
+    },
+    /// A match of the telltale catalogue.
+    AiTell {
+        /// The id of each catalogue pattern the flag stands for: its own, or, once suppression has
+        /// collapsed a group of overlapping telltales into it, every pattern of the group, each
+        /// once, in the order their matches start. Suppression reads them here, and the settings'
+        /// toggles key on the same ids.
+        pattern_ids: Vec<String>,
+    },
 }
 
 impl FlagOrigin {
     pub fn severity(&self) -> Severity {
         match self {
             Self::Spelling | Self::Grammar => Severity::Hard,
-            Self::Style(_) | Self::AiTell => Severity::Soft,
+            Self::Style { .. } | Self::AiTell { .. } => Severity::Soft,
         }
     }
 }
@@ -102,10 +116,10 @@ pub struct RuleId(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RulesetVersion(pub i64);
 
-/// The content hash of the telltale catalogue's compiled bytes, as a lowercase hex digest. The
-/// algorithm is chosen where the hash is taken, when the catalogue loads on the rule engine (#96).
-/// Lowercase so that two hashes of the same bytes compare equal as strings, in the store and in
-/// the bench.
+/// The content hash of the rule data compiled into the engine, as a lowercase hex digest, taken by
+/// the recipe on [`Flag::catalogue_hash`]. Named for the telltale catalogue, the first of the two
+/// data files it covers. Lowercase so that two hashes of the same bytes compare equal as strings,
+/// in the store and in the bench.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct CatalogueHash(String);
 
@@ -153,9 +167,13 @@ pub struct Flag {
     /// The ruleset version in force when the flag was raised, whatever its origin. `None` until a
     /// ruleset is loaded (#95).
     pub ruleset_version: Option<RulesetVersion>,
-    /// The telltale catalogue's content hash when the flag was raised, whatever its origin, so a
-    /// catalogue change can be told apart from a ruleset change. `None` until the catalogue loads
-    /// on the rule engine (#96).
+    /// The content hash of the rule data compiled into the engine when the flag was raised,
+    /// whatever its origin: the SHA-256 of the telltale catalogue's bytes,
+    /// `src-tauri/resources/ai-telltales/patterns.json`, followed by the variant-pair table's,
+    /// `src-tauri/resources/spelling-variants/pairs.json`, as lowercase hex. An edit to either
+    /// data file changes it and an edit to the ruleset does not, so the two are told apart. The
+    /// analyzer sets it on every flag it publishes; a checking source builds its flags with
+    /// `None`.
     pub catalogue_hash: Option<CatalogueHash>,
 }
 
@@ -191,12 +209,27 @@ mod tests {
         }
     }
 
+    fn telltale() -> FlagOrigin {
+        FlagOrigin::AiTell {
+            pattern_ids: vec![
+                "significance-legacy-emphasis".to_owned(),
+                "ai-vocabulary-words".to_owned(),
+            ],
+        }
+    }
+
     #[test]
     fn spelling_and_grammar_are_hard_and_style_and_ai_tell_are_soft() {
         assert_eq!(FlagOrigin::Spelling.severity(), Severity::Hard);
         assert_eq!(FlagOrigin::Grammar.severity(), Severity::Hard);
-        assert_eq!(FlagOrigin::Style(citation()).severity(), Severity::Soft);
-        assert_eq!(FlagOrigin::AiTell.severity(), Severity::Soft);
+        assert_eq!(
+            FlagOrigin::Style {
+                citation: citation()
+            }
+            .severity(),
+            Severity::Soft
+        );
+        assert_eq!(telltale().severity(), Severity::Soft);
     }
 
     #[test]
@@ -205,8 +238,10 @@ mod tests {
         let origins = [
             FlagOrigin::Spelling,
             FlagOrigin::Grammar,
-            FlagOrigin::Style(citation()),
-            FlagOrigin::AiTell,
+            FlagOrigin::Style {
+                citation: citation(),
+            },
+            telltale(),
         ];
         let names: Vec<serde_json::Value> = origins
             .into_iter()
@@ -240,7 +275,9 @@ mod tests {
 
     #[test]
     fn a_style_flag_carries_its_citation_beside_the_origin() {
-        let mut style = flag(FlagOrigin::Style(citation()));
+        let mut style = flag(FlagOrigin::Style {
+            citation: citation(),
+        });
         style.ruleset_version = Some(RulesetVersion(3));
         style.catalogue_hash = CatalogueHash::from_hex("9f86d081");
         let wire = serde_json::to_value(style).unwrap();
@@ -253,8 +290,35 @@ mod tests {
                 "clauseText": "Hedge at most once a paragraph.",
             })
         );
+        assert!(wire.get("patternIds").is_none(), "{wire}");
         assert_eq!(wire["rulesetVersion"], 3);
         assert_eq!(wire["catalogueHash"], "9f86d081");
+    }
+
+    #[test]
+    fn a_telltale_carries_its_pattern_ids_beside_the_origin() {
+        let mut tell = flag(telltale());
+        tell.catalogue_hash = CatalogueHash::from_hex("9f86d081");
+        let wire = serde_json::to_value(tell).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "id": "0:test:9",
+                "origin": "aiTell",
+                "patternIds": ["significance-legacy-emphasis", "ai-vocabulary-words"],
+                "span": {
+                    "anchor": "The team boasts a record.",
+                    "localStart": 9,
+                    "localLength": 8,
+                    "occurrence": 1,
+                },
+                "message": "test flag",
+                "suggestions": ["has a"],
+                "sourceDetail": "test",
+                "rulesetVersion": null,
+                "catalogueHash": "9f86d081",
+            })
+        );
     }
 
     #[test]

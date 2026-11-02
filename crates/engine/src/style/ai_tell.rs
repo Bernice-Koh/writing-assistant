@@ -1,158 +1,249 @@
-//! Matches text against the hand-encoded AI-telltale catalog vendored at
-//! `src-tauri/resources/ai-telltales/patterns.json`. Provenance, licensing, and the reasoning
-//! behind every narrowed or dropped pattern are recorded in
-//! `src-tauri/resources/ai-telltales/NOTICE.md`, not repeated here.
+//! The AI-telltale catalogue, hand-encoded at `src-tauri/resources/ai-telltales/patterns.json`,
+//! run on the rule engine. Provenance, licensing, the matching notes, and the reasoning behind
+//! every narrowed or dropped pattern are recorded in `src-tauri/resources/ai-telltales/NOTICE.md`,
+//! not repeated here.
+//!
+//! A pattern is a [`Rule`] beside its id, description, source citation and raw flag, written in
+//! the file in the rule's own serialised form. It serves no Style Card clause, so it is compiled
+//! under its pattern id, and its flags keep their own origin, which carries the id. The app
+//! compiles the patterns the settings switch on once, at startup, into one [`Catalogue`].
+//!
+//! The catalogue's bytes and the variant-pair table's are the rule data compiled into the engine,
+//! and one content hash over both, taken once, is recorded on every flag beside the ruleset
+//! version, so an edit to either file is told from a ruleset change.
 
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde::Deserialize;
 
-use crate::flag::{Flag, FlagOrigin, Span};
+use super::checker::{FormMode, Rule};
+use super::evaluator::{Evaluator, RuleOwner, Violation};
+use super::phrase::CurlyMarks;
+use super::variants;
+use crate::flag::{CatalogueHash, Flag, FlagOrigin};
+use crate::hash::sha256_hex;
+use crate::store::Config;
 
 // Compiled in rather than read from the resource directory at run time, so the app and `wa`
 // always match against the same catalogue, and one fewer file can be missing at startup.
-const CATALOG_JSON: &str =
+const CATALOGUE_JSON: &str =
     include_str!("../../../../src-tauri/resources/ai-telltales/patterns.json");
 
+/// One pattern as the catalogue file writes it.
 #[derive(Debug, Deserialize)]
-struct TelltalePattern {
+struct Pattern {
     id: String,
     description: String,
-    #[serde(default)]
-    match_phrases: Vec<String>,
-    match_regex: Option<String>,
+    #[serde(flatten)]
+    rule: Rule,
+    /// Whether the pattern's phrases match the text as written, curly marks and all, rather than
+    /// reading each curly mark as its straight form. Held beside the rule and not in it: a
+    /// checker's content hash is taken over its rule's serialised bytes, so a field of the rule
+    /// would change the rule id of every stored checker.
+    raw: bool,
     source: String,
 }
 
-struct CompiledPattern {
-    pattern: TelltalePattern,
-    /// The pattern's `match_regex` if it has one, then one regex per entry of `match_phrases`.
-    matchers: Vec<Regex>,
-}
-
-fn catalog() -> &'static Vec<CompiledPattern> {
-    static CATALOG: OnceLock<Vec<CompiledPattern>> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        let patterns: Vec<TelltalePattern> = serde_json::from_str(CATALOG_JSON).expect(
-            "src-tauri/resources/ai-telltales/patterns.json is committed and checked in CI",
-        );
-        patterns
-            .into_iter()
-            .map(|pattern| {
-                let phrase_sources = pattern
-                    .match_phrases
-                    .iter()
-                    .map(|phrase| phrase_regex_source(phrase));
-                let matchers = pattern
-                    .match_regex
-                    .iter()
-                    .cloned()
-                    .chain(phrase_sources)
-                    .map(|source| {
-                        Regex::new(&source).unwrap_or_else(|error| {
-                            panic!("invalid regex in ai-tell pattern {:?}: {error}", pattern.id)
-                        })
-                    })
-                    .collect();
-                CompiledPattern { pattern, matchers }
-            })
-            .collect()
+/// The catalogue file, parsed once.
+fn patterns() -> &'static [Pattern] {
+    static PATTERNS: OnceLock<Vec<Pattern>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        serde_json::from_str(CATALOGUE_JSON).expect(
+            "src-tauri/resources/ai-telltales/patterns.json is committed and checked by its tests",
+        )
     })
 }
 
-/// The regex source for one catalogued phrase. The match is case-insensitive and runs against
-/// the text as written, so every offset it yields indexes that text. Lowercasing a copy and
-/// searching that instead yields offsets into the copy, which are wrong for the original wherever
-/// lowercasing changes a character's byte length.
-///
-/// An edge of the phrase that is a letter or digit must fall on a word boundary: without one,
-/// "here is a" matches inside "there is a" and "boasts a" inside "boasts about". An edge that is
-/// punctuation or a space carries no such requirement, so a dash is found between two words.
-fn phrase_regex_source(phrase: &str) -> String {
-    let boundary = |edge: Option<char>| {
-        if edge.is_some_and(char::is_alphanumeric) {
-            r"\b"
-        } else {
-            ""
-        }
-    };
-    format!(
-        "(?i){}{}{}",
-        boundary(phrase.chars().next()),
-        regex::escape(phrase),
-        boundary(phrase.chars().next_back()),
-    )
-}
-
-/// The id of every pattern in the compiled catalogue, in catalogue order. The settings file keys
-/// its telltale toggles by these ids.
+/// The id of every pattern in the catalogue, in catalogue order, whether switched on or off. The
+/// settings file keys its telltale toggles by these ids.
 pub fn pattern_ids() -> impl Iterator<Item = &'static str> {
-    catalog()
-        .iter()
-        .map(|compiled| compiled.pattern.id.as_str())
+    patterns().iter().map(|pattern| pattern.id.as_str())
 }
 
-/// Scans `text` for catalogued AI-tell patterns, returning one [`Flag`] per match, so a phrase
-/// that occurs twice is flagged twice.
-///
-/// Every flag anchors on `text` itself and carries the match's own offset into it, the same
-/// anchoring [`crate::spelling`] and [`crate::languagetool`] use. An anchor resolves to its first
-/// occurrence in the document, so a flag anchored on its bare match, a single emoji or a dash,
-/// would address the first identical match in the document instead of its own. The analyzer
-/// hands this function one sentence at a time, so that sentence is the anchor.
-pub fn scan(text: &str) -> Vec<Flag> {
-    let mut flags = Vec::new();
-    for compiled in catalog() {
-        for (matcher_index, matcher) in compiled.matchers.iter().enumerate() {
-            for found in matcher.find_iter(text) {
-                // The offset closes the id: it is the one thing that differs between two matches
-                // of the same matcher in one `text`.
-                let local_start = text[..found.start()].encode_utf16().count();
-                flags.push(Flag {
-                    id: format!(
-                        "ai-tell:{}:{matcher_index}:{local_start}",
-                        compiled.pattern.id
-                    ),
-                    origin: FlagOrigin::AiTell,
-                    span: Span {
-                        anchor: text.to_string(),
-                        local_start,
-                        local_length: found.as_str().encode_utf16().count(),
-                        occurrence: 0,
-                    },
-                    message: compiled.pattern.description.clone(),
-                    suggestions: Vec::new(),
-                    source_detail: compiled.pattern.source.clone(),
-                    ruleset_version: None,
-                    catalogue_hash: None,
-                });
-            }
+/// The SHA-256 of the catalogue's bytes followed by the variant-pair table's, as compiled in,
+/// computed once.
+fn rule_data_hash() -> &'static CatalogueHash {
+    static HASH: OnceLock<CatalogueHash> = OnceLock::new();
+    HASH.get_or_init(|| {
+        let bytes = [CATALOGUE_JSON.as_bytes(), variants::PAIRS_JSON.as_bytes()].concat();
+        CatalogueHash::from_hex(&sha256_hex(&bytes))
+            .expect("sha256_hex writes 64 lowercase hex digits")
+    })
+}
+
+/// The catalogue's patterns that the settings switch on, each compiled once.
+#[derive(Debug)]
+pub struct Catalogue {
+    /// In catalogue order.
+    patterns: Vec<CompiledPattern>,
+}
+
+#[derive(Debug)]
+struct CompiledPattern {
+    pattern: &'static Pattern,
+    evaluator: Evaluator,
+}
+
+impl Catalogue {
+    /// Compiles each pattern `settings` switches on: a pattern's toggle, or its default where the
+    /// toggles omit it. A pattern switched off is not compiled and raises no flag.
+    pub fn load(settings: &Config) -> Self {
+        Self::compiled(|pattern_id| settings.is_telltale_enabled(pattern_id))
+    }
+
+    fn compiled(is_enabled: impl Fn(&str) -> bool) -> Self {
+        let patterns = patterns()
+            .iter()
+            .filter(|pattern| is_enabled(&pattern.id))
+            .map(|pattern| CompiledPattern {
+                pattern,
+                evaluator: compile(pattern),
+            })
+            .collect();
+        Self { patterns }
+    }
+
+    /// The content hash of the rule data compiled into the engine, which every flag the analyzer
+    /// publishes records as its [`Flag::catalogue_hash`]. The toggles do not change it: it is
+    /// taken over the files' bytes, whichever patterns are switched on.
+    pub fn hash(&self) -> &'static CatalogueHash {
+        rule_data_hash()
+    }
+
+    /// The id of each pattern switched on, in catalogue order.
+    pub fn enabled_pattern_ids(&self) -> impl Iterator<Item = &str> {
+        self.patterns
+            .iter()
+            .map(|compiled| compiled.pattern.id.as_str())
+    }
+
+    /// One flag for each match in `sentence` of each pattern switched on, so a phrase that occurs
+    /// twice is flagged twice, with `mode` the form mode of the sentence's paragraph and `register`
+    /// its register. In catalogue order, and within a pattern in order of start.
+    ///
+    /// Every flag anchors on `sentence` itself and carries the match's own offset into it, the
+    /// same anchoring [`crate::spelling`] and [`crate::languagetool`] use. An anchor resolves to
+    /// its first occurrence in the document, so a flag anchored on its bare match, a single emoji
+    /// or a dash, would address the first identical match in the document instead of its own.
+    pub fn flags(&self, sentence: &str, mode: FormMode, register: &str) -> Vec<Flag> {
+        self.patterns
+            .iter()
+            .flat_map(|compiled| {
+                compiled
+                    .evaluator
+                    .evaluate(&[sentence], mode, register)
+                    .into_iter()
+                    .map(|violation| compiled.flag(violation))
+            })
+            .collect()
+    }
+}
+
+impl CompiledPattern {
+    /// The telltale for `violation` of this pattern. It cites no clause and carries no
+    /// replacement: the catalogue holds phrasings to cut, not substitutions. The analyzer stamps
+    /// the ruleset version and the catalogue hash as it publishes.
+    fn flag(&self, violation: Violation) -> Flag {
+        let pattern = self.pattern;
+        Flag {
+            // The pattern and the span tell two of the pattern's flags on one sentence apart, and
+            // neither is draft text, which an id never carries.
+            id: format!(
+                "ai-tell:{}:{}:{}",
+                pattern.id, violation.span.local_start, violation.span.local_length
+            ),
+            origin: FlagOrigin::AiTell {
+                pattern_ids: vec![pattern.id.clone()],
+            },
+            span: violation.span,
+            message: pattern.description.clone(),
+            suggestions: Vec::new(),
+            source_detail: pattern.source.clone(),
+            ruleset_version: None,
+            catalogue_hash: None,
         }
     }
-    flags
+}
+
+fn compile(pattern: &Pattern) -> Evaluator {
+    let curly_marks = if pattern.raw {
+        CurlyMarks::AsWritten
+    } else {
+        CurlyMarks::AsStraight
+    };
+    let owner = RuleOwner::Pattern(pattern.id.clone());
+    Evaluator::compile_reading(owner, pattern.rule.clone(), curly_marks)
+        .unwrap_or_else(|error| panic!("{error}, though the catalogue's tests compile it"))
 }
 
 #[cfg(test)]
+impl Catalogue {
+    /// Every pattern of the catalogue compiled, whatever its default.
+    pub(crate) fn every_pattern() -> Self {
+        Self::compiled(|_| true)
+    }
+}
+
+#[cfg(test)]
+mod stems;
+
+#[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
     use super::*;
+    use crate::style::checker::{Band, CheckableMode, Matcher, PhraseEntry, Unit};
+
+    pub(super) fn scan(text: &str) -> Vec<Flag> {
+        Catalogue::every_pattern().flags(text, FormMode::Prose, "default")
+    }
 
     /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
     /// assert on what was flagged without depending on how the span happens to be anchored.
-    fn flagged_text(flag: &Flag) -> String {
+    pub(super) fn flagged_text(flag: &Flag) -> String {
         let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
         let end = flag.span.local_start + flag.span.local_length;
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
     }
 
-    fn flags_of<'a>(flags: &'a [Flag], pattern_id: &str) -> Vec<&'a Flag> {
-        let prefix = format!("ai-tell:{pattern_id}:");
+    fn pattern_ids_of(flag: &Flag) -> &[String] {
+        match &flag.origin {
+            FlagOrigin::AiTell { pattern_ids } => pattern_ids,
+            other => panic!("not a telltale: {other:?}"),
+        }
+    }
+
+    pub(super) fn flags_of<'a>(flags: &'a [Flag], pattern_id: &str) -> Vec<&'a Flag> {
         flags
             .iter()
-            .filter(|flag| flag.id.starts_with(&prefix))
+            .filter(|flag| pattern_ids_of(flag) == [pattern_id])
             .collect()
+    }
+
+    /// The settings with `toggles` as the telltale toggles, every pattern they omit taking its
+    /// default.
+    fn toggled(toggles: &[(&str, bool)]) -> Config {
+        Config {
+            telltale_toggles: toggles
+                .iter()
+                .map(|(id, on)| ((*id).to_owned(), *on))
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    pub(super) fn pattern(id: &str) -> &'static Pattern {
+        patterns()
+            .iter()
+            .find(|pattern| pattern.id == id)
+            .unwrap_or_else(|| panic!("no pattern {id:?}"))
+    }
+
+    pub(super) fn phrase_entries(pattern: &Pattern) -> &[PhraseEntry] {
+        match &pattern.rule.matcher {
+            Matcher::PhraseList { entries } => entries,
+            _ => &[],
+        }
     }
 
     #[test]
@@ -173,19 +264,40 @@ mod tests {
     }
 
     #[test]
-    fn flags_a_catalogued_phrase() {
+    fn a_flag_names_its_pattern_in_its_origin_cites_its_source_and_no_clause() {
         let flags = scan("This project's success is a testament to the team's hard work.");
-        assert!(
-            flags
-                .iter()
-                .any(|flag| flag.source_detail.contains("section 1")),
-            "expected the significance-legacy-emphasis pattern to fire: {flags:#?}"
+        let significance = flags_of(&flags, "significance-legacy-emphasis");
+        assert_eq!(significance.len(), 1, "{flags:#?}");
+        let flag = significance[0];
+        assert_eq!(
+            flag.origin,
+            FlagOrigin::AiTell {
+                pattern_ids: vec!["significance-legacy-emphasis".to_owned()]
+            }
         );
-        let flag = flags
-            .iter()
-            .find(|flag| flag.id.starts_with("ai-tell:significance-legacy-emphasis"))
-            .unwrap();
-        assert_eq!(flag.origin, FlagOrigin::AiTell);
+        assert_eq!(
+            flag.source_detail,
+            "humanizer SKILL.md section 1, Wikipedia:Signs of AI writing"
+        );
+        assert_eq!(
+            flag.message,
+            pattern("significance-legacy-emphasis").description
+        );
+        assert!(flag.suggestions.is_empty());
+        assert_eq!(flag.ruleset_version, None);
+        assert_eq!(flagged_text(flag), "is a testament to");
+        // A telltale's origin is serialised without a citation.
+        let wire = serde_json::to_value(flag).unwrap();
+        assert_eq!(wire["origin"], "aiTell");
+        assert!(wire.get("citation").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn a_flag_id_names_the_pattern_and_the_span_and_no_draft_text() {
+        let sentence = "The town boasts a harbour.";
+        let flags = scan(sentence);
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flags[0].id, "ai-tell:copula-avoidance:9:8");
     }
 
     #[test]
@@ -197,9 +309,7 @@ mod tests {
     #[test]
     fn flags_an_em_dash() {
         let flags = scan("The policy—announced without warning—affects everyone.");
-        assert!(flags
-            .iter()
-            .any(|flag| flag.id.starts_with("ai-tell:em-en-dashes")));
+        assert!(!flags_of(&flags, "em-en-dashes").is_empty(), "{flags:#?}");
     }
 
     #[test]
@@ -234,9 +344,7 @@ mod tests {
     #[test]
     fn flags_an_emoji() {
         let flags = scan("Launch Phase 🚀 begins in Q3.");
-        assert!(flags
-            .iter()
-            .any(|flag| flag.id.starts_with("ai-tell:emojis")));
+        assert!(!flags_of(&flags, "emojis").is_empty(), "{flags:#?}");
     }
 
     #[test]
@@ -263,29 +371,45 @@ mod tests {
     fn flags_an_inline_header_list_item_across_the_whole_text() {
         let text = "Update notes:\n- **Performance:** Faster load times.\n- **Security:** Encrypted end to end.";
         let flags = scan(text);
-        let matches: Vec<_> = flags
-            .iter()
-            .filter(|flag| flag.id.starts_with("ai-tell:inline-header-lists"))
-            .collect();
         assert_eq!(
-            matches.len(),
+            flags_of(&flags, "inline-header-lists").len(),
             2,
             "expected both bulleted items to match: {flags:#?}"
         );
     }
 
     #[test]
+    fn negative_parallelism_accepts_a_straight_a_curly_or_no_apostrophe() {
+        for sentence in [
+            "It's not just a tool, it's a partner.",
+            "It\u{2019}s not just a tool, it\u{2019}s a partner.",
+            "It\u{2019}s not merely a tool, it's a partner.",
+            "Its not only a tool, its a partner.",
+        ] {
+            let flags = scan(sentence);
+            let parallels = flags_of(&flags, "negative-parallelism");
+            assert_eq!(parallels.len(), 1, "{sentence}: {flags:#?}");
+            assert_eq!(
+                flagged_text(parallels[0]),
+                sentence.trim_end_matches(" a partner."),
+                "{sentence}"
+            );
+        }
+        assert!(scan("It\u{2019}s not a tool.").is_empty());
+    }
+
+    #[test]
     fn flags_a_superficial_ing_ending_only_after_a_comma() {
         let flagged = scan("The design uses blue and gold, symbolizing the coastline.");
-        assert!(flagged
-            .iter()
-            .any(|flag| flag.id.starts_with("ai-tell:superficial-ing-endings")));
+        assert_eq!(
+            flags_of(&flagged, "superficial-ing-endings").len(),
+            1,
+            "{flagged:#?}"
+        );
 
         let not_flagged = scan("The team is symbolizing nothing in particular today.");
         assert!(
-            !not_flagged
-                .iter()
-                .any(|flag| flag.id.starts_with("ai-tell:superficial-ing-endings")),
+            flags_of(&not_flagged, "superficial-ing-endings").is_empty(),
             "a bare gerund with no preceding comma should not match: {not_flagged:#?}"
         );
     }
@@ -311,16 +435,58 @@ mod tests {
     }
 
     #[test]
+    fn a_phrase_with_a_straight_apostrophe_matches_the_curly_one_word_writes() {
+        for sentence in [
+            "You\u{2019}re absolutely right about the budget.",
+            "You're absolutely right about the budget.",
+        ] {
+            let flags = scan(sentence);
+            let sycophantic = flags_of(&flags, "sycophantic-tone");
+            assert_eq!(sycophantic.len(), 1, "{flags:#?}");
+            assert_eq!(
+                flagged_text(sycophantic[0]),
+                sentence.trim_end_matches(" about the budget.")
+            );
+        }
+    }
+
+    #[test]
     fn every_catalogue_phrase_belongs_to_exactly_one_pattern() {
         let mut owners: HashMap<String, &str> = HashMap::new();
-        for compiled in catalog() {
-            for phrase in &compiled.pattern.match_phrases {
-                let previous = owners.insert(phrase.to_lowercase(), &compiled.pattern.id);
+        let mut entries = 0;
+        for pattern in patterns() {
+            for entry in phrase_entries(pattern) {
+                entries += 1;
+                let previous = owners.insert(entry.phrase.to_lowercase(), &pattern.id);
                 assert!(
                     previous.is_none(),
-                    "phrase {phrase:?} is listed under {previous:?} and again under {:?}",
-                    compiled.pattern.id
+                    "phrase {:?} is listed under {previous:?} and again under {:?}",
+                    entry.phrase,
+                    pattern.id
                 );
+            }
+        }
+        // Every entry of every phrase list was read, whatever its flags.
+        let listed: usize = patterns()
+            .iter()
+            .map(|pattern| phrase_entries(pattern).len())
+            .sum();
+        assert_eq!(entries, listed);
+        assert!(listed > 100, "{listed}");
+        // No prefix entry covers a one-word entry of another pattern, which would flag one word
+        // under both.
+        for pattern in patterns() {
+            for stem in phrase_entries(pattern).iter().filter(|entry| entry.prefix) {
+                let stem = stem.phrase.to_lowercase();
+                for (phrase, owner) in &owners {
+                    assert!(
+                        *owner == pattern.id
+                            || phrase.contains(char::is_whitespace)
+                            || !phrase.starts_with(&stem),
+                        "the stem {stem:?} of {:?} covers {phrase:?} of {owner:?}",
+                        pattern.id
+                    );
+                }
             }
         }
     }
@@ -344,17 +510,183 @@ mod tests {
         for id in pattern_ids() {
             assert!(seen.insert(id), "pattern id {id:?} repeats");
         }
-        assert_eq!(seen.len(), catalog().len());
+        assert_eq!(seen.len(), patterns().len());
+        assert_eq!(seen.len(), 21);
     }
 
     #[test]
-    fn every_catalog_entry_has_at_least_one_match_signal() {
-        for compiled in catalog() {
-            assert!(
-                !compiled.matchers.is_empty(),
-                "pattern {:?} has neither match_phrases nor match_regex",
-                compiled.pattern.id
-            );
+    fn every_pattern_is_a_phrase_list_or_a_regex_on_spans_under_the_forbidden_band() {
+        for pattern in patterns() {
+            let rule = &pattern.rule;
+            let signals = match &rule.matcher {
+                Matcher::PhraseList { entries } => entries.len(),
+                Matcher::Regex { source } => usize::from(!source.is_empty()),
+                other => panic!("{:?} has the matcher {other:?}", pattern.id),
+            };
+            assert!(signals > 0, "{:?} matches nothing", pattern.id);
+            assert_eq!(rule.unit, Unit::Span, "{:?}", pattern.id);
+            assert_eq!(rule.band, Band::Forbidden, "{:?}", pattern.id);
+            assert_eq!(rule.register_scope, None, "{:?}", pattern.id);
         }
+    }
+
+    #[test]
+    fn every_pattern_declares_prose_and_fragment() {
+        let both = BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]);
+        for pattern in patterns() {
+            assert_eq!(pattern.rule.form_modes, both, "{:?}", pattern.id);
+        }
+        let catalogue = Catalogue::every_pattern();
+        let text = "The town boasts a harbour.";
+        for mode in [FormMode::Prose, FormMode::Fragment] {
+            assert_eq!(catalogue.flags(text, mode, "default").len(), 1, "{mode:?}");
+        }
+        assert!(catalogue.flags(text, FormMode::Code, "default").is_empty());
+    }
+
+    #[test]
+    fn every_pattern_compiles_under_its_id() {
+        let catalogue = Catalogue::every_pattern();
+        assert!(catalogue.enabled_pattern_ids().eq(pattern_ids()));
+        for compiled in &catalogue.patterns {
+            assert_eq!(
+                compiled.evaluator.owner(),
+                &RuleOwner::Pattern(compiled.pattern.id.clone())
+            );
+            assert_eq!(compiled.evaluator.rule(), &compiled.pattern.rule);
+        }
+    }
+
+    /// A file of the vendored resources, read from disk as the repository holds it.
+    fn resource(path: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../src-tauri/resources")
+                .join(path),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_hash_is_the_sha256_of_the_catalogue_followed_by_the_variant_table() {
+        let catalogue = resource("ai-telltales/patterns.json");
+        let pairs = resource("spelling-variants/pairs.json");
+        let hash = Catalogue::load(&Config::default()).hash();
+        assert_eq!(
+            hash.as_str(),
+            sha256_hex(&[catalogue.as_slice(), &pairs].concat())
+        );
+        assert_ne!(
+            hash.as_str(),
+            sha256_hex(&[pairs.as_slice(), &catalogue].concat())
+        );
+        assert_ne!(hash.as_str(), sha256_hex(&catalogue));
+    }
+
+    #[test]
+    fn the_hash_is_computed_once_and_is_the_same_whichever_patterns_are_on() {
+        let every = Catalogue::every_pattern();
+        let none = Catalogue::compiled(|_| false);
+        assert!(std::ptr::eq(every.hash(), none.hash()));
+        assert_eq!(none.enabled_pattern_ids().count(), 0);
+    }
+
+    #[test]
+    fn curly_quotes_alone_carries_the_raw_flag() {
+        let raw: Vec<&str> = patterns()
+            .iter()
+            .filter(|pattern| pattern.raw)
+            .map(|pattern| pattern.id.as_str())
+            .collect();
+        assert_eq!(raw, ["curly-quotes"]);
+    }
+
+    #[test]
+    fn curly_quotes_switched_on_flags_each_curly_mark_and_no_straight_one() {
+        let catalogue = Catalogue::load(&toggled(&[("curly-quotes", true)]));
+        let text = "\u{201C}Yes,\u{201D} she said, and \"no\" twice.";
+        let flags = catalogue.flags(text, FormMode::Prose, "default");
+        let quotes = flags_of(&flags, "curly-quotes");
+        assert_eq!(
+            quotes
+                .iter()
+                .map(|flag| flagged_text(flag))
+                .collect::<Vec<_>>(),
+            ["\u{201C}", "\u{201D}"],
+            "{flags:#?}"
+        );
+        assert_eq!(
+            quotes
+                .iter()
+                .map(|flag| flag.span.local_start)
+                .collect::<Vec<_>>(),
+            [0, 5]
+        );
+        let straight = catalogue.flags("She said \"no\" twice.", FormMode::Prose, "default");
+        assert!(
+            flags_of(&straight, "curly-quotes").is_empty(),
+            "{straight:#?}"
+        );
+    }
+
+    #[test]
+    fn a_pattern_switched_off_raises_no_flag_and_every_other_is_unaffected() {
+        let text = "The town boasts a harbour\u{2014}and a castle \u{1F680}.";
+        let every = Catalogue::every_pattern().flags(text, FormMode::Prose, "default");
+        assert!(!flags_of(&every, "em-en-dashes").is_empty(), "{every:#?}");
+
+        let without_dashes =
+            Catalogue::load(&toggled(&[("em-en-dashes", false), ("curly-quotes", true)]));
+        let flags = without_dashes.flags(text, FormMode::Prose, "default");
+        assert!(flags_of(&flags, "em-en-dashes").is_empty(), "{flags:#?}");
+        let others: Vec<&Flag> = every
+            .iter()
+            .filter(|flag| pattern_ids_of(flag) != ["em-en-dashes"])
+            .collect();
+        assert_eq!(flags.iter().collect::<Vec<_>>(), others);
+        assert!(!without_dashes
+            .enabled_pattern_ids()
+            .any(|id| id == "em-en-dashes"));
+    }
+
+    #[test]
+    fn a_pattern_absent_from_the_toggles_takes_its_default() {
+        let defaults = Catalogue::load(&toggled(&[]));
+        let expected: Vec<&str> = pattern_ids().filter(|id| *id != "curly-quotes").collect();
+        assert_eq!(defaults.enabled_pattern_ids().collect::<Vec<_>>(), expected);
+        let flags = defaults.flags(
+            "\u{201C}The town boasts a harbour.\u{201D}",
+            FormMode::Prose,
+            "default",
+        );
+        assert!(flags_of(&flags, "curly-quotes").is_empty(), "{flags:#?}");
+        assert_eq!(flags_of(&flags, "copula-avoidance").len(), 1, "{flags:#?}");
+
+        // The defaults the settings file is written with switch on the same patterns.
+        let written = Catalogue::load(&Config::default());
+        assert!(written.enabled_pattern_ids().eq(expected));
+    }
+
+    #[test]
+    fn the_flags_of_a_sentence_come_in_catalogue_order_and_by_start_within_a_pattern() {
+        let text = "It stands as a testament\u{2014}a pivotal moment\u{2014}to the team.";
+        let flags = scan(text);
+        let order: BTreeMap<&str, usize> = pattern_ids()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect();
+        let positions: Vec<(usize, usize)> = flags
+            .iter()
+            .map(|flag| {
+                (
+                    order[pattern_ids_of(flag)[0].as_str()],
+                    flag.span.local_start,
+                )
+            })
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort_unstable();
+        assert_eq!(positions, sorted, "{flags:#?}");
+        assert!(flags.len() >= 4, "{flags:#?}");
     }
 }

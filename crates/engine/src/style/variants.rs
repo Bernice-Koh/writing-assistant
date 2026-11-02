@@ -23,7 +23,7 @@ use crate::words::words;
 
 // Compiled in rather than read from the resource directory at run time, as the telltale catalogue
 // is, so the app and `wa` always read the same table.
-const PAIRS_JSON: &str =
+pub(super) const PAIRS_JSON: &str =
     include_str!("../../../../src-tauri/resources/spelling-variants/pairs.json");
 
 #[derive(Debug, Deserialize)]

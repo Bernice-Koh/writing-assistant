@@ -9,8 +9,9 @@
 //!    share no code unit.
 //! 3. Among the telltales left, every connected group of overlapping ranges, identical, nested or
 //!    partial, collapses into one flag. Its range runs from the group's earliest start to its
-//!    latest end, its id and message are those of the widest match, and its detail lists every
-//!    pattern id in the group, each once, in the order their matches start.
+//!    latest end, its id, message and detail are those of the widest match, the detail being that
+//!    pattern's source citation, and its origin lists every pattern id in the group, each once, in
+//!    the order their matches start.
 //! 4. A telltale on exactly the range of a style flag is dropped, and its pattern ids are added to
 //!    the style flag's detail. A style flag and a telltale on unequal overlapping ranges both
 //!    stand.
@@ -29,9 +30,6 @@ struct Candidate {
     /// `None` for a flag anchored on text other than the sentence (see
     /// [`resolve_within_sentence`]).
     range: Option<Range<usize>>,
-    /// For a telltale, the catalogue patterns it stands for: its own, and once collapsed, every
-    /// pattern in its group. Empty for every other origin.
-    pattern_ids: Vec<String>,
 }
 
 /// One connected group of two or more telltales whose ranges overlap.
@@ -60,10 +58,6 @@ fn resolve(sentence: &str, flags: Vec<Flag>) -> Vec<Candidate> {
         .into_iter()
         .map(|flag| Candidate {
             range: resolve_within_sentence(sentence, &flag),
-            pattern_ids: telltale_pattern_id(&flag)
-                .map(str::to_owned)
-                .into_iter()
-                .collect(),
             flag,
         })
         .collect()
@@ -102,7 +96,7 @@ fn collapse_overlapping_telltales(mut candidates: Vec<Candidate>) -> Vec<Candida
             .expect("a group holds at least two telltales");
         let mut pattern_ids: Vec<String> = Vec::new();
         for &member in &group.members {
-            for id in &candidates[member].pattern_ids {
+            for id in telltale_pattern_ids(&candidates[member].flag).unwrap_or_default() {
                 if !pattern_ids.contains(id) {
                     pattern_ids.push(id.clone());
                 }
@@ -114,8 +108,7 @@ fn collapse_overlapping_telltales(mut candidates: Vec<Candidate>) -> Vec<Candida
         let collapsed = &mut candidates[widest];
         collapsed.flag.span.local_start = group.range.start;
         collapsed.flag.span.local_length = group.range.len();
-        collapsed.flag.source_detail = pattern_ids.join(", ");
-        collapsed.pattern_ids = pattern_ids;
+        collapsed.flag.origin = FlagOrigin::AiTell { pattern_ids };
         collapsed.range = Some(group.range);
     }
     without(candidates, collapsed_away)
@@ -126,7 +119,7 @@ fn overlapping_telltale_groups(candidates: &[Candidate]) -> Vec<TelltaleGroup> {
     let mut telltales: Vec<(usize, Range<usize>)> = candidates
         .iter()
         .enumerate()
-        .filter(|(_, candidate)| candidate.flag.origin == FlagOrigin::AiTell)
+        .filter(|(_, candidate)| matches!(candidate.flag.origin, FlagOrigin::AiTell { .. }))
         .filter_map(|(index, candidate)| Some((index, candidate.range.clone()?)))
         // An empty range shares no code unit with any other, so it belongs to no group.
         .filter(|(_, range)| !range.is_empty())
@@ -157,19 +150,15 @@ fn fold_same_span_telltales_into_style_flags(mut candidates: Vec<Candidate>) -> 
     let telltales: Vec<(usize, Range<usize>, String)> = candidates
         .iter()
         .enumerate()
-        .filter(|(_, candidate)| candidate.flag.origin == FlagOrigin::AiTell)
         .filter_map(|(index, candidate)| {
-            Some((
-                index,
-                candidate.range.clone()?,
-                candidate.pattern_ids.join(", "),
-            ))
+            let pattern_ids = telltale_pattern_ids(&candidate.flag)?;
+            Some((index, candidate.range.clone()?, pattern_ids.join(", ")))
         })
         .collect();
     let mut folded_away = vec![false; candidates.len()];
     for (telltale, range, pattern_ids) in telltales {
         let same_span_style_flags = candidates.iter_mut().filter(|candidate| {
-            matches!(candidate.flag.origin, FlagOrigin::Style(_))
+            matches!(candidate.flag.origin, FlagOrigin::Style { .. })
                 && candidate.range.as_ref() == Some(&range)
         });
         for style in same_span_style_flags {
@@ -193,14 +182,13 @@ fn shares_a_code_unit(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start.max(b.start) < a.end.min(b.end)
 }
 
-/// The catalogue pattern a telltale flag matched, read from the id `style::ai_tell::scan` gives
-/// every telltale, `ai-tell:<pattern id>:<matcher index>:<offset>`. A [`Flag`] holds the pattern
-/// id nowhere else. `None` for every other origin.
-fn telltale_pattern_id(flag: &Flag) -> Option<&str> {
-    if flag.origin != FlagOrigin::AiTell {
-        return None;
+/// The catalogue patterns a telltale stands for, which its origin carries. `None` for every other
+/// origin.
+fn telltale_pattern_ids(flag: &Flag) -> Option<&[String]> {
+    match &flag.origin {
+        FlagOrigin::AiTell { pattern_ids } => Some(pattern_ids),
+        _ => None,
     }
-    flag.id.strip_prefix("ai-tell:")?.split(':').next()
 }
 
 /// Resolves `flag`'s span to a UTF-16 offset range within `sentence`, the single unit every flag
@@ -223,7 +211,13 @@ mod tests {
 
     use super::*;
     use crate::flag::{ClauseCitation, ClauseId, RuleId, Span};
-    use crate::style::ai_tell;
+    use crate::style::ai_tell::Catalogue;
+    use crate::style::checker::FormMode;
+
+    /// The telltales every pattern of the catalogue raises in `sentence`.
+    fn scan(sentence: &str) -> Vec<Flag> {
+        Catalogue::every_pattern().flags(sentence, FormMode::Prose, "default")
+    }
 
     fn flag(origin: FlagOrigin, anchor: &str, local_start: usize, local_length: usize) -> Flag {
         Flag {
@@ -243,22 +237,32 @@ mod tests {
         }
     }
 
-    /// A telltale with the id `ai_tell::scan` would give a match of `pattern_id`, and a message
-    /// that names the pattern so a test can tell whose message a collapsed flag kept.
+    /// A telltale of `pattern_id`, with a message and a source citation that name the pattern so a
+    /// test can tell whose a collapsed flag kept.
     fn telltale(pattern_id: &str, anchor: &str, local_start: usize, local_length: usize) -> Flag {
+        let origin = FlagOrigin::AiTell {
+            pattern_ids: vec![pattern_id.to_owned()],
+        };
         Flag {
-            id: format!("ai-tell:{pattern_id}:0:{local_start}"),
+            id: format!("ai-tell:{pattern_id}:{local_start}:{local_length}"),
             message: format!("{pattern_id} message"),
-            ..flag(FlagOrigin::AiTell, anchor, local_start, local_length)
+            source_detail: format!("{pattern_id} source"),
+            ..flag(origin, anchor, local_start, local_length)
         }
     }
 
+    fn pattern_ids(flag: &Flag) -> &[String] {
+        telltale_pattern_ids(flag).expect("a telltale")
+    }
+
     fn style(anchor: &str, local_start: usize, local_length: usize) -> Flag {
-        let origin = FlagOrigin::Style(ClauseCitation {
-            clause_id: ClauseId(7),
-            rule_id: RuleId("HEDGING_PER_PARAGRAPH".to_owned()),
-            clause_text: "Hedge at most once a paragraph.".to_owned(),
-        });
+        let origin = FlagOrigin::Style {
+            citation: ClauseCitation {
+                clause_id: ClauseId(7),
+                rule_id: RuleId("HEDGING_PER_PARAGRAPH".to_owned()),
+                clause_text: "Hedge at most once a paragraph.".to_owned(),
+            },
+        };
         Flag {
             id: format!("style:{local_start}"),
             source_detail: "HEDGING_PER_PARAGRAPH".to_owned(),
@@ -279,7 +283,7 @@ mod tests {
         // "team b" (indices 4..10) genuinely overlaps "boasts a" (indices 9..17) at index 9,
         // not merely adjacent to it: the overlap this test means to exercise.
         let grammar = flag(FlagOrigin::Grammar, sentence, 4, 6);
-        let ai_tell = flag(FlagOrigin::AiTell, sentence, 9, 8);
+        let ai_tell = telltale("copula-avoidance", sentence, 9, 8);
         let result = apply(sentence, vec![grammar.clone(), ai_tell]);
         assert_eq!(result, vec![grammar]);
     }
@@ -288,7 +292,7 @@ mod tests {
     fn keeps_an_ai_tell_flag_that_does_not_overlap_a_grammar_flag() {
         let sentence = "The team boasts a strong record today.";
         let grammar = flag(FlagOrigin::Grammar, sentence, 4, 4); // "team"
-        let ai_tell = flag(FlagOrigin::AiTell, sentence, 9, 8); // "boasts a"
+        let ai_tell = telltale("copula-avoidance", sentence, 9, 8); // "boasts a"
         let result = apply(sentence, vec![grammar.clone(), ai_tell.clone()]);
         assert_eq!(result, vec![grammar, ai_tell]);
     }
@@ -308,7 +312,7 @@ mod tests {
         // Both tells cover the same text, ", ensuring". Each carries its own offset into the
         // sentence, so a grammar flag on the second leaves the first standing.
         let sentence = "The plan grew, ensuring reach, ensuring scale.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         assert_eq!(tells.len(), 2, "{tells:#?}");
         let second_ensuring = sentence.rfind("ensuring").unwrap();
         let grammar = flag(FlagOrigin::Grammar, sentence, second_ensuring, 8);
@@ -323,7 +327,7 @@ mod tests {
     fn keeps_an_unresolvable_ai_tell_flag_rather_than_drop_it() {
         let sentence = "The team boasts a strong record.";
         let grammar = flag(FlagOrigin::Grammar, sentence, 4, 5);
-        let stray = flag(FlagOrigin::AiTell, "not in this sentence at all", 0, 5);
+        let stray = telltale("copula-avoidance", "not in this sentence at all", 0, 5);
         let result = apply(sentence, vec![grammar.clone(), stray.clone()]);
         assert_eq!(result, vec![grammar, stray]);
     }
@@ -379,7 +383,7 @@ mod tests {
         // pattern in the group.
         let sentence = "This is a testament to the team.";
         let on_testament = style(sentence, 5, 17); // "is a testament to"
-        let mut flags = ai_tell::scan(sentence);
+        let mut flags = scan(sentence);
         assert_eq!(flags.len(), 2, "{flags:#?}");
         flags.push(on_testament.clone());
         let result = apply(sentence, flags);
@@ -408,16 +412,22 @@ mod tests {
         let second = telltale("promotional-language", sentence, 9, 8);
         let result = apply(sentence, vec![first.clone(), second]);
         let expected = Flag {
-            source_detail: "copula-avoidance, promotional-language".to_owned(),
+            origin: FlagOrigin::AiTell {
+                pattern_ids: vec![
+                    "copula-avoidance".to_owned(),
+                    "promotional-language".to_owned(),
+                ],
+            },
             ..first
         };
         assert_eq!(result, vec![expected]);
+        assert_eq!(result[0].source_detail, "copula-avoidance source");
     }
 
     #[test]
     fn nested_telltales_collapse_onto_the_widest_span_with_its_message() {
         let sentence = "This is a testament to the team.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         let mut matched: Vec<String> = tells.iter().map(flagged_text).collect();
         matched.sort();
         assert_eq!(matched, ["is a testament to", "testament to"], "{tells:#?}");
@@ -430,9 +440,10 @@ mod tests {
         assert_eq!(result.len(), 1, "{result:#?}");
         assert_eq!(flagged_text(&result[0]), "is a testament to");
         assert_eq!(result[0].message, widest.message);
+        assert_eq!(result[0].source_detail, widest.source_detail);
         assert_eq!(
-            result[0].source_detail,
-            "significance-legacy-emphasis, ai-vocabulary-words"
+            pattern_ids(&result[0]),
+            ["significance-legacy-emphasis", "ai-vocabulary-words"]
         );
     }
 
@@ -451,12 +462,19 @@ mod tests {
                 local_length: 27,
                 occurrence: 0,
             },
-            source_detail: "pattern-a, pattern-b, pattern-c".to_owned(),
+            origin: FlagOrigin::AiTell {
+                pattern_ids: vec![
+                    "pattern-a".to_owned(),
+                    "pattern-b".to_owned(),
+                    "pattern-c".to_owned(),
+                ],
+            },
             ..second
         };
         assert_eq!(result, vec![expected]);
         assert_eq!(flagged_text(&result[0]), "team boasts a strong record");
         assert_eq!(result[0].message, "pattern-b message");
+        assert_eq!(result[0].source_detail, "pattern-b source");
     }
 
     #[test]
@@ -475,7 +493,7 @@ mod tests {
         // Two groups: "is a testament to" holding "testament to", and "stands as a testament"
         // holding "stands as" and partly overlapping a second "testament to".
         let sentence = "Our work is a testament to the team, and it stands as a testament to grit.";
-        let tells = ai_tell::scan(sentence);
+        let tells = scan(sentence);
         assert_eq!(tells.len(), 5, "{tells:#?}");
 
         let result = apply(sentence, tells);

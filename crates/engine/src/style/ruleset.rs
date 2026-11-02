@@ -129,7 +129,9 @@ impl LoadedRuleset {
                 "style:{}:{}:{}",
                 checker.id.0, violation.span.local_start, violation.span.local_length
             ),
-            origin: FlagOrigin::Style(checker.citation.clone()),
+            origin: FlagOrigin::Style {
+                citation: checker.citation.clone(),
+            },
             message: message(&violation.breach, checker.evaluator.rule()),
             span: violation.span,
             suggestions: Vec::new(),
@@ -619,11 +621,13 @@ mod tests {
         for (flag, violation) in flags.iter().zip(&violations) {
             assert_eq!(
                 flag.origin,
-                FlagOrigin::Style(ClauseCitation {
-                    clause_id: hedges,
-                    rule_id: RuleId(content_hash.clone()),
-                    clause_text: HEDGES_REWORDED.0.to_owned(),
-                })
+                FlagOrigin::Style {
+                    citation: ClauseCitation {
+                        clause_id: hedges,
+                        rule_id: RuleId(content_hash.clone()),
+                        clause_text: HEDGES_REWORDED.0.to_owned(),
+                    }
+                }
             );
             assert_eq!(flag.span, violation.span);
             assert_eq!(

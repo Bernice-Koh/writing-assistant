@@ -21,12 +21,14 @@
 //!   every catalogue pattern. A pattern the map omits takes its default, off for `curly-quotes`
 //!   and on for every other pattern, and an id the catalogue does not hold is dropped on load.
 //!
-//! Every field has a default, so a file that lacks any of them still parses. No field holds a
-//! credential or any text of a draft.
+//! Every field has a default, so a file that lacks any of them still parses. A top-level key that
+//! names no field is ignored, with one `warn` line naming it, so a misspelt key does not silently
+//! leave its setting at the default. No field holds a credential or any text of a draft.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use super::error::StoreError;
@@ -35,6 +37,14 @@ use crate::style::ai_tell;
 const CONFIG_FILE_NAME: &str = "config.json";
 
 const DEFAULT_REGISTER: &str = "default";
+
+/// The top-level keys of the file, one per field of [`Config`].
+const KNOWN_KEYS: [&str; 4] = [
+    "checking_enabled",
+    "default_register",
+    "register_map",
+    "telltale_toggles",
+];
 
 /// Off by default because Word autoformats straight quotation marks into curly ones, and the owner
 /// writes in Word.
@@ -128,7 +138,8 @@ fn telltale_enabled_by_default(pattern_id: &str) -> bool {
 ///
 /// A file that does not parse is left as it is and returns [`StoreError::Parse`], whose source
 /// carries the fault's line and column. A leading byte order mark is skipped, since some Windows
-/// editors write one into a UTF-8 file.
+/// editors write one into a UTF-8 file. A top-level key that names no setting is ignored with one
+/// `warn` line, and the load succeeds.
 pub fn load(data_root: &Path) -> Result<Config, StoreError> {
     let path = data_root.join(CONFIG_FILE_NAME);
     match std::fs::read_to_string(&path) {
@@ -139,6 +150,7 @@ pub fn load(data_root: &Path) -> Result<Config, StoreError> {
                     path: path.clone(),
                     source,
                 })?;
+            warn_of_unknown_keys(json, &path);
             config.drop_unknown_telltale_toggles(&path);
             Ok(config)
         }
@@ -148,6 +160,27 @@ pub fn load(data_root: &Path) -> Result<Config, StoreError> {
             Ok(config)
         }
         Err(source) => Err(StoreError::Read { path, source }),
+    }
+}
+
+/// Logs one `warn` line for each top-level key of `json`, the settings file at `path`, that names
+/// no setting, naming the key and the file.
+fn warn_of_unknown_keys(json: &str, path: &Path) {
+    let Ok(top_level) = serde_json::from_str::<BTreeMap<String, IgnoredAny>>(json) else {
+        log::debug!(
+            "the settings file {} parsed without being a JSON object, so it has no keys to check",
+            path.display()
+        );
+        return;
+    };
+    for key in top_level
+        .keys()
+        .filter(|key| !KNOWN_KEYS.contains(&key.as_str()))
+    {
+        log::warn!(
+            "ignoring the key {key:?} in {}: the settings hold no setting of that name",
+            path.display()
+        );
     }
 }
 
@@ -264,6 +297,64 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{lines:#?}");
         assert!(warnings[0].1.contains("\"no-such-pattern\""), "{lines:#?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_warns_once_naming_it_and_the_file_and_the_load_succeeds() {
+        // A misspelling of `telltale_toggles`, whose toggle would otherwise go unread unnoticed.
+        let dir = root_holding(
+            r#"{ "checking_enabled": false, "telltale_toggle": { "curly-quotes": true } }"#,
+        );
+        let path = dir.join(CONFIG_FILE_NAME);
+        let (loaded, lines) = test_support::capture_logs(|| load(&dir));
+        let config = loaded.expect("an unknown key should not fail the load");
+
+        assert_eq!(
+            config,
+            Config {
+                checking_enabled: false,
+                ..Config::default()
+            }
+        );
+        let warnings: Vec<&String> = lines
+            .iter()
+            .filter(|(level, _)| *level == log::Level::Warn)
+            .map(|(_, line)| line)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{lines:#?}");
+        assert!(warnings[0].contains("\"telltale_toggle\""), "{lines:#?}");
+        assert!(
+            warnings[0].contains(&path.display().to_string()),
+            "{lines:#?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_file_of_known_keys_alone_warns_of_none() {
+        let dir = unique_temp_dir();
+        save(&dir, &Config::default()).unwrap();
+        let (loaded, lines) = test_support::capture_logs(|| load(&dir));
+        loaded.unwrap();
+        assert!(
+            lines.iter().all(|(level, _)| *level > log::Level::Warn),
+            "{lines:#?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_known_keys_are_the_keys_the_settings_serialise_with() {
+        let serialised = serde_json::to_value(Config::default()).unwrap();
+        let keys: Vec<&str> = serialised
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut known = KNOWN_KEYS.to_vec();
+        known.sort_unstable();
+        assert_eq!(keys, known);
     }
 
     #[test]

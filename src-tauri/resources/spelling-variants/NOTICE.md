@@ -3,7 +3,9 @@
 `pairs.json` is hand-written for this project. It vendors no upstream list and carries no
 third-party licence. Each pair is a word that English spells two ways by convention, with its form
 under each convention the table names. The engine compiles the file in with `include_str!`, as it
-compiles the telltale catalogue, and the spelling-variant matcher reads it.
+compiles the telltale catalogue, and the spelling-variant matcher reads it. Its bytes follow the
+catalogue's in the content hash every flag records beside the ruleset version, so an edit to the
+table is told from a ruleset change.
 
 ## Conventions
 

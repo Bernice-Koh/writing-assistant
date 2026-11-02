@@ -99,7 +99,8 @@ this order:
 3. The telltales left standing collapse. Each connected group of overlapping telltales, whether
    identical, nested as `is a testament to` and `testament to` are, or partly overlapping,
    becomes one flag. Its span runs from the earliest start in the group to the latest end, it
-   carries the message of the widest match, and its detail lists every pattern id in the group.
+   carries the message and the source citation of the widest match, and it names every pattern
+   id in the group.
 4. A telltale on exactly a style flag's span is dropped, and its pattern ids are added to the
    style flag's detail. A style flag and a telltale on unequal overlapping spans both stand.
 
@@ -114,8 +115,9 @@ A checker is a Style Card clause made mechanical: the clause's id and a rule. Th
 matcher, a unit, and a band, and it declares the form modes it runs in, prose or fragment, and a
 register scope, which is every register when unset. The engine holds a checker as data with every
 part in the table, and evaluates every matcher and band but the LanguageTool rule id, which the
-grammar stage evaluates (planned, Phase 1). Nothing runs a checker yet. Planned for Phase 1: the
-analyzer passes that run checkers, and a rule for each telltale pattern.
+grammar stage evaluates (planned, Phase 1). Each telltale pattern runs on the engine as a rule of
+its own, under its pattern id and with no clause (see Telltales). Nothing runs a checker yet.
+Planned for Phase 1: the analyzer passes that run checkers.
 
 | Part | Values |
 |---|---|
@@ -156,7 +158,8 @@ rewritten. At startup the app reads the latest version and compiles each checker
 that does not compile, or whose clause the latest Card version does not hold, is left out with a
 warning naming its id. With no version stored, or no store, the ruleset is empty and spelling,
 grammar and telltale checking run as before. Every flag
-records the version in force when it was raised, whatever its origin. A style flag cites its
+records the version in force when it was raised, whatever its origin, beside the content hash of
+the rule data compiled into the engine (see Telltales). A style flag cites its
 clause's id, its checker's rule id, which is the checker's content hash or LanguageTool's id for a
 LanguageTool rule, and the clause's text from the Card version current at load. Nothing publishes
 a ruleset until Phase 3, and nothing runs a checker until the analyzer's passes for checkers
@@ -204,17 +207,34 @@ which then has no grammar flags this time, a result distinct from a check that f
 ### Telltales
 
 Underlining LLM phrasing is independent of the Card. The catalogue ships with the tool and keeps
-its own flag origin. It holds 21 patterns as phrase lists and regexes, hand-encoded from
-Wikipedia's Signs of AI writing page as read through an intermediary's skill file.
-`src-tauri/resources/ai-telltales/NOTICE.md` records the provenance and the nine patterns left
-unencoded.
+its own flag origin. It holds 21 patterns, hand-encoded from Wikipedia's Signs of AI writing page
+as read through an intermediary's skill file. `src-tauri/resources/ai-telltales/NOTICE.md`
+records the provenance, the matching notes, and the nine patterns left unencoded.
 
-Phrase matching is case-insensitive and flags every occurrence. A phrase edge that is a letter or
-digit matches only at a word boundary. Both the `-ise` and the `-ize` spelling of a phrase are
-accepted. A phrase belongs to exactly one pattern, which a test on the catalogue enforces.
+Each pattern is a rule on the rule layer: a phrase list or a regex over spans under the forbidden
+band, declared for prose and fragment paragraphs, compiled under its pattern id with no clause. A
+telltale flag names its pattern id beside its origin and cites the pattern's source. Phrase
+matching is case-insensitive and flags every occurrence. A phrase edge that is a letter or digit
+matches only at a word boundary. A curly apostrophe or quotation mark in the text matches the
+straight one a phrase is written with, and the one regex that names an apostrophe accepts both.
+Both the `-ise` and the `-ize` spelling of a phrase are accepted. A single-word entry is written
+as its stem with the prefix flag, so `intric` flags `intricately`: the stem is the shortest prefix
+whose words in the vendored dictionary are all forms of the entry's word, and a test per stem
+lists the words it covers. A phrase belongs to exactly one pattern, which a test on the catalogue
+enforces.
 
-Planned for Phase 1: a toggle per pattern in settings, and the count-shaped structural patterns,
-among them rule-of-three lists and boldface overuse, encoded as count checkers on the rule layer.
+Each pattern has a toggle in the settings file, keyed by its id. A pattern the toggles omit takes
+its default: every pattern is on except `curly-quotes`, which would fire on every quotation mark
+Word autoformats. That pattern carries a raw flag, so when switched on its phrases, the curly
+quotation marks themselves, match the text as written. The app compiles the patterns switched on
+once, at startup, so a toggle changed while it runs takes effect at the next start.
+
+The catalogue and the variant-pair table are compiled into the engine. Every flag records the
+SHA-256 of the catalogue's bytes followed by the table's beside the ruleset version, so the bench
+can tell an edit to either data file from a ruleset change.
+
+Planned for Phase 1: the count-shaped structural patterns, among them rule-of-three lists and
+boldface overuse, encoded as count checkers on the rule layer.
 
 ### Language convention
 
@@ -475,8 +495,8 @@ flowchart LR
 The Rust code is a Cargo workspace of three crates, with a virtual manifest and the lockfile at the
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
-`crates/wa`. Of the engine's contents in the table, the rule layer and the screen are planned for
-Phase 1, the store's remaining artefact tables for the phases that first write them, and the two
+`crates/wa`. Of the engine's contents in the table, the screen is planned for Phase 1, the store's
+remaining artefact tables for the phases that first write them, and the two
 clients for Phase 3. The store holds `schema_version`, `passages`, the Card and ruleset tables,
 `candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`, and the app
 reads the latest ruleset version and Card version from it at startup. Nothing writes a passage or a
@@ -655,8 +675,10 @@ alike. Settings stay in a JSON config file there, `config.json` directly under t
 checking runs, the register map with its default register, and a toggle per telltale pattern,
 every pattern on except `curly-quotes`. The app loads the file once at startup and writes the
 defaults when it is missing, so an edit made while the app runs takes effect at the next start. A
-file that does not parse is left as it is, and checking starts on the defaults. Nothing reads the
-toggles or the register map yet. The controls that edit the file arrive with the settings shell in
+file that does not parse is left as it is, and checking starts on the defaults. A top-level key
+that names no setting is ignored with a warning in the log naming the key and the file. The app
+compiles the telltale catalogue from the toggles and checks under the default register; nothing
+reads the register map yet. The controls that edit the file arrive with the settings shell in
 Phase 3, and until then it is edited by hand. Credentials are in
 neither file.
 

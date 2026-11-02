@@ -26,7 +26,7 @@ use crate::capture::Capture;
 use crate::flag::Flag;
 use crate::languagetool::LanguageToolSupervisor;
 use crate::spelling::SpellChecker;
-use crate::style::ai_tell;
+use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
 use crate::style::ruleset::LoadedRuleset;
 
@@ -54,6 +54,7 @@ struct Inner {
     spelling: SpellChecker,
     languagetool: Option<LanguageToolSupervisor>,
     ruleset: Arc<LoadedRuleset>,
+    catalogue: Arc<Catalogue>,
     register: String,
     flags: RwLock<Vec<Flag>>,
     /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
@@ -77,13 +78,16 @@ impl Analyzer {
     /// `check_sentence` treats as no grammar flags this time. `ruleset` is the ruleset loaded at
     /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
     /// when no version is loaded, and LanguageTool's matches route through its checkers.
-    /// `register` is the register every sentence is checked under, the settings' default register
-    /// until capture supplies the surface's (#58).
+    /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles: every
+    /// flag the analyzer publishes carries its hash whatever its origin, beside the ruleset
+    /// version. `register` is the register every sentence is checked under, the settings' default
+    /// register until capture supplies the surface's (#58).
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
         languagetool: Option<LanguageToolSupervisor>,
         ruleset: Arc<LoadedRuleset>,
+        catalogue: Arc<Catalogue>,
         register: String,
     ) -> Self {
         let (flags_tx, _) = watch::channel(Vec::new());
@@ -92,6 +96,7 @@ impl Analyzer {
             spelling,
             languagetool,
             ruleset,
+            catalogue,
             register,
             flags: RwLock::new(Vec::new()),
             flags_tx,
@@ -217,6 +222,7 @@ async fn recheck(inner: &Inner, text: &str) {
         let text_before_sentence = &text[..sentence.start];
         document_flags.extend(sentence_flags.into_iter().map(|flag| Flag {
             ruleset_version: inner.ruleset.version(),
+            catalogue_hash: Some(inner.catalogue.hash().clone()),
             ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
         }));
     }
@@ -267,10 +273,14 @@ async fn check_sentence(inner: &Inner, sentence: &str) -> Vec<Flag> {
         .check_sentence_calls
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+    // Every sentence is prose until form mode is classified per paragraph (#54).
     let mut flags = inner.spelling.check(sentence);
-    flags.extend(ai_tell::scan(sentence));
+    flags.extend(
+        inner
+            .catalogue
+            .flags(sentence, FormMode::Prose, &inner.register),
+    );
     if let Some(languagetool) = &inner.languagetool {
-        // Every sentence is prose until form mode is classified per paragraph (#54).
         let checked = languagetool
             .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
             .await;
@@ -295,11 +305,18 @@ fn hash_text(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::discriminant;
     use std::sync::Mutex as StdMutex;
 
     use crate::capture::{CaptureError, CursorRect};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
+    use crate::store::Config;
     use crate::test_support::dictionary_path;
+
+    /// The catalogue compiled from the toggles the settings file is first written with.
+    fn default_catalogue() -> Catalogue {
+        Catalogue::load(&Config::default())
+    }
 
     struct FakeCapture {
         text: StdMutex<String>,
@@ -388,6 +405,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -426,6 +444,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -472,6 +491,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
 
@@ -494,6 +514,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         )
     }
@@ -571,8 +592,8 @@ mod tests {
     /// The flags an analyzer started with `ruleset_version` publishes for a misspelled sentence
     /// and a telltale one, once the first sentence's cached result also holds a grammar flag. No
     /// test runs LanguageTool, so the grammar flag enters where a checked sentence's grammar flags
-    /// wait between rechecks, carrying a version the analyzer does not hold. Only the second
-    /// sentence then changes, so the first is served from the cache.
+    /// wait between rechecks, carrying a version the analyzer does not hold and no catalogue hash.
+    /// Only the second sentence then changes, so the first is served from the cache.
     async fn flags_of_every_origin(ruleset_version: Option<RulesetVersion>) -> Vec<Flag> {
         let misspelled = "This has a mispelling.";
         let fake = Arc::new(FakeCapture::new(&format!(
@@ -585,6 +606,7 @@ mod tests {
             test_spell_checker(),
             None,
             Arc::new(ruleset),
+            Arc::new(default_catalogue()),
             "default".to_owned(),
         );
         step(6).await;
@@ -619,13 +641,14 @@ mod tests {
         ));
         step(6).await;
         let flags = analyzer.current_flags();
-        for origin in [
-            FlagOrigin::Spelling,
-            FlagOrigin::Grammar,
-            FlagOrigin::AiTell,
-        ] {
+        let telltale = FlagOrigin::AiTell {
+            pattern_ids: Vec::new(),
+        };
+        for origin in [FlagOrigin::Spelling, FlagOrigin::Grammar, telltale] {
             assert!(
-                flags.iter().any(|flag| flag.origin == origin),
+                flags
+                    .iter()
+                    .any(|flag| discriminant(&flag.origin) == discriminant(&origin)),
                 "no {origin:?} flag: {flags:#?}"
             );
         }
@@ -641,6 +664,20 @@ mod tests {
                 .all(|flag| flag.ruleset_version == Some(RulesetVersion(7))),
             "{flags:#?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_published_flag_carries_the_catalogue_hash_beside_the_ruleset_version() {
+        let hash = default_catalogue().hash().clone();
+        for version in [Some(RulesetVersion(7)), None] {
+            let flags = flags_of_every_origin(version).await;
+            assert!(
+                flags.iter().all(|flag| {
+                    flag.catalogue_hash.as_ref() == Some(&hash) && flag.ruleset_version == version
+                }),
+                "{flags:#?}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
