@@ -15,7 +15,7 @@ mod sentences;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lru::LruCache;
@@ -56,13 +56,9 @@ struct Inner {
     ruleset: Arc<LoadedRuleset>,
     catalogue: Arc<Catalogue>,
     register: String,
-    flags: RwLock<Vec<Flag>>,
-    /// Notifies a change to `flags` without carrying the flags themselves through the lock above:
-    /// a subscriber (the overlay's own event-emitting task) reads the latest value straight from
-    /// this channel via `borrow`, so there is exactly one source of truth, not two that could
-    /// drift apart. Kept separate from `flags` rather than folding it into a single
-    /// `watch`-backed field because `current_flags` is a plain, lock-based read with no
-    /// subscription semantics, a simpler contract for a caller that only wants the value once.
+    /// The whole document's flags as the latest recheck published them, empty until the first
+    /// completes. The channel holds the analyzer's one copy of them, which a subscriber reads
+    /// through `borrow`.
     flags_tx: watch::Sender<Vec<Flag>>,
     cache: Mutex<LruCache<u64, Vec<Flag>>>,
     /// Counts calls into [`check_sentence`], the work a cache hit skips. Test-only, and held per
@@ -97,7 +93,6 @@ impl Analyzer {
             ruleset,
             catalogue,
             register,
-            flags: RwLock::new(Vec::new()),
             flags_tx,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_CAPACITY)
@@ -110,23 +105,13 @@ impl Analyzer {
         Self { inner }
     }
 
-    /// The most recently computed, merged, and deduplicated flag set for the whole document.
-    /// Empty until the first recheck completes.
-    pub fn current_flags(&self) -> Vec<Flag> {
-        self.inner
-            .flags
-            .read()
-            .expect("a poisoned lock here means another thread already panicked; propagating that panic is correct, not recovering silently")
-            .clone()
-    }
-
-    /// Notified with the complete, merged, and deduplicated flag set every time a recheck
-    /// finishes, so a subscriber (the overlay's own flag-positioning task) reacts the moment new
-    /// flags are ready instead of polling [`Self::current_flags`] on its own schedule. Delivers
-    /// only the latest value, not every intermediate one: a subscriber that is mid-reaction to
-    /// one recheck when another completes sees the newer flags next, never a queue of stale ones
-    /// to catch up on, which is the behaviour this receiver needs since only the current flag set
-    /// is ever meaningful to render.
+    /// The most recently computed, merged, and deduplicated flag set for the whole document, empty
+    /// until the first recheck completes, and notified every time a recheck finishes, so a
+    /// subscriber (the overlay's own flag-positioning task) reacts the moment new flags are ready
+    /// instead of polling on its own schedule. Delivers only the latest value, not every
+    /// intermediate one: a subscriber that is mid-reaction to one recheck when another completes
+    /// sees the newer flags next, never a queue of stale ones to catch up on, which is the
+    /// behaviour this receiver needs since only the current flag set is ever meaningful to render.
     pub fn subscribe(&self) -> watch::Receiver<Vec<Flag>> {
         self.inner.flags_tx.subscribe()
     }
@@ -206,15 +191,10 @@ async fn recheck(inner: &Inner, text: &str) {
         }));
     }
 
-    *inner
-        .flags
-        .write()
-        .expect("a poisoned lock here means another thread already panicked") =
-        document_flags.clone();
-    // A subscriber-free channel (the overlay's flag-tracking task not running yet, or the engine
-    // running headless in a test) has no receivers left; `send` reporting that is expected, not an error
-    // worth logging.
-    let _ = inner.flags_tx.send(document_flags);
+    // The channel holds the only copy, and `send` discards the value while no receiver is
+    // subscribed, as before the overlay's flag-tracking task starts or with the engine headless in
+    // a test. `send_replace` stores it regardless.
+    inner.flags_tx.send_replace(document_flags);
 }
 
 /// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
@@ -375,6 +355,11 @@ mod tests {
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
     }
 
+    /// The flags `analyzer` last published, read from a fresh subscription.
+    fn published_flags(analyzer: &Analyzer) -> Vec<Flag> {
+        analyzer.subscribe().borrow().clone()
+    }
+
     #[tokio::test(start_paused = true)]
     async fn debounces_rapid_changes_into_one_recheck_after_the_quiet_threshold() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling."));
@@ -391,7 +376,7 @@ mod tests {
         // Let the loop see the initial text and start its quiet timer; no recheck yet.
         step(1).await;
         assert!(
-            analyzer.current_flags().is_empty(),
+            published_flags(&analyzer).is_empty(),
             "no recheck should fire before the quiet threshold elapses"
         );
 
@@ -400,14 +385,14 @@ mod tests {
         fake.set_text("This has a mispelling, still.");
         step(1).await;
         assert!(
-            analyzer.current_flags().is_empty(),
+            published_flags(&analyzer).is_empty(),
             "the edit should have reset the quiet timer"
         );
 
         // Now let it sit unchanged long enough (comfortably past QUIET_THRESHOLD) for the reset
         // timer to elapse.
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         assert!(
             flags.iter().any(|flag| flagged_text(flag) == "mispelling"),
             "expected a recheck to have found the misspelling by now: {flags:#?}"
@@ -428,7 +413,7 @@ mod tests {
         );
 
         step(6).await;
-        let first_pass = analyzer.current_flags();
+        let first_pass = published_flags(&analyzer);
         assert!(
             first_pass
                 .iter()
@@ -441,7 +426,7 @@ mod tests {
         // Only the second sentence changes; the first sentence's text is untouched.
         fake.set_text("This has a mispelling. This one has an eror too.");
         step(6).await;
-        let second_pass = analyzer.current_flags();
+        let second_pass = published_flags(&analyzer);
 
         assert!(
             second_pass
@@ -473,7 +458,7 @@ mod tests {
         fake.set_text("This has a mispelling. This one is fine.");
         step(6).await;
         assert_eq!(analyzer.check_sentence_call_count(), 3);
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         let flagged: Vec<String> = flags.iter().map(flagged_text).collect();
         assert_eq!(flagged, ["mispelling"], "{flags:#?}");
     }
@@ -495,7 +480,7 @@ mod tests {
         );
 
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         let misspellings: Vec<&Flag> = flags
             .iter()
             .filter(|flag| flagged_text(flag) == "eror")
@@ -520,8 +505,7 @@ mod tests {
 
     /// The spans of the published flags on "eror", in the order the analyzer published them.
     fn eror_spans(analyzer: &Analyzer) -> Vec<Span> {
-        analyzer
-            .current_flags()
+        published_flags(analyzer)
             .into_iter()
             .filter(|flag| flagged_text(flag) == "eror")
             .map(|flag| flag.span)
@@ -639,7 +623,7 @@ mod tests {
             "{misspelled} It stands as a testament to the town."
         ));
         step(6).await;
-        let flags = analyzer.current_flags();
+        let flags = published_flags(&analyzer);
         let telltale = FlagOrigin::AiTell {
             pattern_ids: Vec::new(),
         };
@@ -770,13 +754,13 @@ mod tests {
             "default".to_owned(),
         );
         step(6).await;
-        assert_eq!(analyzer.current_flags(), pinned_flags());
+        assert_eq!(published_flags(&analyzer), pinned_flags());
 
         fake.set_text("Something else entirely.");
         step(6).await;
         fake.set_text(PINNED_DOCUMENT);
         step(6).await;
-        assert_eq!(analyzer.current_flags(), pinned_flags());
+        assert_eq!(published_flags(&analyzer), pinned_flags());
     }
 
     #[tokio::test(start_paused = true)]
