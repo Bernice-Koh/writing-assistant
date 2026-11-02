@@ -47,8 +47,7 @@ const USAGE: &str = "usage: picky_latency <port> <sample per book> <out.tsv> <bo
 
 type Failure = Box<dyn Error>;
 
-#[tokio::main]
-async fn main() -> Result<(), Failure> {
+fn main() -> Result<(), Failure> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [port, per_book, out, books @ ..] = args.as_slice() else {
         return Err(USAGE.into());
@@ -95,15 +94,14 @@ async fn main() -> Result<(), Failure> {
         warm_up.extend(drawn(per_book..per_book + WARM_UP_PER_BOOK));
     }
 
-    let checker = Checker::new(port);
-    for sentence in &warm_up {
-        checker.check(sentence).await?;
-    }
+    // A runtime for the checks alone, so that reading the books and writing the rows stay out of
+    // any async context.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let checks = runtime.block_on(time_checks(port, &warm_up, &sample))?;
 
     let mut rows = String::from("words\tutf16\tmatches\tmicros\n");
     let mut durations = Vec::with_capacity(sample.len());
-    for sentence in &sample {
-        let (elapsed, matches) = checker.check(sentence).await?;
+    for (sentence, (elapsed, matches)) in sample.iter().zip(checks) {
         durations.push(elapsed);
         writeln!(
             rows,
@@ -127,6 +125,24 @@ async fn main() -> Result<(), Failure> {
         nearest_rank(&durations, 0.99),
     );
     Ok(())
+}
+
+/// Checks each of `warm_up` untimed, then each of `sample`, returning for each sample sentence how
+/// long its check took and how many matches it found.
+async fn time_checks(
+    port: u16,
+    warm_up: &[String],
+    sample: &[String],
+) -> Result<Vec<(Duration, usize)>, Failure> {
+    let checker = Checker::new(port);
+    for sentence in warm_up {
+        checker.check(sentence).await?;
+    }
+    let mut checks = Vec::with_capacity(sample.len());
+    for sentence in sample {
+        checks.push(checker.check(sentence).await?);
+    }
+    Ok(checks)
 }
 
 /// The sentences of `raw`, the Project Gutenberg file `book`, of [`MIN_WORDS`] words or more.
