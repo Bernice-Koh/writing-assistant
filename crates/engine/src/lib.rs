@@ -7,6 +7,9 @@
 //! mechanical: the clause's id and a rule, which is a matcher, a unit and a band, declared for the
 //! form modes and the registers it runs in. A rule evaluates as a pure function of one unit's
 //! sentences, and nothing runs a checker until the analyzer's passes for checkers arrive (#100).
+//!
+//! The screen, in [`screen`], holds its content check: a pure function of a passage and a rewrite
+//! candidate that tells whether the candidate keeps the passage's facts.
 
 pub mod analyzer;
 pub mod capture;
@@ -15,6 +18,7 @@ mod hash;
 pub mod languagetool;
 pub mod learning;
 pub mod rewrite;
+pub mod screen;
 pub mod spelling;
 pub mod store;
 pub mod style;
