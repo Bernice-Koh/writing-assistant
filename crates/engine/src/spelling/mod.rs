@@ -68,10 +68,16 @@ impl SpellChecker {
     /// occurrence: one underline drawn twice and the second misspelling left unmarked. Grammar
     /// flags already anchor on their sentence for the same reason (see `languagetool::client`).
     ///
-    /// Capitalisation (proper nouns, a capital at the start of a sentence) is left entirely to
-    /// `Dictionary::check`'s own casing rules; this function does not reimplement or second-guess
-    /// them, and their exact behaviour against real `.aff` `SFX`/`PFX` rules has not been
-    /// independently verified against every case.
+    /// Capitalisation is left to `Dictionary::check`, whose casing rules match Hunspell's on the
+    /// vendored dictionary, supplement words included: a word stored in lower case is accepted in
+    /// lower case, with an initial capital and in capitals; one stored with an initial capital,
+    /// such as `London`, is accepted in that form and in capitals and flagged in lower case; one
+    /// stored in capitals, such as `HDB`, is flagged in lower case.
+    ///
+    /// The curly apostrophe Word types, U+2019, is looked up as the straight one through the affix
+    /// file's `ICONV` line, which spellbook applies, so a misspelt contraction is flagged whole,
+    /// apostrophe included, at its offset in the text as written. The `OCONV` line gives every
+    /// suggestion the curly apostrophe, whichever one the word was typed with.
     pub fn check(&self, text: &str) -> Vec<Flag> {
         let mut flags = Vec::new();
         let mut local_start = 0;
