@@ -352,6 +352,26 @@ mod tests {
     }
 
     #[test]
+    fn negative_parallelism_accepts_a_straight_a_curly_or_no_apostrophe() {
+        for sentence in [
+            "It's not just a tool, it's a partner.",
+            "It\u{2019}s not just a tool, it\u{2019}s a partner.",
+            "It\u{2019}s not merely a tool, it's a partner.",
+            "Its not only a tool, its a partner.",
+        ] {
+            let flags = scan(sentence);
+            let parallels = flags_of(&flags, "negative-parallelism");
+            assert_eq!(parallels.len(), 1, "{sentence}: {flags:#?}");
+            assert_eq!(
+                flagged_text(parallels[0]),
+                sentence.trim_end_matches(" a partner."),
+                "{sentence}"
+            );
+        }
+        assert!(scan("It\u{2019}s not a tool.").is_empty());
+    }
+
+    #[test]
     fn flags_a_superficial_ing_ending_only_after_a_comma() {
         let flagged = scan("The design uses blue and gold, symbolizing the coastline.");
         assert_eq!(

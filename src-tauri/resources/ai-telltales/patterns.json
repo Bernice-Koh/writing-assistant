@@ -203,7 +203,7 @@
     "description": "The \"it's not just X, it's Y\" construction, overused as a rhetorical device",
     "matcher": {
       "kind": "regex",
-      "source": "(?i)\\bit'?s not (?:just|merely|only)\\b[^,.;]{1,80}?,?\\s*it'?s\\b"
+      "source": "(?i)\\bit['\\x{2019}]?s not (?:just|merely|only)\\b[^,.;]{1,80}?,?\\s*it['\\x{2019}]?s\\b"
     },
     "unit": "span",
     "band": { "kind": "forbidden" },
