@@ -185,19 +185,22 @@ impl Catalogue {
 }
 
 #[cfg(test)]
+mod stems;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
     use super::*;
-    use crate::style::checker::{Band, CheckableMode, Matcher, Unit};
+    use crate::style::checker::{Band, CheckableMode, Matcher, PhraseEntry, Unit};
 
-    fn scan(text: &str) -> Vec<Flag> {
+    pub(super) fn scan(text: &str) -> Vec<Flag> {
         Catalogue::every_pattern().flags(text, FormMode::Prose, "default")
     }
 
     /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
     /// assert on what was flagged without depending on how the span happens to be anchored.
-    fn flagged_text(flag: &Flag) -> String {
+    pub(super) fn flagged_text(flag: &Flag) -> String {
         let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
         let end = flag.span.local_start + flag.span.local_length;
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
@@ -210,7 +213,7 @@ mod tests {
         }
     }
 
-    fn flags_of<'a>(flags: &'a [Flag], pattern_id: &str) -> Vec<&'a Flag> {
+    pub(super) fn flags_of<'a>(flags: &'a [Flag], pattern_id: &str) -> Vec<&'a Flag> {
         flags
             .iter()
             .filter(|flag| pattern_ids_of(flag) == [pattern_id])
@@ -229,14 +232,14 @@ mod tests {
         }
     }
 
-    fn pattern(id: &str) -> &'static Pattern {
+    pub(super) fn pattern(id: &str) -> &'static Pattern {
         patterns()
             .iter()
             .find(|pattern| pattern.id == id)
             .unwrap_or_else(|| panic!("no pattern {id:?}"))
     }
 
-    fn phrase_entries(pattern: &Pattern) -> &[crate::style::checker::PhraseEntry] {
+    pub(super) fn phrase_entries(pattern: &Pattern) -> &[PhraseEntry] {
         match &pattern.rule.matcher {
             Matcher::PhraseList { entries } => entries,
             _ => &[],

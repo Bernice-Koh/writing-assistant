@@ -1,9 +1,13 @@
+mod dictionary_words;
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Once;
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
+
+pub(crate) use dictionary_words::dictionary_words;
 
 /// A directory under the OS temp directory unique to this call, not yet created, handed to a test
 /// as its data root so that no test touches the real one, and concurrently running tests never
