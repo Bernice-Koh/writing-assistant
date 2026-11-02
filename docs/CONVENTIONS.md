@@ -39,8 +39,10 @@ insert-only guard, and the tables `schema_version`, `passages`, those of the Car
 a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an
 event until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
 result until the screen exists (#103), and the other artefact tables arrive with the features that
-first write them. `wa` has no subcommands
-yet; each arrives with its own issue.
+first write them. `wa` has one subcommand, `wa backup`, which copies the store file alone;
+`wa screen` is planned, and each later subcommand arrives with its own issue. Every subcommand
+opens the store through `Store::open_existing`, which refuses when the store is absent, so the app
+is the store's one creator.
 `adapter/` does not exist.
 
 The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file

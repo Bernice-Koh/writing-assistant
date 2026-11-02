@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 use super::error::StoreError;
 use super::migrations::{self, MIGRATIONS};
@@ -35,29 +35,53 @@ const ENFORCE_FOREIGN_KEYS: bool = true;
 /// write lock, since its snapshot may already be stale.
 pub(super) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Opens the store file under `data_root` with the pragmas every store connection carries,
-/// creating the root and the file when either is absent, and applies every embedded migration the
-/// store does not yet record. Returns the connection and the schema version it ends at. Touches no
-/// other file under the root: Tauri points WebView2's user-data folder at the same root.
+/// What an open does when the store file is absent.
+#[derive(Clone, Copy)]
+pub(super) enum WhenAbsent {
+    /// Creates the root and the file: the app's open, the store's one creator.
+    Create,
+    /// Refuses with [`StoreError::NoStore`] and creates nothing: `wa`'s open.
+    Refuse,
+}
+
+/// Opens the store file under `data_root` with the pragmas every store connection carries, and
+/// applies every embedded migration the store does not yet record. When the file is absent,
+/// `when_absent` decides between creating the root and the file and refusing. Returns the
+/// connection and the schema version it ends at. Touches no other file under the root: Tauri
+/// points WebView2's user-data folder at the same root.
 pub(super) fn open(
     data_root: &Path,
     busy_timeout: Duration,
+    when_absent: WhenAbsent,
 ) -> Result<(Connection, u32), StoreError> {
-    std::fs::create_dir_all(data_root).map_err(|source| StoreError::Write {
-        path: data_root.to_path_buf(),
-        source,
-    })?;
     let path = data_root.join(STORE_FILE_NAME);
+    let flags = match when_absent {
+        WhenAbsent::Create => {
+            std::fs::create_dir_all(data_root).map_err(|source| StoreError::Write {
+                path: data_root.to_path_buf(),
+                source,
+            })?;
+            OpenFlags::default()
+        }
+        WhenAbsent::Refuse => {
+            if !path.is_file() {
+                return Err(StoreError::NoStore { path });
+            }
+            // Without the create flag, a file removed after the check fails the open rather than
+            // being created again.
+            OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE)
+        }
+    };
     let open_error = |source| StoreError::Open {
         path: path.clone(),
         source,
     };
 
-    let mut connection = Connection::open(&path).map_err(open_error)?;
+    let mut connection = Connection::open_with_flags(&path, flags).map_err(open_error)?;
     // Set first, so that switching a new file to write-ahead mode, which takes the write lock,
     // waits for another process's write rather than failing. Only the app creates the store file,
-    // since `wa` opens an existing store and refuses when it is absent, so two `journal_mode`
-    // switches on a new file never race.
+    // since `wa` opens through `WhenAbsent::Refuse`, so two `journal_mode` switches on a new file
+    // never race.
     connection.busy_timeout(busy_timeout).map_err(open_error)?;
     let journal_mode: String = connection
         .pragma_update_and_check(None, "journal_mode", JOURNAL_MODE, |row| row.get(0))
@@ -87,7 +111,7 @@ mod tests {
         let root = TempRoot::new();
         assert!(!root.path().exists());
 
-        let _connection = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let _connection = open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
 
         assert!(root.path().join(STORE_FILE_NAME).is_file());
     }
@@ -95,7 +119,7 @@ mod tests {
     #[test]
     fn a_new_store_is_in_write_ahead_mode_with_foreign_keys_enforced() {
         let root = TempRoot::new();
-        let (connection, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (connection, _) = open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
 
         let journal_mode: String = connection
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
@@ -118,13 +142,13 @@ mod tests {
     #[test]
     fn reopening_the_store_keeps_its_rows() {
         let root = TempRoot::new();
-        let (first, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (first, _) = open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         first
             .execute_batch("CREATE TABLE scratch (id INTEGER PRIMARY KEY); INSERT INTO scratch DEFAULT VALUES;")
             .unwrap();
         drop(first);
 
-        let (second, _) = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let (second, _) = open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
         let rows: i64 = second
             .query_row("SELECT count(*) FROM scratch", [], |row| row.get(0))
             .unwrap();
@@ -141,7 +165,7 @@ mod tests {
 
         // The migration step reads at open, and a read opens the write-ahead log, which brings the
         // two sidecars into being before the open returns.
-        let _connection = open(root.path(), BUSY_TIMEOUT).unwrap();
+        let _connection = open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create).unwrap();
 
         let mut added: Vec<String> = std::fs::read_dir(root.path())
             .unwrap()
@@ -175,7 +199,7 @@ mod tests {
         let contents = "not a SQLite database, and long enough to hold a header's worth of bytes";
         std::fs::write(&path, contents).unwrap();
 
-        match open(root.path(), BUSY_TIMEOUT) {
+        match open(root.path(), BUSY_TIMEOUT, WhenAbsent::Create) {
             Err(StoreError::Open {
                 path: fault_path,
                 source,

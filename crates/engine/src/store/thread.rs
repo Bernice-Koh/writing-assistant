@@ -10,7 +10,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use tokio::sync::{mpsc as request_channel, oneshot};
 
-use super::connection::{self, BUSY_TIMEOUT};
+use super::connection::{self, WhenAbsent, BUSY_TIMEOUT};
 use super::error::StoreError;
 
 /// Work for the store thread: a closure over the connection that sends its own result on the reply
@@ -40,7 +40,8 @@ impl Store {
     /// creates the root and the store file when either is absent, sets write-ahead mode,
     /// foreign-key enforcement and the busy timeout, and applies every embedded migration the
     /// store does not yet record before the thread serves its first request. Blocks until the
-    /// thread reports the outcome.
+    /// thread reports the outcome. The app's open, and the store's one creator; `wa` opens through
+    /// [`open_existing`](Self::open_existing).
     ///
     /// # Errors
     /// [`StoreError::Write`] when the root cannot be created, [`StoreError::Open`] when SQLite
@@ -51,12 +52,29 @@ impl Store {
     /// and rolls back, and [`StoreError::ThreadSpawn`] or [`StoreError::ThreadNotReady`] when the
     /// thread does not start.
     pub fn open(data_root: &Path) -> Result<Self, StoreError> {
-        Self::open_with_busy_timeout(data_root, BUSY_TIMEOUT)
+        Self::open_with(data_root, BUSY_TIMEOUT, WhenAbsent::Create)
     }
 
-    fn open_with_busy_timeout(
+    /// [`open`](Self::open) for a store that already exists, which every `wa` subcommand opens
+    /// through: refuses when `store.sqlite` is absent under `data_root`, creating neither the root
+    /// nor the file, and otherwise opens exactly as [`open`](Self::open) does. Only the app creates
+    /// the store, so only one process ever switches a new file to write-ahead mode.
+    ///
+    /// The open applies the embedded migrations as every open does, so a `wa` built ahead of the
+    /// app migrates the store before it serves a request, a backup among them. That is accepted,
+    /// since the app and `wa` are built from one checkout.
+    ///
+    /// # Errors
+    /// [`StoreError::NoStore`] naming the store file's path when it is absent, and otherwise as
+    /// [`open`](Self::open).
+    pub fn open_existing(data_root: &Path) -> Result<Self, StoreError> {
+        Self::open_with(data_root, BUSY_TIMEOUT, WhenAbsent::Refuse)
+    }
+
+    fn open_with(
         data_root: &Path,
         busy_timeout: Duration,
+        when_absent: WhenAbsent,
     ) -> Result<Self, StoreError> {
         let (request_tx, request_rx) = request_channel::unbounded_channel();
         let (ready_tx, ready_rx) = ready_channel::channel();
@@ -66,7 +84,7 @@ impl Store {
             .spawn(move || {
                 // The opener blocks on the other end of `ready_tx` until this send, so it cannot
                 // fail.
-                match connection::open(&thread_root, busy_timeout) {
+                match connection::open(&thread_root, busy_timeout, when_absent) {
                     Ok((connection, schema_version)) => {
                         let _ = ready_tx.send(Ok(schema_version));
                         serve(connection, request_rx);
@@ -150,10 +168,63 @@ impl Store {
             .map_err(|_| StoreError::ThreadGone { operation })?
     }
 
+    /// [`request`](Self::request) for work that raises the store's own errors, such as a file
+    /// operation beside its SQL, which names the path it touched rather than the request.
+    ///
+    /// # Errors
+    /// Whatever `work` returns, and [`StoreError::ThreadGone`] when the store thread has stopped.
+    pub(in crate::store) async fn typed_request<T, F>(
+        &self,
+        operation: &'static str,
+        work: F,
+    ) -> Result<T, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let reply = self.enqueue(operation, work)?;
+        reply
+            .await
+            .map_err(|_| StoreError::ThreadGone { operation })?
+    }
+
+    /// [`typed_request`](Self::typed_request) for a synchronous caller, which blocks on the reply.
+    ///
+    /// # Errors
+    /// As [`typed_request`](Self::typed_request).
+    ///
+    /// # Panics
+    /// As [`request_blocking`](Self::request_blocking).
+    pub(in crate::store) fn typed_request_blocking<T, F>(
+        &self,
+        operation: &'static str,
+        work: F,
+    ) -> Result<T, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let reply = self.enqueue(operation, work)?;
+        reply
+            .blocking_recv()
+            .map_err(|_| StoreError::ThreadGone { operation })?
+    }
+
     /// Queues `work` for the store thread and returns the receiving half of its reply.
     fn send<T, F>(&self, operation: &'static str, work: F) -> Result<Reply<T>, StoreError>
     where
         F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.enqueue(operation, move |connection| {
+            work(connection).map_err(|source| StoreError::from_request(operation, source))
+        })
+    }
+
+    /// [`send`](Self::send) for work that raises the store's own errors.
+    fn enqueue<T, F>(&self, operation: &'static str, work: F) -> Result<Reply<T>, StoreError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
         T: Send + 'static,
     {
         let Some(requests) = &self.thread.requests else {
@@ -161,8 +232,7 @@ impl Store {
         };
         let (reply_tx, reply_rx) = oneshot::channel();
         let request: Request = Box::new(move |connection| {
-            let result =
-                work(connection).map_err(|source| StoreError::from_request(operation, source));
+            let result = work(connection);
             if reply_tx.send(result).is_err() {
                 log::debug!(
                     "the caller of the store request {operation:?} stopped waiting, so its result \
@@ -297,6 +367,51 @@ mod tests {
             info[0].1.ends_with(&format!("at schema version {newest}")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn opening_an_existing_store_refuses_a_root_with_no_store_and_creates_nothing() {
+        let absent = TempRoot::new();
+        match Store::open_existing(absent.path()) {
+            Err(StoreError::NoStore { path }) => {
+                assert_eq!(path, absent.path().join(STORE_FILE_NAME));
+            }
+            other => panic!("expected no store, got {:?}", other.err()),
+        }
+        assert!(!absent.path().exists());
+
+        let without_store = TempRoot::new();
+        std::fs::create_dir_all(without_store.path()).unwrap();
+        std::fs::write(without_store.path().join("config.json"), "{}").unwrap();
+        let error = Store::open_existing(without_store.path()).err().unwrap();
+        assert!(
+            error.to_string().contains(
+                &without_store
+                    .path()
+                    .join(STORE_FILE_NAME)
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        let names: Vec<_> = std::fs::read_dir(without_store.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.json"]);
+    }
+
+    #[test]
+    fn opening_an_existing_store_reads_what_the_creator_wrote() {
+        let root = TempRoot::new();
+        let app = Store::open(root.path()).unwrap();
+        create_scratch_table(&app);
+        app.request_blocking("write a row", |connection| insert_row(connection, "app"))
+            .unwrap();
+
+        let wa = Store::open_existing(root.path()).unwrap();
+
+        assert_eq!(writers_in_order(&wa), ["app"]);
     }
 
     /// On a runtime with one worker thread, the test's own task makes progress only if the
@@ -518,7 +633,8 @@ mod tests {
     fn a_write_that_outwaits_the_busy_timeout_returns_busy_and_the_store_serves_on() {
         let root = TempRoot::new();
         let app = Store::open(root.path()).unwrap();
-        let wa = Store::open_with_busy_timeout(root.path(), Duration::from_millis(50)).unwrap();
+        let wa =
+            Store::open_with(root.path(), Duration::from_millis(50), WhenAbsent::Refuse).unwrap();
         create_scratch_table(&app);
 
         let (release_tx, release_rx) = mpsc::channel();
