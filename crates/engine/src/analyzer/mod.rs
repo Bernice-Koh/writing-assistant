@@ -1,6 +1,11 @@
 //! The analyzer, between capture and the overlay. It polls the document's text, waits for the
-//! typing pause, and splits the text into sentences. Checking keys to the pause because a flag on
-//! a half-typed word is noise.
+//! typing pause, splits the text into paragraphs, classifies each paragraph's form mode, and
+//! splits each paragraph into sentences. Checking keys to the pause because a flag on a half-typed
+//! word is noise.
+//!
+//! A sentence is checked under its paragraph's mode. Nothing checks a sentence of code. Spelling
+//! and the telltale catalogue check a sentence of a fragment or of prose, and LanguageTool checks a
+//! sentence of prose alone, so a fragment's grammar part is complete and empty from the start.
 //!
 //! Each recheck runs two stages, and each publishes the whole document's flags on the watch
 //! channel the overlay subscribes to. The deterministic stage runs spelling and the telltale
@@ -11,22 +16,25 @@
 //! task of its own, so the poll goes on while LanguageTool answers, and spelling and telltale flags
 //! never wait on it.
 //!
-//! The cache holds each sentence's two parts under a hash of its text, as their sources raised
-//! them. Suppression by severity is applied each time the document's flags are assembled for a
+//! The cache holds each sentence's two parts under a hash of its paragraph's mode and its text, as
+//! their sources raised them, so one text in a prose paragraph and in a fragment has an entry for
+//! each. Suppression by severity is applied each time the document's flags are assembled for a
 //! publish, over the parts in hand, so a soft flag that a grammar flag overlaps is in the first
 //! update and gone from the second. A grammar check that fails, times out, or meets LanguageTool
 //! degraded or absent leaves the sentence's grammar part incomplete, and the next recheck sends it
-//! again. Each span's occurrence index is counted from its sentence's position as each update is
-//! assembled.
+//! again. Each span's occurrence index is counted from its sentence's position in the document as
+//! each update is assembled.
 //!
 //! Every recheck carries a number. A new recheck aborts the grammar stage of the one before, and a
 //! stage publishes only while its number is the latest, so a stage that a newer recheck replaced
 //! never publishes over the newer text's flags.
 //!
-//! `sentences` covers the split, `dedupe` suppression. Both are private: [`Analyzer`] is the only
-//! public surface.
+//! [`form_mode`] covers the paragraphs and their modes, `sentences` the split of a paragraph, and
+//! `dedupe` suppression. [`form_mode`] is public for the native capture harness; [`Analyzer`] is
+//! the only other public surface.
 
 mod dedupe;
+pub mod form_mode;
 mod sentences;
 
 use std::collections::hash_map::DefaultHasher;
@@ -102,7 +110,9 @@ struct SentenceParts {
     deterministic: Vec<Flag>,
     /// LanguageTool's flags, routed through the ruleset. `Some` once a grammar check of the
     /// sentence has answered, which is the part's completion mark; `None` while no check has, which
-    /// sends the sentence to the grammar stage of every recheck until one does.
+    /// sends the sentence to the grammar stage of every recheck until one does. A sentence of a
+    /// fragment or of code, which grammar does not run on, has it `Some` and empty from the
+    /// deterministic stage, so only a sentence of prose is ever `None`.
     grammar: Option<Vec<Flag>>,
 }
 
@@ -119,7 +129,9 @@ struct Recheck {
 struct DocumentSentence {
     /// Where the trimmed sentence sits in the document's text, in bytes.
     range: Range<usize>,
-    /// The hash of the sentence's text, its key in the cache.
+    /// The form mode of the sentence's paragraph.
+    mode: FormMode,
+    /// The hash of the sentence's mode and text, its key in the cache.
     key: u64,
 }
 
@@ -312,68 +324,95 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
     inner.flags_tx.send_replace(flags);
 }
 
-/// Splits `text` into its sentences and gathers each one's parts: from the cache where it holds
-/// an entry, and otherwise from a fresh deterministic check, cached with its grammar part
-/// incomplete. An unchanged sentence whose entry aged out under the LRU's capacity is checked
-/// afresh, the correct fallback rather than showing no flags.
+/// Splits `text` into its paragraphs and each paragraph into its sentences, and gathers each
+/// sentence's parts: from the cache where it holds an entry, and otherwise from a fresh check
+/// under its paragraph's mode, cached as [`deterministic_parts`] leaves them. An unchanged sentence
+/// whose entry aged out under the LRU's capacity is checked afresh, the correct fallback rather
+/// than showing no flags.
 fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
     let mut sentences = Vec::new();
     let mut parts = Vec::new();
-    for sentence in sentences::split(&text) {
-        let key = hash_text(sentence.text);
-        let cached = inner
-            .cache
-            .lock()
-            .expect("a poisoned lock here means another thread already panicked")
-            .get(&key)
-            .cloned();
-        let sentence_parts = cached.unwrap_or_else(|| {
-            let checked = SentenceParts {
-                deterministic: deterministic_flags(inner, sentence.text),
-                grammar: None,
-            };
-            inner
+    for paragraph in form_mode::split(&text) {
+        for sentence in sentences::split(paragraph.text) {
+            let key = cache_key(paragraph.mode, sentence.text);
+            let cached = inner
                 .cache
                 .lock()
                 .expect("a poisoned lock here means another thread already panicked")
-                .put(key, checked.clone());
-            checked
-        });
-        sentences.push(DocumentSentence {
-            range: sentence.start..sentence.start + sentence.text.len(),
-            key,
-        });
-        parts.push(sentence_parts);
+                .get(&key)
+                .cloned();
+            let sentence_parts = cached.unwrap_or_else(|| {
+                let checked = deterministic_parts(inner, sentence.text, paragraph.mode);
+                inner
+                    .cache
+                    .lock()
+                    .expect("a poisoned lock here means another thread already panicked")
+                    .put(key, checked.clone());
+                checked
+            });
+            let start = paragraph.start + sentence.start;
+            sentences.push(DocumentSentence {
+                range: start..start + sentence.text.len(),
+                mode: paragraph.mode,
+                key,
+            });
+            parts.push(sentence_parts);
+        }
     }
-    Recheck {
+    let recheck = Recheck {
         number,
         text,
         sentences,
         parts,
+    };
+    log::debug!(
+        "recheck {number} holds {} sentences of prose, {} of fragments and {} of code, and {} of \
+         them have an incomplete grammar part",
+        recheck.count_in(FormMode::Prose),
+        recheck.count_in(FormMode::Fragment),
+        recheck.count_in(FormMode::Code),
+        recheck.incomplete_sentences().len()
+    );
+    recheck
+}
+
+/// The parts of `sentence`, a sentence of a paragraph of `mode`, as the deterministic stage leaves
+/// them. No source checks code, so both parts are complete and empty. Spelling and the catalogue
+/// check a fragment and prose. A fragment's grammar part is complete and empty, since grammar does
+/// not run on fragments, and prose's is left incomplete for the grammar stage.
+fn deterministic_parts(inner: &Inner, sentence: &str, mode: FormMode) -> SentenceParts {
+    match mode {
+        FormMode::Code => SentenceParts {
+            deterministic: Vec::new(),
+            grammar: Some(Vec::new()),
+        },
+        FormMode::Fragment => SentenceParts {
+            deterministic: deterministic_flags(inner, sentence, mode),
+            grammar: Some(Vec::new()),
+        },
+        FormMode::Prose => SentenceParts {
+            deterministic: deterministic_flags(inner, sentence, mode),
+            grammar: None,
+        },
     }
 }
 
-fn deterministic_flags(inner: &Inner, sentence: &str) -> Vec<Flag> {
+fn deterministic_flags(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Flag> {
     #[cfg(test)]
     inner
         .deterministic_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    // Every sentence is prose until form mode is classified per paragraph (#54).
     let mut flags = inner.spelling.check(sentence);
-    flags.extend(
-        inner
-            .catalogue
-            .flags(sentence, FormMode::Prose, &inner.register),
-    );
+    flags.extend(inner.catalogue.flags(sentence, mode, &inner.register));
     flags
 }
 
-/// Sends `grammar` each sentence of `recheck` whose grammar part is incomplete, in document order
-/// and one at a time. Each answer is cached as it arrives, so a newer recheck that aborts the stage
-/// keeps the answers it already had. A text that two sentences share is sent once. Publishes the
-/// second update once any check has answered; with none answered, the first update already holds
-/// every flag in hand.
+/// Sends `grammar` each sentence of `recheck` whose grammar part is incomplete, which is each
+/// sentence of prose with no complete entry, in document order and one at a time. Each answer is
+/// cached as it arrives, so a newer recheck that aborts the stage keeps the answers it already had.
+/// A sentence that two share, by mode and text, is sent once. Publishes the second update once any
+/// check has answered; with none answered, the first update already holds every flag in hand.
 async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut recheck: Recheck) {
     let mut checked: HashMap<u64, Option<Vec<Flag>>> = HashMap::new();
     let mut any_answered = false;
@@ -384,7 +423,8 @@ async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut r
             Some(grammar_flags) => grammar_flags,
             None => {
                 let sentence = recheck.sentence(index);
-                let grammar_flags = check_grammar(&inner, grammar.as_ref(), sentence).await;
+                let mode = recheck.sentences[index].mode;
+                let grammar_flags = check_grammar(&inner, grammar.as_ref(), sentence, mode).await;
                 if let Some(flags) = &grammar_flags {
                     let complete = SentenceParts {
                         deterministic: recheck.parts[index].deterministic.clone(),
@@ -413,16 +453,16 @@ async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut r
     }
 }
 
-/// `sentence`'s grammar flags from `grammar`, or `None` when the check failed, which leaves the
-/// sentence's grammar part incomplete.
+/// `sentence`'s grammar flags from `grammar`, checked under `mode`, its paragraph's, or `None`
+/// when the check failed, which leaves the sentence's grammar part incomplete.
 async fn check_grammar(
     inner: &Inner,
     grammar: &dyn GrammarSource,
     sentence: &str,
+    mode: FormMode,
 ) -> Option<Vec<Flag>> {
-    // Every sentence is prose until form mode is classified per paragraph (#54).
     let checked = grammar
-        .check(sentence, &inner.ruleset, FormMode::Prose, &inner.register)
+        .check(sentence, &inner.ruleset, mode, &inner.register)
         .await;
     match checked {
         Ok(grammar_flags) => Some(grammar_flags),
@@ -442,11 +482,19 @@ impl Recheck {
         &self.text[self.sentences[index].range.clone()]
     }
 
-    /// The indices of the sentences whose grammar part is incomplete.
+    /// The indices of the sentences whose grammar part is incomplete, each a sentence of prose.
     fn incomplete_sentences(&self) -> Vec<usize> {
         (0..self.parts.len())
             .filter(|&index| self.parts[index].grammar.is_none())
             .collect()
+    }
+
+    /// How many of the sentences are of paragraphs of `mode`.
+    fn count_in(&self, mode: FormMode) -> usize {
+        self.sentences
+            .iter()
+            .filter(|sentence| sentence.mode == mode)
+            .count()
     }
 
     /// The whole document's flags from the parts in hand: for each sentence, its deterministic
@@ -506,6 +554,15 @@ fn with_occurrence(text_before_sentence: &str, mut flag: Flag) -> Flag {
 fn hash_text(text: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The cache key of `sentence`, a sentence of a paragraph of `mode`: the hash of the two together,
+/// since one text is checked by different sources in a paragraph of each mode.
+fn cache_key(mode: FormMode, sentence: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    mode.hash(&mut hasher);
+    sentence.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -933,7 +990,7 @@ mod tests {
             .cache
             .lock()
             .unwrap()
-            .get(&hash_text("An eror here."))
+            .get(&cache_key(FormMode::Prose, "An eror here."))
             .cloned()
             .unwrap();
         assert!(
@@ -1104,7 +1161,7 @@ mod tests {
         assert_eq!(analyzer.updates().len(), 1);
         for sentence in sentences {
             let cache = analyzer.inner.cache.lock().unwrap();
-            let parts = cache.peek(&hash_text(sentence)).unwrap();
+            let parts = cache.peek(&cache_key(FormMode::Prose, sentence)).unwrap();
             assert!(parts.grammar.is_none(), "{sentence}: {parts:#?}");
         }
 
@@ -1420,5 +1477,198 @@ mod tests {
             flags.iter().all(|flag| flag.ruleset_version.is_none()),
             "{flags:#?}"
         );
+    }
+
+    /// The cache's entry for `sentence` in a paragraph of `mode`, if it holds one.
+    fn cached_parts(analyzer: &Analyzer, mode: FormMode, sentence: &str) -> Option<SentenceParts> {
+        analyzer
+            .inner
+            .cache
+            .lock()
+            .unwrap()
+            .peek(&cache_key(mode, sentence))
+            .cloned()
+    }
+
+    fn telltales_in(flags: &[Flag]) -> Vec<String> {
+        flags
+            .iter()
+            .filter(|flag| is_telltale(flag))
+            .map(flagged_text)
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_code_paragraph_raises_no_flag_of_any_origin_and_none_of_its_text_is_sent() {
+        let fenced = "This has a mispelling. It stands as a testament to the team. He go home.";
+        // A run of two indented lines, code although neither line is symbol-dense.
+        let indented = "    He go to the shcool.\n\tShe go there tomorow.";
+        let fake = Arc::new(FakeCapture::new(&format!(
+            "A fine start.\n```\n{fenced}\n```\n{indented}\nA fine end."
+        )));
+        let grammar = FakeGrammar::flagging(&["go", "fine"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        assert_eq!(grammar.sent(), ["A fine start.", "A fine end."]);
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        for update in &updates {
+            assert!(
+                update.iter().all(|flag| flag.span.anchor.contains("fine")),
+                "{update:#?}"
+            );
+        }
+        assert_eq!(
+            flagged_by(&updates[1], &FlagOrigin::Grammar),
+            ["fine", "fine"]
+        );
+        assert_eq!(updates[1].len(), 2, "{:#?}", updates[1]);
+        for sentence in [
+            "This has a mispelling.",
+            "It stands as a testament to the team.",
+            "He go home.",
+            "He go to the shcool.",
+            "She go there tomorow.",
+        ] {
+            let parts = cached_parts(&analyzer, FormMode::Code, sentence).unwrap();
+            assert!(parts.deterministic.is_empty(), "{sentence}: {parts:#?}");
+            assert_eq!(parts.grammar, Some(Vec::new()), "{sentence}");
+        }
+        // Only the two sentences of prose went through a deterministic check.
+        assert_eq!(analyzer.deterministic_check_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fragment_paragraph_gets_spelling_and_telltale_flags_and_none_of_its_text_is_sent() {
+        let item = "- A mispelling that stands as a testament to the team, and we go";
+        let fake = Arc::new(FakeCapture::new(&format!(
+            "# We go on\n{item}\nA fine end."
+        )));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        assert_eq!(grammar.sent(), ["A fine end."]);
+        let flags = published_flags(&analyzer);
+        assert_eq!(flagged_by(&flags, &FlagOrigin::Spelling), ["mispelling"]);
+        assert_eq!(telltales_in(&flags), ["stands as a testament to"]);
+        assert!(
+            flagged_by(&flags, &FlagOrigin::Grammar).is_empty(),
+            "{flags:#?}"
+        );
+        assert!(
+            flags.iter().all(|flag| flag.span.anchor == item),
+            "{flags:#?}"
+        );
+        let parts = cached_parts(&analyzer, FormMode::Fragment, item).unwrap();
+        assert_eq!(parts.grammar, Some(Vec::new()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prose_paragraph_gets_spelling_telltale_and_grammar_flags() {
+        let fake = Arc::new(FakeCapture::new(&format!("# Notes\n{THREE_SOURCES}")));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        assert_eq!(
+            grammar.sent(),
+            [
+                "This has a mispelling.",
+                "It stands as a testament to the team.",
+                "He go to school."
+            ]
+        );
+        let flags = published_flags(&analyzer);
+        assert_eq!(flagged_by(&flags, &FlagOrigin::Spelling), ["mispelling"]);
+        assert_eq!(telltales_in(&flags), ["stands as a testament to"]);
+        assert_eq!(flagged_by(&flags, &FlagOrigin::Grammar), ["go"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lone_indented_paragraph_of_sentences_gets_spelling_telltale_and_grammar_flags() {
+        // A first-line indent typed with a tab, on a line with no indented line beside it.
+        let fake = Arc::new(FakeCapture::new(&format!("# Notes\n\t{THREE_SOURCES}")));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        let sentences = [
+            "This has a mispelling.",
+            "It stands as a testament to the team.",
+            "He go to school.",
+        ];
+        assert_eq!(grammar.sent(), sentences);
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        let first = &updates[0];
+        assert_eq!(flagged_by(first, &FlagOrigin::Spelling), ["mispelling"]);
+        assert_eq!(telltales_in(first), ["stands as a testament to"]);
+        assert!(
+            flagged_by(first, &FlagOrigin::Grammar).is_empty(),
+            "{first:#?}"
+        );
+        assert_eq!(flagged_by(&updates[1], &FlagOrigin::Grammar), ["go"]);
+        assert!(
+            first.iter().all(|flag| updates[1].contains(flag)),
+            "{updates:#?}"
+        );
+        for sentence in sentences {
+            let parts = cached_parts(&analyzer, FormMode::Prose, sentence).unwrap();
+            assert!(parts.grammar.is_some(), "{sentence}: {parts:#?}");
+            assert!(
+                cached_parts(&analyzer, FormMode::Code, sentence).is_none(),
+                "{sentence}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_text_in_a_prose_paragraph_and_in_a_fragment_has_an_entry_for_each() {
+        let shared = "He go to the shcool.";
+        // The second paragraph is short and ends without terminal punctuation: a fragment.
+        let fake = Arc::new(FakeCapture::new(&format!(
+            "{shared} That was all.\n{shared} And"
+        )));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        assert_eq!(analyzer.deterministic_check_count(), 4);
+        assert_eq!(grammar.sent(), [shared, "That was all."]);
+        let prose = cached_parts(&analyzer, FormMode::Prose, shared).unwrap();
+        let fragment = cached_parts(&analyzer, FormMode::Fragment, shared).unwrap();
+        for parts in [&prose, &fragment] {
+            assert_eq!(
+                flagged_by(&parts.deterministic, &FlagOrigin::Spelling),
+                ["shcool"]
+            );
+        }
+        let prose_grammar = prose.grammar.unwrap();
+        assert_eq!(flagged_by(&prose_grammar, &FlagOrigin::Grammar), ["go"]);
+        assert_eq!(fragment.grammar, Some(Vec::new()));
+
+        let flags = published_flags(&analyzer);
+        let ids: Vec<&str> = flags.iter().map(|flag| flag.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["0:spelling:13", "0:grammar:0:TEST_RULE", "2:spelling:13"]
+        );
+        let occurrences: Vec<usize> = flags.iter().map(|flag| flag.span.occurrence).collect();
+        assert_eq!(occurrences, [0, 0, 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sentence_of_a_later_paragraph_counts_its_occurrence_over_the_whole_document() {
+        let fake = Arc::new(FakeCapture::new("An eror here.\r\n\r\nAn eror here."));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
+        let ids: Vec<String> = published_flags(&analyzer)
+            .into_iter()
+            .map(|flag| flag.id)
+            .collect();
+        assert_eq!(ids, ["0:spelling:3", "1:spelling:3"]);
     }
 }

@@ -2,6 +2,11 @@
 //! notification, and cursor-rect retrieval against whatever application currently has focus.
 //! Also exercises the `Capture` trait added in #20: `current_text`/`cursor_rect` are queried
 //! once at the start and once before stopping, against whatever has focus at each point.
+//! Each `current_text` query also prints how many of each paragraph mark the text holds, and one
+//! line per paragraph, split and classified by the analyzer's own form-mode module: its index, its
+//! length in characters and its form mode, and, for a list item or a paragraph that begins with a
+//! control character, the classes of its first two code points, which show how the application
+//! delivers a list marker.
 //!
 //! Run from the repository root with `cargo run -p wa-engine --example native_capture_spike`.
 //! `RUST_LOG=debug` shows every attempt, including ones that failed (a control without
@@ -13,6 +18,7 @@ use std::io::IsTerminal;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use wa_engine::analyzer::form_mode;
 use wa_engine::capture::native::NativeCapture;
 use wa_engine::capture::Capture;
 
@@ -61,11 +67,65 @@ fn main() {
 /// same as the browser bridge's logging in #12.
 async fn query_capture_trait(capture: &NativeCapture, when: &str) {
     match capture.current_text().await {
-        Ok(text) => println!("current_text() {when}: {} characters", text.chars().count()),
+        Ok(text) => {
+            println!("current_text() {when}: {} characters", text.chars().count());
+            print_marks(&text);
+            print_paragraphs(&text);
+        }
         Err(error) => println!("current_text() {when}: {error}"),
     }
     match capture.cursor_rect().await {
         Ok(rect) => println!("cursor_rect() {when}: {rect:?}"),
         Err(error) => println!("cursor_rect() {when}: {error}"),
     }
+}
+
+/// How many of each paragraph mark `text` holds, which shows the mark the application delivers.
+fn print_marks(text: &str) {
+    let pairs = text.matches("\r\n").count();
+    let carriage_returns = text.matches('\r').count() - pairs;
+    let newlines = text.matches('\n').count() - pairs;
+    println!(
+        "  marks: {carriage_returns} carriage returns alone, {newlines} newlines alone, \
+         {pairs} carriage returns followed by a newline"
+    );
+}
+
+/// One line per paragraph of `text`, with no text in it: a list marker's code points are the
+/// most it shows.
+fn print_paragraphs(text: &str) {
+    for (index, paragraph) in form_mode::split(text).iter().enumerate() {
+        let mut line = format!(
+            "  paragraph {index}: {} characters, {:?}",
+            paragraph.text.chars().count(),
+            paragraph.mode
+        );
+        if form_mode::is_list_item(paragraph.text) || paragraph.text.starts_with(char::is_control) {
+            let classes: Vec<String> = paragraph.text.chars().take(2).map(class_of).collect();
+            line.push_str(", starts with ");
+            line.push_str(&classes.join(" then "));
+        }
+        println!("{line}");
+    }
+}
+
+/// The class of `c`, with its value in hex unless it is a letter or a digit, so a marker's code
+/// point shows and a word's letters do not.
+fn class_of(c: char) -> String {
+    let class = match c {
+        '\u{2022}' => "bullet",
+        '-' => "hyphen",
+        '*' => "asterisk",
+        '+' => "plus sign",
+        '.' => "full stop",
+        ')' => "closing parenthesis",
+        '\t' => "tab",
+        ' ' => "space",
+        _ if c.is_ascii_digit() => return "digit".to_owned(),
+        _ if c.is_alphabetic() => return "letter".to_owned(),
+        _ if c.is_control() => "control character",
+        _ if c.is_whitespace() => "whitespace",
+        _ => "other",
+    };
+    format!("{class} U+{:04X}", u32::from(c))
 }

@@ -3,9 +3,10 @@
 //! compiles and evaluates a rule. [`ruleset`] loads the latest published ruleset version, compiles
 //! each of its checkers once, and builds the style flag that cites a checker's clause. The
 //! AI-telltale catalogue, in [`ai_tell`], is a rule per pattern under the pattern's id, with no
-//! clause, and builds the telltale flag. Form-mode classification (#54) and the analyzer passes
-//! that run checkers (#100) are not yet implemented. Everything here is deterministic: nothing in
-//! this module calls a model or the network.
+//! clause, and builds the telltale flag. The analyzer classifies each paragraph's form mode, in
+//! [`crate::analyzer::form_mode`]. The analyzer passes that run checkers (#100) are not yet
+//! implemented. Everything here is deterministic: nothing in this module calls a model or the
+//! network.
 
 pub mod ai_tell;
 mod band;
