@@ -39,6 +39,16 @@ pub enum Outcome {
     Fail,
 }
 
+/// One rule of the content check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContentRule {
+    Numbers,
+    CapitalisedTokens,
+    Negations,
+    Length,
+}
+
 /// Each rule's own outcome. It carries no text from either side, so a log line or a stored result
 /// that holds it holds no draft text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,14 +62,21 @@ pub struct ContentResult {
 impl ContentResult {
     /// Whether all four rules passed.
     pub fn passed(&self) -> bool {
+        self.failed_rules().is_empty()
+    }
+
+    /// The rules that failed, in the order numbers, capitalised tokens, negations, length.
+    pub fn failed_rules(&self) -> Vec<ContentRule> {
         [
-            self.numbers,
-            self.capitalised_tokens,
-            self.negations,
-            self.length,
+            (ContentRule::Numbers, self.numbers),
+            (ContentRule::CapitalisedTokens, self.capitalised_tokens),
+            (ContentRule::Negations, self.negations),
+            (ContentRule::Length, self.length),
         ]
         .into_iter()
-        .all(|outcome| outcome == Outcome::Pass)
+        .filter(|(_, outcome)| *outcome == Outcome::Fail)
+        .map(|(rule, _)| rule)
+        .collect()
     }
 }
 

@@ -236,11 +236,11 @@ pub(super) struct Category {
 /// Responses captured from a running LanguageTool 6.6 server, trimmed to the fields this module
 /// reads.
 #[cfg(test)]
-pub(super) mod fixtures {
+pub(crate) mod fixtures {
     use super::{CheckResponse, Match};
 
     /// "I gotten used to it." against `language=en-GB`.
-    pub(in crate::languagetool) const GOT_GOTTEN_RESPONSE: &str = r#"{
+    pub(crate) const GOT_GOTTEN_RESPONSE: &str = r#"{
         "matches": [
             {
                 "message": "“Gotten” is commonly used in American English. For varieties outside of North America, “got” is the preferred variant.",
@@ -278,7 +278,7 @@ pub(super) mod fixtures {
 
     /// "The report was written by the committee." against `language=en-GB` and `level=picky`: one
     /// match, from a picky style rule. At the default level the same request returns no match.
-    pub(in crate::languagetool) const PASSIVE_VOICE_RESPONSE: &str = r#"{
+    pub(crate) const PASSIVE_VOICE_RESPONSE: &str = r#"{
         "matches": [
             {
                 "message": "For a more expressive style, consider rephrasing the sentence in the active voice.",

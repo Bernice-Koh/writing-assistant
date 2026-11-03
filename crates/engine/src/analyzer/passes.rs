@@ -219,6 +219,7 @@ mod tests {
     use crate::capture::Capture;
     use crate::flag::{ClauseId, FlagOrigin, RulesetVersion};
     use crate::languagetool::GrammarSource;
+    use crate::screen::{Finding, Screen};
     use crate::style::ai_tell::Catalogue;
     use crate::style::checker::{Band, CheckableMode, Checker, Matcher, PhraseEntry, Rule};
     use crate::style::ruleset::LoadedRuleset;
@@ -834,6 +835,84 @@ mod tests {
         assert!(
             flags.iter().all(|flag| flag.span.occurrence == 1),
             "{flags:#?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_screen_raises_the_flags_the_analyzer_publishes_through_the_same_passes() {
+        // No two flags overlap, so the analyzer's suppression publishes every flag as raised.
+        let text =
+            "This has a mispelling. Perhaps it rains. Perhaps it hails.\nHe go home. Perhaps it \
+                    snows.";
+        let checkers = || {
+            vec![
+                checker(phrase("rains"), Unit::Span, Band::Forbidden),
+                checker(phrase("perhaps"), Unit::Paragraph, at_most(1)),
+                checker(phrase("perhaps"), Unit::Document, at_most(2)),
+            ]
+        };
+        let catalogue = || {
+            Catalogue::of_patterns(&format!(
+                "[{}]",
+                pattern_at_most_one("document-its", "it", "document")
+            ))
+        };
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let fake = Arc::new(FakeCapture::new(text));
+        let analyzer = started(
+            &fake,
+            Some(&grammar),
+            ruleset_at(1, checkers()),
+            catalogue(),
+            "default",
+        );
+        step(6).await;
+        let mut published = published_flags(&analyzer);
+
+        let screen = Screen::new(
+            Arc::new(test_spell_checker()),
+            Arc::clone(&grammar) as Arc<dyn GrammarSource>,
+            Arc::new(ruleset_at(1, checkers())),
+            Arc::new(catalogue()),
+        );
+        // A passage that holds none of the candidate's words.
+        let screening = screen.run("", text, "default").await.unwrap();
+        let mut screened: Vec<Flag> = screening
+            .hard_results
+            .iter()
+            .chain(&screening.soft_results)
+            .filter_map(|result| match result {
+                Finding::Content { .. } => None,
+                Finding::Spelling { flag }
+                | Finding::Grammar { flag }
+                | Finding::Style { flag }
+                | Finding::Tells { flag } => Some(flag.clone()),
+            })
+            .collect();
+
+        published.sort_by(|first, second| first.id.cmp(&second.id));
+        screened.sort_by(|first, second| first.id.cmp(&second.id));
+        assert_eq!(screened, published);
+        for origin in ["spelling", "grammar", "style", "aiTell"] {
+            assert!(
+                published
+                    .iter()
+                    .any(|flag| { serde_json::to_value(flag).unwrap()["origin"] == origin }),
+                "no {origin} flag: {published:#?}"
+            );
+        }
+        let units: Vec<&str> = published
+            .iter()
+            .filter(|flag| matches!(flag.origin, FlagOrigin::Style { .. }))
+            .map(|flag| flag.message.as_str())
+            .collect();
+        assert_eq!(
+            units,
+            [
+                "",
+                "2 matches in this paragraph, over the maximum of 1",
+                "3 matches in this document, over the maximum of 2",
+            ]
         );
     }
 }
