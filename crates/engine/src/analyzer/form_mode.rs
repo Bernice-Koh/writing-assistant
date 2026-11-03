@@ -3,12 +3,20 @@
 //! public for one other caller, the native capture harness, which prints each paragraph's mode
 //! against a live document with the analyzer's own split and classification.
 //!
-//! Classification is one pass over the paragraphs in document order, carrying whether a fence is
-//! open: a line that opens a fence is code, and so is every paragraph after it up to and including
-//! the line that closes it, or up to the document's end when none does. Outside a fence, the first
-//! of these rules that holds decides:
+//! Classification is one pass over the document's lines in order, carrying whether a fence is open
+//! and whether the line before was indented, with a look at the line after. A line that opens a
+//! fence is code, and so is every paragraph after it up to and including the line that closes it,
+//! or up to the document's end when none does. Outside a fence, the first of these rules that holds
+//! decides:
 //!
-//! 1. A paragraph indented by a tab or four spaces is code, a line of an indented block.
+//! 1. A paragraph indented by a tab or four spaces is code when it also reads as code: when it is
+//!    symbol-dense by rule 3's test, which counts only non-whitespace characters and so not the
+//!    indentation, or when it is part of a run of indented lines. A run is two or more consecutive
+//!    lines of the document that are each indented. It is read over the document's lines before
+//!    the empty and whitespace paragraphs are discarded, so a blank line ends a run, as an
+//!    unindented line does. An indented line of ordinary sentences on its own is a paragraph with a
+//!    first-line indent, typed with a tab, and the indent alone does not make it code: an indented
+//!    line that is neither dense nor in a run falls to the rules below as an unindented line would.
 //! 2. A bulleted or numbered list item, or a heading, is a fragment. Its marker declares the
 //!    structure, and is itself a symbol, which on a short item or heading would carry the next
 //!    rule's density over its threshold: one heading in five of this repository's documentation
@@ -80,22 +88,34 @@ pub struct Paragraph<'a> {
 /// Splits `text` into its paragraphs and classifies each, in document order.
 ///
 /// A paragraph ends at a mark capture delivers: a carriage return from Word, a newline from a
-/// browser. A carriage return followed by a newline is one mark, since the split on each of its
-/// characters leaves an empty paragraph between them, discarded with every other paragraph that is
-/// empty or whitespace.
+/// browser, or a carriage return followed by a newline as one mark, so that an empty line between
+/// two marks is a blank line of the document. A paragraph that is empty or whitespace is discarded
+/// once the runs of indented lines around it are read, since it ends them.
 pub fn split(text: &str) -> Vec<Paragraph<'_>> {
     let mut open_fence = None;
+    let mut previous_line_is_indented = false;
     let mut paragraphs = Vec::new();
-    for line in text.split(['\r', '\n']) {
+    let mut lines = text
+        .split("\r\n")
+        .flat_map(|line| line.split(['\r', '\n']))
+        .peekable();
+    while let Some(line) = lines.next() {
+        let line_is_indented = is_indented_and_not_blank(line);
+        let next_line_is_indented = lines
+            .peek()
+            .is_some_and(|next| is_indented_and_not_blank(next));
+        let in_indented_run =
+            line_is_indented && (previous_line_is_indented || next_line_is_indented);
+        previous_line_is_indented = line_is_indented;
         if line.trim().is_empty() {
             continue;
         }
         paragraphs.push(Paragraph {
-            // `split` returns slices of `text`, so the distance between the two addresses is the
+            // Both splits return slices of `text`, so the distance between the two addresses is the
             // paragraph's byte offset in it.
             start: line.as_ptr().addr() - text.as_ptr().addr(),
             text: line,
-            mode: classify(line, &mut open_fence),
+            mode: classify(line, in_indented_run, &mut open_fence),
         });
     }
     paragraphs
@@ -152,8 +172,9 @@ impl Fence {
     }
 }
 
-/// The form mode of `line`, given the fence open before it, which it updates.
-fn classify(line: &str, open_fence: &mut Option<Fence>) -> FormMode {
+/// The form mode of `line`, given whether it is part of a run of indented lines and the fence open
+/// before it, which it updates.
+fn classify(line: &str, in_indented_run: bool, open_fence: &mut Option<Fence>) -> FormMode {
     if let Some(fence) = *open_fence {
         if fence.closed_by(line) {
             *open_fence = None;
@@ -164,7 +185,7 @@ fn classify(line: &str, open_fence: &mut Option<Fence>) -> FormMode {
         *open_fence = Some(fence);
         return FormMode::Code;
     }
-    if is_indented(line) {
+    if is_indented(line) && (in_indented_run || is_symbol_dense(line)) {
         FormMode::Code
     } else if is_list_item(line) || is_heading(line) {
         FormMode::Fragment
@@ -192,6 +213,12 @@ fn is_indented(line: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether `line` counts towards a run of indented lines: indented, with text after the
+/// indentation, since a blank line ends a run.
+fn is_indented_and_not_blank(line: &str) -> bool {
+    is_indented(line) && !line.trim().is_empty()
 }
 
 /// Whether `line` is a heading: after optional indentation, a run of hashes and a space or a tab.
@@ -393,15 +420,96 @@ mod tests {
 
     #[test]
     fn an_indented_block_is_code() {
+        let text = "Before the block.\n\
+                    \x20   let total = count(items);\n\
+                    \tA sentence indented by a tab.\n\
+                    \x20   - An item indented by four spaces\n\
+                    After the block.";
+        assert_eq!(modes(text), [Prose, Code, Code, Code, Prose]);
+    }
+
+    #[test]
+    fn two_spaces_then_a_tab_reach_the_fourth_column_and_three_spaces_do_not() {
+        let text = "\tThe first line holds ordinary words.\n\
+                    \x20 \tTwo spaces then a tab make this the second line of a run.";
+        assert_eq!(modes(text), [Code, Code]);
+        let text = "\tThe first line holds ordinary words.\n\
+                    \x20  Three spaces do not reach the fourth column, so there is no run.";
+        assert_eq!(modes(text), [Prose, Prose]);
+    }
+
+    #[test]
+    fn an_indented_line_of_ordinary_sentences_on_its_own_is_prose() {
         for line in [
-            "    let total = count(items);",
-            "\tA sentence indented by a tab.",
-            "  \tTwo spaces then a tab reach the fourth column.",
-            "    - An item indented by four spaces",
+            "\tA paragraph with a first-line indent, typed with a tab. It goes on.",
+            "    A paragraph indented by four spaces. It has a second sentence.",
+            "  \tTwo spaces then a tab reach the fourth column. This is still prose.",
+        ] {
+            assert_eq!(mode_of(line), Prose, "{line:?}");
+        }
+        let text = "The first paragraph.\n\tThe second opens with a tab, as typed.\nThe third.";
+        assert_eq!(modes(text), [Prose, Prose, Prose]);
+    }
+
+    #[test]
+    fn an_indented_line_on_its_own_that_is_symbol_dense_is_code() {
+        for line in [
+            "    let total = f(a[i], b[j]);",
+            "\t});",
+            "    if (a && b) { run(); }",
         ] {
             assert_eq!(mode_of(line), Code, "{line:?}");
         }
-        assert_eq!(mode_of("   Three spaces do not make a block."), Prose);
+    }
+
+    #[test]
+    fn the_density_of_an_indented_line_on_its_own_leaves_out_the_indentation() {
+        // Twelve non-whitespace characters after the indentation, three of them symbols: exactly
+        // a quarter.
+        assert_eq!(mode_of("    Call fn(now)."), Prose);
+        assert_eq!(mode_of("\tCall fn(now)."), Prose);
+        // Eleven, three of them symbols: just over a quarter.
+        assert_eq!(mode_of("    Call f(now)."), Code);
+        assert_eq!(mode_of("\tCall f(now)."), Code);
+    }
+
+    #[test]
+    fn a_run_of_two_indented_lines_of_ordinary_words_is_code_both_lines() {
+        let text = "Before the run.\n\
+                    \tThe first line holds ordinary words.\n\
+                    \tSo does the second line of the run.\n\
+                    After the run.";
+        assert_eq!(modes(text), [Prose, Code, Code, Prose]);
+        // A carriage return followed by a newline is one mark, with no blank line inside it.
+        let text =
+            "\tThe first line holds ordinary words.\r\n\tSo does the second line of the run.";
+        assert_eq!(modes(text), [Code, Code]);
+    }
+
+    #[test]
+    fn a_blank_or_unindented_line_between_two_indented_lines_leaves_each_on_its_own() {
+        for between in ["\n\n", "\r\r", "\r\n\r\n", "\n    \n", "\n\t\n"] {
+            let text = format!(
+                "\tThe first paragraph opens with a tab.{between}\tSo does the second paragraph."
+            );
+            assert_eq!(modes(&text), [Prose, Prose], "{text:?}");
+        }
+        let text = "\tThe first paragraph opens with a tab.\n\
+                    The second does not.\n\
+                    \tThe third opens with a tab again.";
+        assert_eq!(modes(text), [Prose, Prose, Prose]);
+    }
+
+    #[test]
+    fn an_indented_list_item_or_short_line_on_its_own_is_a_fragment() {
+        for line in [
+            "    - An item indented by four spaces",
+            "\t1. A numbered item",
+            "\tMeeting notes",
+            "    Next steps:",
+        ] {
+            assert_eq!(mode_of(line), Fragment, "{line:?}");
+        }
     }
 
     #[test]
@@ -431,6 +539,7 @@ mod tests {
                     Then the prose resumes, as it does here.\r\
                     \tindented();\r\
                     And it ends with a last sentence.";
+        // The indented line is on its own between two lines of prose, and code by its density.
         assert_eq!(
             modes(text),
             [Prose, Fragment, Fragment, Fragment, Code, Code, Code, Prose, Code, Prose]

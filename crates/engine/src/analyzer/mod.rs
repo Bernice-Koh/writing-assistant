@@ -1501,7 +1501,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_code_paragraph_raises_no_flag_of_any_origin_and_none_of_its_text_is_sent() {
         let fenced = "This has a mispelling. It stands as a testament to the team. He go home.";
-        let indented = "    He go to the shcool.";
+        // A run of two indented lines, code although neither line is symbol-dense.
+        let indented = "    He go to the shcool.\n\tShe go there tomorow.";
         let fake = Arc::new(FakeCapture::new(&format!(
             "A fine start.\n```\n{fenced}\n```\n{indented}\nA fine end."
         )));
@@ -1528,6 +1529,7 @@ mod tests {
             "It stands as a testament to the team.",
             "He go home.",
             "He go to the shcool.",
+            "She go there tomorow.",
         ] {
             let parts = cached_parts(&analyzer, FormMode::Code, sentence).unwrap();
             assert!(parts.deterministic.is_empty(), "{sentence}: {parts:#?}");
@@ -1582,6 +1584,44 @@ mod tests {
         assert_eq!(flagged_by(&flags, &FlagOrigin::Spelling), ["mispelling"]);
         assert_eq!(telltales_in(&flags), ["stands as a testament to"]);
         assert_eq!(flagged_by(&flags, &FlagOrigin::Grammar), ["go"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lone_indented_paragraph_of_sentences_gets_spelling_telltale_and_grammar_flags() {
+        // A first-line indent typed with a tab, on a line with no indented line beside it.
+        let fake = Arc::new(FakeCapture::new(&format!("# Notes\n\t{THREE_SOURCES}")));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+
+        let sentences = [
+            "This has a mispelling.",
+            "It stands as a testament to the team.",
+            "He go to school.",
+        ];
+        assert_eq!(grammar.sent(), sentences);
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        let first = &updates[0];
+        assert_eq!(flagged_by(first, &FlagOrigin::Spelling), ["mispelling"]);
+        assert_eq!(telltales_in(first), ["stands as a testament to"]);
+        assert!(
+            flagged_by(first, &FlagOrigin::Grammar).is_empty(),
+            "{first:#?}"
+        );
+        assert_eq!(flagged_by(&updates[1], &FlagOrigin::Grammar), ["go"]);
+        assert!(
+            first.iter().all(|flag| updates[1].contains(flag)),
+            "{updates:#?}"
+        );
+        for sentence in sentences {
+            let parts = cached_parts(&analyzer, FormMode::Prose, sentence).unwrap();
+            assert!(parts.grammar.is_some(), "{sentence}: {parts:#?}");
+            assert!(
+                cached_parts(&analyzer, FormMode::Code, sentence).is_none(),
+                "{sentence}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

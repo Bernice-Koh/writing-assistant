@@ -191,7 +191,7 @@ paragraphs in order, and decides what runs on the paragraph's sentences.
 
 | Mode | The paragraph | What runs on it |
 |---|---|---|
-| Code | Lies in a fenced block, the fence lines included; is indented by a tab or four spaces; or is symbol-dense | Nothing |
+| Code | Lies in a fenced block, the fence lines included; is indented by a tab or four spaces and is symbol-dense or part of a run of two or more consecutive indented lines (a lone indented line that is not dense is classified as an unindented one); or is symbol-dense | Nothing |
 | Fragment | Is a bulleted or numbered list item or a heading, or is a short line that ends without terminal punctuation | Spelling, the telltale catalogue, and every checker that declares fragment |
 | Prose | Is anything else, a paragraph of complete sentences among it | Spelling, LanguageTool, the telltale catalogue, and every checker that declares prose |
 
@@ -200,7 +200,13 @@ and closes on a line that holds only a run of the same character at least as lon
 never closes runs to the end of the document. Outside a fence, the first of these rules that holds
 decides:
 
-1. A line indented by a tab or four spaces is code.
+1. A line indented by a tab or four spaces is code when it also reads as code: when it is
+   symbol-dense by rule 3's test, which counts only non-whitespace characters and so not the
+   indentation, or when it is part of a run of indented lines. A run is two or more consecutive
+   lines of the document that are each indented, so a blank line ends one, as an unindented line
+   does. An indented line of ordinary sentences on its own is a paragraph with a first-line indent,
+   typed with a tab, and the indent alone does not make it code: an indented line that is neither
+   dense nor in a run is classified by the rules below as an unindented line is.
 2. A list item or a heading is a fragment. A list item opens, after any indentation, with a
    bullet, a hyphen, an asterisk or a plus sign, or with a number or a letter and a full stop or a
    closing parenthesis, and then a space or a tab. A heading opens with a run of hashes and a
