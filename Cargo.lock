@@ -4150,8 +4150,14 @@ dependencies = [
 name = "wa"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
  "wa-engine",
 ]
 

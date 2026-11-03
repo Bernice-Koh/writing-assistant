@@ -1,59 +1,8 @@
 //! `wa backup` run as the built binary against a temporary data root, never the real one.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
+mod common;
 
-use wa_engine::store::Store;
-
-/// A directory under the OS temp directory unique to this call, removed with everything in it when
-/// the guard drops. The process id separates concurrent test binaries and the counter concurrent
-/// tests within this one.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        Self(std::env::temp_dir().join(format!(
-            "writing-assistant-wa-test-{}-{id}",
-            std::process::id()
-        )))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn created(self) -> Self {
-        std::fs::create_dir_all(&self.0).unwrap();
-        self
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
-
-/// A data root holding a store the engine created, as the app does at its first start.
-fn root_with_store() -> TempDir {
-    let root = TempDir::new();
-    drop(Store::open(root.path()).unwrap());
-    root
-}
-
-fn wa(args: &[&std::ffi::OsStr]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_wa"))
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).unwrap()
-}
+use common::{root_with_store, stderr, wa, TempDir};
 
 #[test]
 fn no_destination_prints_the_usage_and_exits_non_zero() {
