@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use super::checker::{FormMode, Rule};
+use super::checker::{FormMode, Rule, Unit};
 use super::evaluator::{Evaluator, ModeSentence, RuleOwner, Violation};
 use super::phrase::CurlyMarks;
 use super::variants;
@@ -78,8 +78,9 @@ pub struct Catalogue {
     patterns: Vec<CompiledPattern>,
 }
 
+/// One pattern of the catalogue, compiled.
 #[derive(Debug)]
-struct CompiledPattern {
+pub(crate) struct CompiledPattern {
     pattern: &'static Pattern,
     evaluator: Evaluator,
 }
@@ -117,9 +118,11 @@ impl Catalogue {
             .map(|compiled| compiled.pattern.id.as_str())
     }
 
-    /// One flag for each match in `sentence` of each pattern switched on, so a phrase that occurs
-    /// twice is flagged twice, with `mode` the form mode of the sentence's paragraph and `register`
-    /// its register. In catalogue order, and within a pattern in order of start.
+    /// One flag for each match in `sentence` of each pattern switched on whose unit is a span or a
+    /// sentence, so a phrase that occurs twice is flagged twice, with `mode` the form mode of the
+    /// sentence's paragraph and `register` its register. In catalogue order, and within a pattern
+    /// in order of start. A pattern of a paragraph or the document unit is evaluated over its unit
+    /// by the analyzer's paragraph or document pass.
     ///
     /// Every flag anchors on `sentence` itself and carries the match's own offset into it, the
     /// same anchoring [`crate::spelling`] and [`crate::languagetool`] use. The analyzer counts a
@@ -133,6 +136,7 @@ impl Catalogue {
         }];
         self.patterns
             .iter()
+            .filter(|compiled| compiled.evaluator.rule().unit.is_within_a_sentence())
             .flat_map(|compiled| {
                 compiled
                     .evaluator
@@ -142,13 +146,25 @@ impl Catalogue {
             })
             .collect()
     }
+
+    /// Each pattern switched on whose unit is `unit`, in catalogue order. The analyzer's paragraph
+    /// and document passes evaluate the patterns of their unit through it.
+    pub(crate) fn patterns_of_unit(&self, unit: Unit) -> impl Iterator<Item = &CompiledPattern> {
+        self.patterns
+            .iter()
+            .filter(move |compiled| compiled.evaluator.rule().unit == unit)
+    }
 }
 
 impl CompiledPattern {
+    pub(crate) fn evaluator(&self) -> &Evaluator {
+        &self.evaluator
+    }
+
     /// The telltale for `violation` of this pattern. It cites no clause and carries no
     /// replacement: the catalogue holds phrasings to cut, not substitutions. The analyzer stamps
     /// the ruleset version and the catalogue hash as it publishes.
-    fn flag(&self, violation: Violation) -> Flag {
+    pub(crate) fn flag(&self, violation: Violation) -> Flag {
         let pattern = self.pattern;
         Flag {
             // The pattern and the span tell two of the pattern's flags on one sentence apart, and
@@ -186,6 +202,23 @@ impl Catalogue {
     /// Every pattern of the catalogue compiled, whatever its default.
     pub(crate) fn every_pattern() -> Self {
         Self::compiled(|_| true)
+    }
+
+    /// The patterns `json` writes, in the catalogue file's form, each compiled, for a test that
+    /// needs patterns the catalogue does not hold. The patterns are leaked, so that they live as
+    /// long as the catalogue's own.
+    pub(crate) fn of_patterns(json: &str) -> Self {
+        let patterns: Vec<Pattern> = serde_json::from_str(json).unwrap();
+        let patterns: &'static [Pattern] = Box::leak(patterns.into_boxed_slice());
+        Self {
+            patterns: patterns
+                .iter()
+                .map(|pattern| CompiledPattern {
+                    pattern,
+                    evaluator: compile(pattern),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -547,6 +580,48 @@ mod tests {
             assert_eq!(catalogue.flags(text, mode, "default").len(), 1, "{mode:?}");
         }
         assert!(catalogue.flags(text, FormMode::Code, "default").is_empty());
+    }
+
+    /// A pattern of `unit` banning the phrase "perhaps", in the catalogue file's form.
+    fn hedging_pattern(id: &str, unit: &str) -> String {
+        format!(
+            r#"{{
+                "id": "{id}",
+                "description": "Hedges",
+                "matcher": {{ "kind": "phraseList", "entries": [{{ "phrase": "perhaps", "prefix": false }}] }},
+                "unit": "{unit}",
+                "band": {{ "kind": "forbidden" }},
+                "formModes": ["prose"],
+                "raw": false,
+                "source": "a test"
+            }}"#
+        )
+    }
+
+    #[test]
+    fn a_sentence_is_evaluated_by_the_span_and_sentence_patterns_and_the_rest_by_their_unit() {
+        let units = ["span", "sentence", "paragraph", "document"];
+        let json = format!(
+            "[{}]",
+            units
+                .map(|unit| hedging_pattern(&format!("{unit}-hedges"), unit))
+                .join(",")
+        );
+        let catalogue = Catalogue::of_patterns(&json);
+
+        let flags = catalogue.flags("Perhaps it rains.", FormMode::Prose, "default");
+        let flagged: Vec<String> = flags
+            .iter()
+            .map(|flag| pattern_ids_of(flag).join(", "))
+            .collect();
+        assert_eq!(flagged, ["span-hedges", "sentence-hedges"]);
+        for unit in [Unit::Paragraph, Unit::Document] {
+            let of_unit: Vec<&str> = catalogue
+                .patterns_of_unit(unit)
+                .map(|compiled| compiled.pattern.id.as_str())
+                .collect();
+            assert_eq!(of_unit, [format!("{unit:?}-hedges").to_lowercase()]);
+        }
     }
 
     #[test]
