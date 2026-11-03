@@ -40,7 +40,7 @@ pub struct Rule {
 }
 
 /// What a checker looks for in a unit's text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -67,6 +67,11 @@ pub enum Matcher {
     /// The unit's words, so a band over them limits the unit's length. Each word is a match, and
     /// the words a band flags in one sentence are one violation.
     WordCount,
+    /// Each sentence of at least `minimum_words` words of which a share of at least `share` is
+    /// capitalised, a capitalised word being one that starts with an upper-case letter, as one
+    /// match from its first word's start to its last word's end. A share that is not a number from
+    /// 0 to 1 does not compile.
+    CapitalisedWords { minimum_words: u32, share: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +263,19 @@ mod tests {
                     register_scope: registers(&[]),
                 },
             },
+            Checker {
+                clause_id: ClauseId(8),
+                rule: Rule {
+                    matcher: Matcher::CapitalisedWords {
+                        minimum_words: 3,
+                        share: 0.75,
+                    },
+                    unit: Unit::Paragraph,
+                    band: Band::Forbidden,
+                    form_modes: BTreeSet::from([CheckableMode::Fragment]),
+                    register_scope: None,
+                },
+            },
         ]
     }
 
@@ -290,6 +308,15 @@ mod tests {
                 "formModes": ["prose"],
                 "registerScope": null,
             })
+        );
+    }
+
+    #[test]
+    fn a_capitalised_words_matcher_serialises_under_its_own_kind_with_its_thresholds() {
+        let checker = a_checker_of_every_kind().remove(7);
+        assert_eq!(
+            serde_json::to_value(&checker).unwrap()["matcher"],
+            json!({ "kind": "capitalisedWords", "minimumWords": 3, "share": 0.75 })
         );
     }
 

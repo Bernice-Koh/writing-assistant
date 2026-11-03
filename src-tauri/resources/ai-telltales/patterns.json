@@ -254,6 +254,17 @@
     "source": "humanizer SKILL.md section 16, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "title-case",
+    "category": "style",
+    "description": "A heading or label in title case, with nearly every word capitalised",
+    "matcher": { "kind": "capitalisedWords", "minimumWords": 3, "share": 0.75 },
+    "unit": "paragraph",
+    "band": { "kind": "forbidden" },
+    "formModes": ["fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 17, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "emojis",
     "category": "style",
     "description": "An emoji used to decorate a heading or bullet point in prose",

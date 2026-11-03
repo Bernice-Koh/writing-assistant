@@ -10,6 +10,7 @@
 
 pub mod ai_tell;
 mod band;
+mod capitalised;
 pub mod checker;
 pub mod evaluator;
 mod phrase;

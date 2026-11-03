@@ -349,3 +349,73 @@ fn a_number_range_a_dash_a_digit_or_a_hyphen_at_a_words_edge_is_no_match() {
         assert!(regex.find(sentence).is_none(), "{sentence}");
     }
 }
+
+/// The text the title-case pattern underlines in the paragraph of the one sentence `line`, of
+/// `mode`.
+fn title_case_in(mode: FormMode, line: &str) -> Vec<String> {
+    flagged(&violations("title-case", mode, &[line]))
+}
+
+#[test]
+fn title_case_is_a_capitalised_words_matcher_over_the_paragraph_forbidden_in_fragments() {
+    let title_case = pattern("title-case");
+    assert_eq!(
+        title_case.rule.matcher,
+        Matcher::CapitalisedWords {
+            minimum_words: 3,
+            share: 0.75
+        }
+    );
+    assert_eq!(title_case.rule.unit, Unit::Paragraph);
+    assert_eq!(title_case.rule.band, Band::Forbidden);
+    assert_eq!(
+        title_case.rule.form_modes,
+        BTreeSet::from([CheckableMode::Fragment])
+    );
+    assert_eq!(title_case.rule.register_scope, None);
+    assert_eq!(
+        title_case.source,
+        "humanizer SKILL.md section 17, Wikipedia:Signs of AI writing"
+    );
+}
+
+#[test]
+fn a_fragment_line_in_title_case_is_flagged_from_its_first_word_to_its_last() {
+    for line in ["Notes On The Design", "## Notes On The Design"] {
+        assert_eq!(
+            title_case_in(FormMode::Fragment, line),
+            ["Notes On The Design"],
+            "{line}"
+        );
+    }
+    let found = violations("title-case", FormMode::Fragment, &["Notes On The Design"]);
+    assert_eq!(found[0].breach, Breach::Forbidden);
+}
+
+#[test]
+fn a_fragment_line_in_sentence_case_or_of_two_words_raises_nothing() {
+    for line in ["Notes on the design", "Next Steps"] {
+        let flagged = title_case_in(FormMode::Fragment, line);
+        assert!(flagged.is_empty(), "{line}: {flagged:?}");
+    }
+}
+
+#[test]
+fn a_fragment_line_with_three_quarters_capitalised_is_flagged_and_one_with_half_is_not() {
+    assert_eq!(
+        title_case_in(FormMode::Fragment, "Notes On the Design"),
+        ["Notes On the Design"]
+    );
+    let half = title_case_in(FormMode::Fragment, "Notes on the Design");
+    assert!(half.is_empty(), "{half:?}");
+}
+
+#[test]
+fn a_prose_paragraph_in_title_case_is_not_evaluated() {
+    let paragraph = [
+        "The Ferry Leaves The Harbour At Noon.",
+        "It Returns By Dusk.",
+    ];
+    let flagged = violations("title-case", FormMode::Prose, &paragraph);
+    assert!(flagged.is_empty(), "{flagged:#?}");
+}
