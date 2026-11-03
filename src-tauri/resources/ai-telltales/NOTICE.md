@@ -23,12 +23,11 @@ were actually read from.
 
 ## Patterns not encoded
 
-Nine of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
+Eight of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
 frequency-based habit, not a fixed phrasing, and does not reduce to a phrase or regex match against
 one sentence without producing either constant false positives or requiring real parsing this module
 does not attempt:
 
-- **10, Rule of Three Overuse**: needs counting parallel items across a sentence, not a fixed phrase.
 - **11, Elegant Variation**: needs tracking a repeated referent's cycling synonyms across sentences.
 - **12, False Ranges**: "from X to Y" is extremely common in ordinary writing; judging whether X and
   Y form a meaningful scale needs semantic judgement, not syntax.
@@ -49,10 +48,12 @@ does not attempt:
 ## Matching notes
 
 Each pattern is a rule on the engine's rule layer, written in `patterns.json` in the rule's own
-form: a phrase list or a regex, over spans, under the forbidden band, declared for prose and
-fragment paragraphs in every register. Beside its rule a pattern holds its id, its description, its
-source citation and its raw flag, and it serves no Style Card clause. A flag carries the pattern's
-id in its origin and the pattern's source citation as its detail.
+form. A phrasing pattern is a phrase list or a regex, over spans, under the forbidden band, declared
+for prose and fragment paragraphs in every register. A structural pattern is measured over a
+paragraph or the document, in the modes it declares (see Structural patterns below). Beside its rule
+a pattern holds its id, its description, its source citation and its raw flag, and it serves no
+Style Card clause. A flag carries the pattern's id in its origin and the pattern's source citation
+as its detail.
 
 Phrase matching is case-insensitive and flags every occurrence of a phrase. An edge of a phrase
 that is a letter or digit matches only at a word boundary, so `here is a` does not match inside
@@ -109,3 +110,25 @@ ordinary prose, keeping only the more distinctive words and phrases; pattern 3 (
 endings) is matched by regex, requiring a preceding comma, rather than by the bare gerund words
 alone, since words like "ensuring" or "fostering" are unremarkable outside the specific
 tacked-on-clause construction the pattern describes.
+
+### Structural patterns
+
+A structural pattern counts a habit of frequency over a paragraph or the document, which no single
+match shows. Each one's unit, band and modes were decided on 14 October 2026 in #101 and are held
+here as catalogue data. Each band is a version-one default, revisited against real documents after
+Phase 3. Each structural pattern is on by default, with a toggle of its own.
+
+Pattern 10 (rule of three) is a regex over the paragraph under a count band of at most one,
+declared for prose alone. The regex finds a list in one sentence: three or more items separated by
+commas, with `and` or `or` before the last and the serial comma optional. Each item between the
+first and the last is one to three words, and the match takes the first item's last word and the
+last item's first word, so its underline lies within the list and a list of four or more items is
+one match. A pair joined by `and` is no match, nor is a list with no conjunction, and a comma must
+be followed by a space, so `1,000 and 2,000` is no match. One list of three in a paragraph is
+ordinary writing, and the tell is ideas forced into threes again and again, so the band allows one
+list and flags each list beyond it. A fragment is left out: a list item or a heading that
+enumerates has the structure its form declares, not a habit of prose. The regex cannot tell a list
+from an opening word or phrase followed by a pair, as in "In 2020, sales rose and costs fell",
+which has a list's shape and matches; under the band it is flagged only as a paragraph's second
+match. An item of more than three words between the first and the last breaks the list, so such a
+list is missed or read as two.
