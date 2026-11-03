@@ -23,7 +23,7 @@ were actually read from.
 
 ## Patterns not encoded
 
-Eight of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
+Seven of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
 frequency-based habit, not a fixed phrasing, and does not reduce to a phrase or regex match against
 one sentence without producing either constant false positives or requiring real parsing this module
 does not attempt:
@@ -37,9 +37,6 @@ does not attempt:
   detection guidance; this is a frequency pattern, not a single-span match.
 - **17, Title Case in Headings**: needs per-word capitalisation counting against a detected heading
   line, a different scan shape than the sentence-level matching every other entry here uses.
-- **26, Hyphenated Word Pair Overuse**: the actual tell is uniform hyphenation regardless of
-  grammatical position; a single hyphenated compound like "cross-functional team" is ordinary
-  English on its own.
 - **29, Fragmented Headers**: needs comparing a heading line against the paragraph that follows it,
   not a single-sentence match.
 - **30, Diff-Anchored Writing**: `SKILL.md` gives no fixed "words to watch" list for this pattern,
@@ -132,3 +129,17 @@ from an opening word or phrase followed by a pair, as in "In 2020, sales rose an
 which has a list's shape and matches; under the band it is flagged only as a paragraph's second
 match. An item of more than three words between the first and the last breaks the list, so such a
 list is missed or read as two.
+
+Pattern 26 (hyphenated word pairs) is a regex over the document under a rate band of at most two
+per hundred words, declared for prose and fragment. The regex finds words of letters joined by
+single hyphens as one match, `cross-functional` and a chain such as `end-to-end` alike, and the
+hyphen-minus, the hyphen and the non-breaking hyphen each join a pair. A number range, a dash
+written as two hyphens or as a spaced hyphen, a word with a hyphen at its edge, `pre-` or `-ish`,
+and a word holding a digit, `COVID-19`, are no match. A single compound is ordinary English, and
+the tell is hyphenation applied across a text, so the band is a rate over the whole document and
+not a count: it allows one compound in every fifty words, so a long document keeps its ordinary
+compounds, and it flags the matches beyond the count the document's length allows. A rate band
+does not measure a unit under fifty words, so a short note raises nothing. The regex matches a
+compound in any position and does not tell the attributive position, where the hyphen is
+standard, from the predicate position the source names, and it matches a hyphenated name in
+running text, such as `llama-server`.
