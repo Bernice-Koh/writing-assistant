@@ -27,13 +27,13 @@ Current top level:
 - `crates/`: two of the three members of the Cargo workspace; see `docs/CONVENTIONS.md`.
   `crates/engine` is the engine library, `wa-engine`: capture, spelling, LanguageTool
   subprocess management, the rule layer with the telltale catalogue on it, the analyzer, the
-  flag types, the settings file, and the SQLite store's file, thread, migration runner, and
-  insert-only guard, whose tables so far are `schema_version`, `passages`, the Card and ruleset
-  tables, `candidates`,
+  screen, the flag types, the settings file, and the SQLite store's file, thread, migration
+  runner, and insert-only guard, whose tables so far are `schema_version`, `passages`, the Card
+  and ruleset tables, `candidates`,
   `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes a passage
   or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event
   until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
-  result until the screen exists (#103).
+  result until Phase 4's rewriter calls the screen.
   The rewriter and the learning loop are not yet implemented.
   `crates/engine/examples/` holds the spike harnesses. `crates/wa` is the `wa` command-line
   binary, whose one subcommand, `wa backup`, copies the store file alone; `wa screen` is

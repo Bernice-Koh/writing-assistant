@@ -1,7 +1,8 @@
 //! The screen: the deterministic layer a rewrite candidate is checked by before it is shown. It runs
 //! the checks typed text gets, through the engine functions the analyzer calls, beside the content
 //! check against the passage the candidate rewrites. The rewriter calls it in process from Phase 4
-//! (#60), and the bench through `wa screen` (#104), so what the bench measures is what ships.
+//! (#60), and the bench through `wa screen`, which is planned (#104), so what the bench measures is
+//! what ships.
 //!
 //! A run checks content preservation first, over the two whole texts. It then segments the
 //! candidate as the analyzer segments live text, into paragraphs with their form modes and each
