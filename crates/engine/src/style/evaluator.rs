@@ -14,6 +14,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::band;
+use super::capitalised::{CapitalisedWordsMatcher, ShareOutOfRange};
 use super::checker::{Band, Checker, FormMode, Matcher, Rule, Unit};
 use super::phrase::{CurlyMarks, PhraseError, PhraseMatcher};
 use super::variants::{UnknownConvention, VariantMatcher};
@@ -75,6 +76,11 @@ pub enum CompileError {
     )]
     UnknownConvention { owner: RuleOwner, name: String },
 
+    /// A capitalised-words matcher's share is the fraction of a sentence's words that must be
+    /// capitalised, and `share` is not a number from 0 to 1.
+    #[error("the capitalised share of {owner}, {share}, is not a number from 0 to 1")]
+    ShareOutOfRange { owner: RuleOwner, share: f64 },
+
     /// The band holds no count a unit could be measured against, so evaluating it would flag
     /// nonsense.
     #[error("the band of {owner} does not compile: {fault}")]
@@ -88,6 +94,7 @@ impl CompileError {
             | Self::Phrase { owner, .. }
             | Self::PrefixNotOneWord { owner, .. }
             | Self::UnknownConvention { owner, .. }
+            | Self::ShareOutOfRange { owner, .. }
             | Self::MalformedBand { owner, .. } => owner,
         }
     }
@@ -202,13 +209,14 @@ enum CompiledMatcher {
     LanguageToolRule,
     SpellingVariant(VariantMatcher),
     WordCount,
+    CapitalisedWords(CapitalisedWordsMatcher),
 }
 
 impl Evaluator {
-    /// Checks the rule's band, compiles its regex, or one regex per phrase, and resolves its
-    /// preferred spelling convention, here and once, so an evaluation compiles nothing. A phrase
-    /// list reads each curly apostrophe and quotation mark as its straight form. A failure names
-    /// `owner`.
+    /// Checks the rule's band, compiles its regex, or one regex per phrase, resolves its preferred
+    /// spelling convention and checks its capitalised share, here and once, so an evaluation
+    /// compiles nothing. A phrase list reads each curly apostrophe and quotation mark as its
+    /// straight form. A failure names `owner`.
     pub fn compile(owner: RuleOwner, rule: Rule) -> Result<Self, CompileError> {
         Self::compile_reading(owner, rule, CurlyMarks::AsStraight)
     }
@@ -255,6 +263,17 @@ impl Evaluator {
                 )?,
             ),
             Matcher::WordCount => CompiledMatcher::WordCount,
+            Matcher::CapitalisedWords {
+                minimum_words,
+                share,
+            } => CompiledMatcher::CapitalisedWords(
+                CapitalisedWordsMatcher::compile(*minimum_words, *share).map_err(
+                    |ShareOutOfRange(share)| CompileError::ShareOutOfRange {
+                        owner: owner.clone(),
+                        share,
+                    },
+                )?,
+            ),
         };
         Ok(Self {
             owner,
@@ -367,6 +386,9 @@ impl CompiledMatcher {
                 words(sentence)
                     .map(|(start, word)| start..start + word.len())
                     .collect()
+            }),
+            Self::CapitalisedWords(capitalised) => in_each_sentence(unit, |sentence| {
+                capitalised.find(sentence).into_iter().collect()
             }),
         };
         Some(found)
@@ -710,6 +732,47 @@ pub(super) mod tests {
                 maximum_per_hundred_words: 0.0,
             },
         ));
+    }
+
+    #[test]
+    fn a_capitalised_words_matcher_matches_each_capitalised_sentence_whole() {
+        let title_case = compiled(rule(Matcher::CapitalisedWords {
+            minimum_words: 3,
+            share: 0.75,
+        }));
+        let sentences = [
+            "## Notes On The Design",
+            "Notes on the design",
+            "Next Steps",
+        ];
+        let flagged: Vec<(usize, String)> = violations(&title_case, &sentences)
+            .iter()
+            .map(|violation| (violation.sentence, flagged_text(&violation.span)))
+            .collect();
+        assert_eq!(flagged, [(0, "Notes On The Design".to_owned())]);
+    }
+
+    #[test]
+    fn a_capitalised_share_outside_zero_to_one_fails_naming_its_clause() {
+        let above_one = rule(Matcher::CapitalisedWords {
+            minimum_words: 3,
+            share: 1.5,
+        });
+        let error = Evaluator::compile(RuleOwner::Clause(ClauseId(4)), above_one).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CompileError::ShareOutOfRange {
+                    owner: RuleOwner::Clause(ClauseId(4)),
+                    share,
+                } if share == 1.5
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "the capitalised share of the checker for clause 4, 1.5, is not a number from 0 to 1"
+        );
     }
 
     /// The owner of each evaluator in `evaluators`, in order.
