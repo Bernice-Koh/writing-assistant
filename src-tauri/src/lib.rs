@@ -10,7 +10,7 @@ use tauri::Manager;
 use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, GrammarSource, LanguageToolSupervisor};
-use wa_engine::spelling::SpellChecker;
+use wa_engine::spelling::{self, SpellChecker};
 use wa_engine::store::{self, config, Config, Store, StoreError};
 use wa_engine::style::ai_tell::{self, Catalogue};
 use wa_engine::style::ruleset::LoadedRuleset;
@@ -103,12 +103,11 @@ async fn start_checking_pipeline(
          dictionaries can be found",
     );
 
+    let dictionaries = spelling::default_paths(&resources_dir);
     let spelling = SpellChecker::load(
-        &resources_dir.join("dictionaries").join("en_GB.aff"),
-        &resources_dir.join("dictionaries").join("en_GB.dic"),
-        &resources_dir
-            .join("dictionaries")
-            .join("en_sg_supplement.txt"),
+        &dictionaries.aff,
+        &dictionaries.dic,
+        &dictionaries.supplement,
     )
     .expect("the vendored dictionary pair and supplement are well-formed, checked in CI");
 
