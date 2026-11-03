@@ -243,6 +243,20 @@
     "source": "humanizer SKILL.md section 14, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "boldface",
+    "category": "style",
+    "description": "Phrases set in bold mechanically, more than two bold runs in a paragraph",
+    "matcher": {
+      "kind": "regex",
+      "source": "\\*\\*[^*\\s](?:[^*\\r\\n]*[^*\\s])?\\*\\*|\\b__[^_\\s](?:[^_\\r\\n]*[^_\\s])?__\\b"
+    },
+    "unit": "paragraph",
+    "band": { "kind": "count", "minimum": null, "maximum": 2 },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 15, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "inline-header-lists",
     "category": "style",
     "description": "A bullet list where each item opens with a bolded label followed by a colon",

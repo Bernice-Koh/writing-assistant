@@ -419,3 +419,102 @@ fn a_prose_paragraph_in_title_case_is_not_evaluated() {
     let flagged = violations("title-case", FormMode::Prose, &paragraph);
     assert!(flagged.is_empty(), "{flagged:#?}");
 }
+
+#[test]
+fn boldface_counts_runs_per_paragraph_of_prose_or_fragment_at_most_two() {
+    let boldface = pattern("boldface");
+    assert_eq!(boldface.rule.unit, Unit::Paragraph);
+    assert_eq!(
+        boldface.rule.band,
+        Band::Count {
+            minimum: None,
+            maximum: Some(2)
+        }
+    );
+    assert_eq!(
+        boldface.rule.form_modes,
+        BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment])
+    );
+    assert_eq!(boldface.rule.register_scope, None);
+    assert_eq!(
+        boldface.source,
+        "humanizer SKILL.md section 15, Wikipedia:Signs of AI writing"
+    );
+}
+
+#[test]
+fn a_paragraph_with_two_bold_runs_raises_nothing() {
+    let paragraph = [
+        "It blends **OKRs** with visual strategy tools.",
+        "The __Balanced Scorecard__ comes last.",
+    ];
+    for mode in [FormMode::Prose, FormMode::Fragment] {
+        let flagged = violations("boldface", mode, &paragraph);
+        assert!(flagged.is_empty(), "{mode:?}: {flagged:#?}");
+    }
+}
+
+#[test]
+fn a_paragraph_with_three_bold_runs_flags_the_third() {
+    let paragraph = [
+        "It blends **OKRs**, **KPIs** and visual strategy tools.",
+        "The __Balanced Scorecard__ comes last.",
+    ];
+    for mode in [FormMode::Prose, FormMode::Fragment] {
+        let found = violations("boldface", mode, &paragraph);
+        assert_eq!(flagged(&found), ["__Balanced Scorecard__"], "{mode:?}");
+        assert_eq!(found[0].sentence, 1, "{mode:?}");
+        assert_eq!(
+            found[0].breach,
+            Breach::AboveMaximum {
+                count: 3,
+                maximum: 2
+            },
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn bold_applied_as_formatting_reaches_the_pattern_as_plain_text_and_raises_nothing() {
+    // The marks typed as text are what the pattern sees. Bold applied in Word reaches the engine as
+    // the characters alone, so the same paragraph with its bold applied that way holds no run.
+    let typed = ["It blends **OKRs**, **KPIs** and the **Business Model Canvas**."];
+    assert_eq!(violations("boldface", FormMode::Prose, &typed).len(), 1);
+    let formatted = ["It blends OKRs, KPIs and the Business Model Canvas."];
+    let flagged = violations("boldface", FormMode::Prose, &formatted);
+    assert!(flagged.is_empty(), "{flagged:#?}");
+}
+
+#[test]
+fn a_run_between_double_marks_on_one_line_is_one_match() {
+    let regex = regex::Regex::new(regex_source("boldface")).unwrap();
+    for (sentence, runs) in [
+        ("Set **this** in bold.", &["**this**"][..]),
+        ("Set __this__ in bold.", &["__this__"][..]),
+        ("A one-letter **a** run.", &["**a**"][..]),
+        (
+            "Both **Key Results** and __Balanced Scorecard__.",
+            &["**Key Results**", "__Balanced Scorecard__"][..],
+        ),
+    ] {
+        let found: Vec<&str> = regex
+            .find_iter(sentence)
+            .map(|found| found.as_str())
+            .collect();
+        assert_eq!(found, runs, "{sentence}");
+    }
+}
+
+#[test]
+fn spaced_marks_marks_inside_a_word_or_an_unclosed_run_are_no_match() {
+    let regex = regex::Regex::new(regex_source("boldface")).unwrap();
+    for sentence in [
+        "Two ** 3 ** 4 is a power.",
+        "The snake__case__name stays.",
+        "An **unclosed run.",
+        "A ** spaced ** run.",
+    ] {
+        assert!(regex.find(sentence).is_none(), "{sentence}");
+    }
+}

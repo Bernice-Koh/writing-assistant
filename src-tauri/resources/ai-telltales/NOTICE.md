@@ -23,20 +23,20 @@ were actually read from.
 
 ## Patterns not encoded
 
-Six of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
-frequency-based habit, not a fixed phrasing, and does not reduce to a phrase or regex match against
-one sentence without producing either constant false positives or requiring real parsing this module
-does not attempt:
+Five of the thirty patterns `SKILL.md` documents are not in `patterns.json`. None is a fixed
+phrasing, and none reduces to a match or a count over one paragraph or the whole document, the
+units a rule is measured over, without constant false positives or parsing this module does not
+attempt:
 
 - **11, Elegant Variation**: needs tracking a repeated referent's cycling synonyms across sentences.
 - **12, False Ranges**: "from X to Y" is extremely common in ordinary writing; judging whether X and
   Y form a meaningful scale needs semantic judgement, not syntax.
 - **13, Passive Voice and Subjectless Fragments**: reliable passive-voice detection needs
-  grammatical parsing beyond phrase or regex matching.
-- **15, Overuse of Boldface**: a single bolded phrase is not a tell on its own, per the source's own
-  detection guidance; this is a frequency pattern, not a single-span match.
-- **29, Fragmented Headers**: needs comparing a heading line against the paragraph that follows it,
-  not a single-sentence match.
+  grammatical parsing beyond phrase or regex matching. A Style Card clause can reach passive voice
+  through a LanguageTool rule id from Phase 3 (#59).
+- **29, Fragmented Headers**: a count as well, and not encoded at version one, since it needs the
+  paragraph that follows a heading, and a rule is measured over one paragraph or the whole
+  document, not a heading with the paragraph after it.
 - **30, Diff-Anchored Writing**: `SKILL.md` gives no fixed "words to watch" list for this pattern,
   only a description of narrating a change rather than describing a thing as it stands.
 
@@ -128,6 +128,16 @@ from an opening word or phrase followed by a pair, as in "In 2020, sales rose an
 which has a list's shape and matches; under the band it is flagged only as a paragraph's second
 match. An item of more than three words between the first and the last breaks the list, so such a
 list is missed or read as two.
+
+Pattern 15 (overuse of boldface) is a regex over the paragraph under a count band of at most two,
+declared for prose and fragment. The regex finds a run of text between `**` and `**`, or between
+`__` and `__`, on one line, with no space just inside either mark, as Markdown has it, so
+`2 ** 3 ** 4` is no match; a run between underscores also needs no letter or digit outside either
+mark, so `snake__case__name` is no match. One or two bold phrases in a paragraph are ordinary
+emphasis, and the tell the source describes is bold applied mechanically, phrase after phrase, so
+the band allows two runs a paragraph and flags each beyond them. The pattern sees the marks typed
+as text and nothing else: capture delivers a document's characters and not their formatting, so
+bold applied as formatting, as in Word, is invisible to it.
 
 Pattern 17 (title case in headings) is a capitalised-words matcher over the paragraph under the
 forbidden band, declared for fragments alone. A sentence of at least three words of which at least
