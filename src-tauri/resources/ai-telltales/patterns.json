@@ -403,6 +403,17 @@
     "source": "humanizer SKILL.md section 25, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "hyphenated-word-pairs",
+    "category": "filler-and-hedging",
+    "description": "Word pairs hyphenated uniformly, more than two in every hundred words of the document",
+    "matcher": { "kind": "regex", "source": "\\b\\p{L}+(?:[-\\x{2010}\\x{2011}]\\p{L}+)+\\b" },
+    "unit": "document",
+    "band": { "kind": "rate", "maximumPerHundredWords": 2.0 },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 26, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "persuasive-authority-tropes",
     "category": "filler-and-hedging",
     "description": "Pretends to cut through noise to a deeper truth, then just restates an ordinary point",

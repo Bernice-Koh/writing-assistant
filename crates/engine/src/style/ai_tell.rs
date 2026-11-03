@@ -237,7 +237,7 @@ mod tests {
 
     /// The patterns that count a habit over a paragraph or the document, in catalogue order. Every
     /// other pattern bans a phrasing in a span.
-    pub(super) const STRUCTURAL_PATTERNS: [&str; 1] = ["rule-of-three"];
+    pub(super) const STRUCTURAL_PATTERNS: [&str; 2] = ["rule-of-three", "hyphenated-word-pairs"];
 
     /// Every pattern that bans a phrasing in a span, in catalogue order.
     fn phrasing_patterns() -> impl Iterator<Item = &'static Pattern> {
@@ -563,7 +563,7 @@ mod tests {
             assert!(seen.insert(id), "pattern id {id:?} repeats");
         }
         assert_eq!(seen.len(), patterns().len());
-        assert_eq!(seen.len(), 22);
+        assert_eq!(seen.len(), 23);
     }
 
     #[test]
