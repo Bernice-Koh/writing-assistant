@@ -1,4 +1,4 @@
-//! `wa`, the engine on the command line, for the app's scheduler, the Python project, and runs by
+//! `wa`, the engine on the command line, for the app's scheduler, the Python project, and use by
 //! hand. Its subcommands so far are `backup`, which copies the store file alone, and `screen`, which
 //! runs the screen over JSONL; each other arrives with its own issue.
 //!

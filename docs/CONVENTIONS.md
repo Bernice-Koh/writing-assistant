@@ -28,7 +28,7 @@ manifest, and each member inherits them. A dependency two members share has its 
 declared once there too.
 
 The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app,
-for the app's scheduler, the Python project, and runs by hand. Its subcommands cover the
+for the app's scheduler, the Python project, and use by hand. Its subcommands cover the
 screen, generation, embedding, synthesis, export, ingest, and backup.
 
 Built today: in the engine, capture, spelling, LanguageTool, the rule layer, the analyzer, the

@@ -631,7 +631,7 @@ runs the screen over JSONL.
 | `wa` | The command-line binary. Built: backup and screen. Each of generate, embed, synth, export, and ingest arrives with its own issue |
 
 The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app, for
-the app's scheduler, the Python project, and runs by hand.
+the app's scheduler, the Python project, and use by hand.
 
 ### Processes
 
