@@ -11,11 +11,12 @@
 //! unit over each sentence under its paragraph's mode, those of a paragraph unit over each
 //! paragraph, and those of a document unit over the whole candidate, where a rule counts over the
 //! paragraphs of the modes it declares alone. Spelling accepts a word the dictionary lacks when the
-//! passage holds it, as written or with only its first letter's case changed, so a proper noun
-//! carried from the passage is never a misspelling. Each sentence of prose then goes to the
-//! grammar source, one at a time, under the register and the ruleset, as the analyzer sends it.
-//! Nothing but the content check runs on a paragraph of code. The telltale toggles act through the
-//! catalogue the screen is built with, as they do for the analyzer.
+//! passage holds it, as written or with only its first letter's case changed, whichever apostrophe
+//! either text writes, so a proper noun carried from the passage is never a misspelling. Each
+//! sentence of prose then goes to the grammar source, one at a time, under the register and the
+//! ruleset, as the analyzer sends it. Nothing but the content check runs on a paragraph of code.
+//! The telltale toggles act through the catalogue the screen is built with, as they do for the
+//! analyzer.
 //!
 //! A grammar check that fails on any sentence, with LanguageTool down, degraded or past its bound,
 //! fails the whole run with [`ScreenError::GrammarCheckDidNotRun`], so no screening reads as clean

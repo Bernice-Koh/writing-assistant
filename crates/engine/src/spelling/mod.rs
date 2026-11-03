@@ -112,20 +112,22 @@ impl SpellChecker {
     }
 
     /// [`check`](Self::check) of `text`, a rewrite of `source`, in which a word the dictionary
-    /// lacks raises no flag when `source` holds it as written or with only its first letter's case
-    /// changed, so a proper noun a rewrite carries over from its source is never a misspelling of
-    /// the rewrite. The source's words are gathered by the segmentation `check` walks: each segment
-    /// of Unicode's word boundaries that holds a letter, skipped token or not, held with its first
-    /// letter in lower case, and a word of `text` is looked up the same way.
+    /// lacks raises no flag when `source` holds it with the same letters, in the same case or with
+    /// only its first letter's case changed, whichever apostrophe either text writes. A proper noun
+    /// a rewrite carries over from its source is then never a misspelling of the rewrite, and a
+    /// model that writes the straight apostrophe where the source has the curly one, or the
+    /// reverse, changes no word, as the affix file's `ICONV` line and the content check already
+    /// read the two as one. The source's words are gathered by the segmentation `check` walks: each
+    /// segment of Unicode's word boundaries that holds a letter, skipped token or not, held with its
+    /// first letter in lower case and each U+2019 read as U+0027, and a word of `text` is looked up
+    /// by the same key.
     pub fn check_against_source(&self, text: &str, source: &str) -> Vec<Flag> {
         let source_words: HashSet<String> = source
             .split_word_bounds()
             .filter(|segment| segment.chars().any(char::is_alphabetic))
-            .map(with_first_letter_lowercased)
+            .map(source_word_key)
             .collect();
-        self.check_accepting(text, |word| {
-            source_words.contains(&with_first_letter_lowercased(word))
-        })
+        self.check_accepting(text, |word| source_words.contains(&source_word_key(word)))
     }
 
     /// Flags each alphabetic word of `text` outside a skipped token that the dictionary lacks and
@@ -184,9 +186,10 @@ impl SpellChecker {
     }
 }
 
-/// `word` with its first character in lower case, so two words that differ only in that letter's
-/// case are one.
-fn with_first_letter_lowercased(word: &str) -> String {
+/// The key [`SpellChecker::check_against_source`] compares a word by: `word` with its first
+/// character in lower case and each curly apostrophe, U+2019, read as the straight one, so two
+/// words that differ only in that letter's case or in their apostrophes are one.
+fn source_word_key(word: &str) -> String {
     let mut characters = word.chars();
     characters
         .next()
@@ -194,6 +197,13 @@ fn with_first_letter_lowercased(word: &str) -> String {
         .into_iter()
         .flatten()
         .chain(characters)
+        .map(|character| {
+            if character == CURLY_APOSTROPHE {
+                '\''
+            } else {
+                character
+            }
+        })
         .collect()
 }
 
@@ -313,6 +323,18 @@ mod tests {
         assert_eq!(flags.len(), 1, "{flags:#?}");
         assert_eq!(flagged_text(&flags[0]), "Brontish");
         assert_eq!(flags[0], checker().check(text)[1]);
+    }
+
+    #[test]
+    fn a_word_the_source_holds_with_the_other_apostrophe_raises_no_flag() {
+        let checker = checker();
+        let curly = "We met Xilvane\u{2019}s brother at the pier.";
+        let straight = "At the pier, we met Xilvane's brother.";
+        for (rewrite, source) in [(straight, curly), (curly, straight)] {
+            assert_eq!(checker.check(rewrite).len(), 1, "{rewrite}");
+            let flags = checker.check_against_source(rewrite, source);
+            assert!(flags.is_empty(), "{rewrite}: {flags:#?}");
+        }
     }
 
     #[test]
