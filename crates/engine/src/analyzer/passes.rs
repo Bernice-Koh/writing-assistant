@@ -151,7 +151,7 @@ mod tests {
 
     use super::super::tests::{
         cached_parts, default_catalogue, flagged_text, pinned_flags, published_flags, step,
-        test_spell_checker, FakeCapture, FakeGrammar, PINNED_DOCUMENT,
+        FakeCapture, PINNED_DOCUMENT,
     };
     use super::super::{Analyzer, SentenceParts};
     use super::*;
@@ -161,6 +161,7 @@ mod tests {
     use crate::style::ai_tell::Catalogue;
     use crate::style::checker::{Band, CheckableMode, Checker, Matcher, PhraseEntry, Rule};
     use crate::style::ruleset::LoadedRuleset;
+    use crate::test_support::{test_spell_checker, FakeGrammar};
 
     /// The text of the clause every fixture checker serves, written for these tests.
     const CLAUSE: &str = "Hedge rarely.";
