@@ -6,10 +6,12 @@
 //! Spelling skips a token shaped like a URL, a path or an identifier, whatever the form mode of
 //! the paragraph that holds it, since such a token is not prose. The token is the run of
 //! non-whitespace characters that holds the word, and it is skipped when it holds a scheme
-//! separator, a slash, an at sign, a dot between letters or an underscore, or has a capital letter
-//! directly after a lowercase one. A full stop after the token's last letter, as at the end of a
-//! sentence, is not a dot between letters. Only the token is skipped: a misspelt word beside it is
-//! still flagged.
+//! separator, a slash or a backslash, an at sign, an equals sign or an ampersand, or an
+//! underscore, when it holds a letter and a dot between two characters that are each a letter or a
+//! digit, or when it has a capital letter directly after a lowercase one. A full stop after the
+//! token's last letter, as at the end of a sentence, sits between a letter and nothing, and a
+//! number such as `3.5` holds no letter, so neither is skipped. Only the token is skipped: a
+//! misspelt word beside it is still flagged.
 
 pub mod error;
 mod tokens;
@@ -349,13 +351,19 @@ mod tests {
     }
 
     /// One token of each shape the skip rule names, in the rule's order: a scheme separator, a
-    /// slash, an at sign, a dot between letters, an underscore, and a capital after a lowercase
-    /// letter.
-    const SKIPPED_TOKENS: [&str; 6] = [
+    /// slash, a backslash, an at sign, an equals sign, an ampersand, a dot between letters, a dot
+    /// between a digit and a letter, a dot between digits in a token that holds a letter, an
+    /// underscore, and a capital after a lowercase letter.
+    const SKIPPED_TOKENS: [&str; 11] = [
         "https://exampel.com/pth",
         "src/analyzr",
+        "src\\analyzr",
         "naem@exampel.com",
+        "q=helo",
+        "helo&wrld",
         "overlay.tsx",
+        "fiel2.txt",
+        "vershun1.2",
         "get_current_flags",
         "FlagOrigin",
     ];
@@ -396,6 +404,30 @@ mod tests {
             assert_eq!(flags.len(), 1, "{token}: {flags:#?}");
             assert_eq!(flagged_text(&flags[0]), "recieve");
         }
+    }
+
+    #[test]
+    fn a_query_string_the_sentence_splitter_cut_off_its_url_is_skipped() {
+        let text = "See https://exampel.com/serch?q=helo&lang=en for the list.";
+        let sentences: Vec<&str> = text.unicode_sentences().collect();
+        assert_eq!(
+            sentences,
+            [
+                "See https://exampel.com/serch?",
+                "q=helo&lang=en for the list."
+            ]
+        );
+        let checker = checker();
+        for sentence in sentences {
+            let flags = checker.check(sentence);
+            assert!(flags.is_empty(), "{sentence}: {flags:#?}");
+        }
+    }
+
+    #[test]
+    fn a_version_or_a_file_name_with_a_digit_before_its_dot_is_skipped() {
+        let flags = checker().check("Install v1.2 and open fiel2.txt first.");
+        assert!(flags.is_empty(), "{flags:#?}");
     }
 
     #[test]
