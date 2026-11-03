@@ -42,12 +42,14 @@
 //!
 //! [`form_mode`] covers the paragraphs and their modes, `sentences` the split of a paragraph,
 //! `passes` the rule layer's passes, and `dedupe` suppression. [`form_mode`] is public for the
-//! native capture harness; [`Analyzer`] is the only other public surface.
+//! native capture harness; [`Analyzer`] is the only other public surface. The screen segments a
+//! rewrite candidate through `form_mode` and `sentences`, checks it through `passes`, and places
+//! its flags through `placed_in_document`, as the analyzer does live text.
 
 mod dedupe;
 pub mod form_mode;
-mod passes;
-mod sentences;
+pub(crate) mod passes;
+pub(crate) mod sentences;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -70,7 +72,7 @@ use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
 use crate::style::evaluator::ModeSentence;
 use crate::style::ruleset::LoadedRuleset;
-use passes::UnitFlag;
+use passes::{Sources, UnitFlag};
 
 /// How often the debounce loop reads the capture backend's current text to look for a change.
 /// The 200 ms poll stands until the capture backend's text-changed event triggers the recheck.
@@ -375,9 +377,10 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
 /// Splits `text` into its paragraphs and each paragraph into its sentences, and runs the three
 /// passes. Each sentence's parts come from the sentence cache where it holds an entry, and
 /// otherwise from a fresh check under its paragraph's mode, cached as [`deterministic_parts`]
-/// leaves them. Each paragraph's flags come from [`passes::paragraph_pass`], and the document's
-/// from [`passes::document_pass`]. An unchanged sentence or paragraph whose entry aged out under
-/// the LRU's capacity is checked afresh, the correct fallback rather than showing no flags.
+/// leaves them. Each paragraph's flags come from [`passes::cached_paragraph_pass`], and the
+/// document's from [`passes::counted_document_pass`]. An unchanged sentence or paragraph whose
+/// entry aged out under the LRU's capacity is checked afresh, the correct fallback rather than
+/// showing no flags.
 fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
     let version = inner.ruleset.version();
     let mut sentences = Vec::new();
@@ -413,7 +416,7 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
             unit_flags.push(Vec::new());
         }
         for UnitFlag { sentence, flag } in
-            passes::paragraph_pass(inner, &paragraph, &paragraph_sentences)
+            passes::cached_paragraph_pass(inner, &paragraph, &paragraph_sentences)
         {
             unit_flags[first_sentence + sentence].push(flag);
         }
@@ -425,7 +428,7 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
         parts,
         unit_flags,
     };
-    let document_flags = passes::document_pass(inner, &recheck.mode_sentences());
+    let document_flags = passes::counted_document_pass(inner, &recheck.mode_sentences());
     for UnitFlag { sentence, flag } in document_flags {
         recheck.unit_flags[sentence].push(flag);
     }
@@ -461,18 +464,15 @@ fn deterministic_parts(inner: &Inner, sentence: &str, mode: FormMode) -> Sentenc
     }
 }
 
-/// The sentence pass over `sentence`, a sentence of a paragraph of `mode`: spelling's flags, then
-/// the catalogue's, then the ruleset's.
+/// The analyzer's sentence pass over `sentence`, a sentence of a paragraph of `mode`, by
+/// [`passes::sentence_pass`].
 fn deterministic_flags(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Flag> {
     #[cfg(test)]
     inner
         .deterministic_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let mut flags = inner.spelling.check(sentence);
-    flags.extend(inner.catalogue.flags(sentence, mode, &inner.register));
-    flags.extend(passes::sentence_pass(inner, sentence, mode));
-    flags
+    passes::sentence_pass(&inner.sources(), sentence, mode)
 }
 
 /// Sends `grammar` each sentence of `recheck` whose grammar part is incomplete, which is each
@@ -544,6 +544,20 @@ async fn check_grammar(
     }
 }
 
+impl Inner {
+    /// The analyzer's own handles as the passes read them. Typed text rewrites nothing, so spelling
+    /// has no source text.
+    fn sources(&self) -> Sources<'_> {
+        Sources {
+            spelling: &self.spelling,
+            spelling_source: None,
+            catalogue: &self.catalogue,
+            ruleset: &self.ruleset,
+            register: &self.register,
+        }
+    }
+}
+
 impl Recheck {
     fn sentence(&self, index: usize) -> &str {
         &self.text[self.sentences[index].range.clone()]
@@ -593,13 +607,36 @@ impl Recheck {
                 .collect();
             let text_before_sentence = &self.text[..sentence.range.start];
             let suppressed = dedupe::apply(self.sentence(index), in_hand);
-            document_flags.extend(suppressed.into_iter().map(|flag| Flag {
-                ruleset_version: inner.ruleset.version(),
-                catalogue_hash: Some(inner.catalogue.hash().clone()),
-                ..with_document_scope(index, with_occurrence(text_before_sentence, flag))
+            document_flags.extend(suppressed.into_iter().map(|flag| {
+                placed_in_document(
+                    flag,
+                    index,
+                    text_before_sentence,
+                    &inner.ruleset,
+                    &inner.catalogue,
+                )
             }));
         }
         document_flags
+    }
+}
+
+/// `flag`, found in the sentence of index `sentence_index` with `text_before_sentence` before it in
+/// the document, as it is published: scoped to the document by [`with_document_scope`], given its
+/// occurrence index by [`with_occurrence`], and stamped with the version of `ruleset` and the hash
+/// of `catalogue`, the ruleset and the catalogue in force. The screen places a candidate's flags in
+/// the candidate by it too.
+pub(crate) fn placed_in_document(
+    flag: Flag,
+    sentence_index: usize,
+    text_before_sentence: &str,
+    ruleset: &LoadedRuleset,
+    catalogue: &Catalogue,
+) -> Flag {
+    Flag {
+        ruleset_version: ruleset.version(),
+        catalogue_hash: Some(catalogue.hash().clone()),
+        ..with_document_scope(sentence_index, with_occurrence(text_before_sentence, flag))
     }
 }
 

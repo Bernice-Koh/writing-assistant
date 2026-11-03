@@ -1,66 +1,164 @@
-//! The rule layer's three passes in the deterministic stage, which run the ruleset's checkers and
-//! the telltale catalogue's patterns, each over the unit its rule is measured on and under the
-//! analyzer's register.
+//! The rule layer's three passes, which run spelling, the ruleset's checkers and the telltale
+//! catalogue's patterns, each over the unit its rule is measured on and under one register. They
+//! read their sources through [`Sources`], so the analyzer, over live text, and the screen, over a
+//! rewrite candidate, call the same functions and no check is implemented twice.
 //!
-//! - The sentence pass runs the ruleset's checkers of a span or a sentence unit on one sentence,
-//!   after spelling and the catalogue's patterns of those units, and its flags are cached with the
-//!   sentence's other deterministic flags.
-//! - The paragraph pass runs the catalogue's patterns and the ruleset's checkers of a paragraph unit
-//!   over a paragraph's sentences, and caches its flags under the paragraph's key. A paragraph whose
-//!   text is unchanged is served from the cache wherever it has moved, and one that holds a changed
-//!   sentence has a new key and is evaluated.
-//! - The document pass runs those of a document unit over the whole document's sentences on every
-//!   recheck, since a document-unit rule is a few counts, and caches nothing.
+//! - The sentence pass runs spelling and then the patterns and the checkers of a span or a sentence
+//!   unit on one sentence.
+//! - The paragraph pass runs the patterns and the checkers of a paragraph unit over a paragraph's
+//!   sentences.
+//! - The document pass runs those of a document unit over the whole document's sentences.
 //!
 //! Each sentence goes to the evaluator with its paragraph's form mode, and a rule runs over the
-//! sentences whose mode it declares. No rule declares code. The paragraph pass leaves a paragraph of
-//! code out before evaluating, as the sentence pass leaves out a sentence of one. The document pass
-//! hands over every sentence, those of code among them, so that a violation's index is its
-//! sentence's index in the document, and the evaluator ignores the code.
+//! sentences whose mode it declares. No rule declares code, and spelling has no notion of mode, so
+//! the sentence pass leaves a sentence of code out, and the paragraph pass a paragraph of it. The
+//! document pass hands over every sentence, those of code among them, so that a violation's index
+//! is its sentence's index in the document, and the evaluator ignores the code.
+//!
+//! The analyzer keeps its caches and its counts around the passes. The sentence pass's flags are
+//! cached with the sentence's other parts. The paragraph pass's are cached under the paragraph's
+//! key, so a paragraph whose text is unchanged is served from the cache wherever it has moved, and
+//! one that holds a changed sentence has a new key and is evaluated. The document pass, a few
+//! counts, runs on every recheck and caches nothing.
 
 use super::form_mode::Paragraph;
 use super::sentences::Sentence;
 use super::{cache_key, Inner};
 use crate::flag::Flag;
+use crate::spelling::SpellChecker;
+use crate::style::ai_tell::Catalogue;
 use crate::style::checker::{FormMode, Unit};
 use crate::style::evaluator::ModeSentence;
+use crate::style::ruleset::LoadedRuleset;
+
+/// What the passes read: the spelling checker, the telltale catalogue, the ruleset and the
+/// register every unit is evaluated under. The analyzer lends its own handles, and the screen its
+/// own.
+pub(crate) struct Sources<'s> {
+    pub(crate) spelling: &'s SpellChecker,
+    /// The text whose words spelling accepts beside the dictionary's, by
+    /// [`SpellChecker::check_against_source`]: the passage a candidate rewrites, for the screen.
+    /// `None` for the analyzer, since typed text rewrites nothing.
+    pub(crate) spelling_source: Option<&'s str>,
+    pub(crate) catalogue: &'s Catalogue,
+    pub(crate) ruleset: &'s LoadedRuleset,
+    pub(crate) register: &'s str,
+}
 
 /// A flag of the paragraph pass or the document pass, with the index of the sentence it anchors on
 /// among the sentences the pass evaluated: within the paragraph for the paragraph pass, and within
 /// the document for the document pass.
 #[derive(Debug, Clone)]
-pub(super) struct UnitFlag {
-    pub(super) sentence: usize,
-    pub(super) flag: Flag,
+pub(crate) struct UnitFlag {
+    pub(crate) sentence: usize,
+    pub(crate) flag: Flag,
 }
 
-/// The style flags of the ruleset's checkers of a span or a sentence unit in `sentence`, a sentence
-/// of a paragraph of `mode`, in ascending order of checker id. The catalogue's patterns of those
-/// units run through [`crate::style::ai_tell::Catalogue::flags`].
-pub(super) fn sentence_pass(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Flag> {
-    let sentence = [ModeSentence {
+/// The sentence pass over `sentence`, a sentence of a paragraph of `mode`: spelling's flags, then
+/// those of the catalogue's patterns of a span or a sentence unit in catalogue order, then those of
+/// the ruleset's checkers of those units in ascending order of checker id. A sentence of code has
+/// none.
+pub(crate) fn sentence_pass(sources: &Sources<'_>, sentence: &str, mode: FormMode) -> Vec<Flag> {
+    if mode == FormMode::Code {
+        return Vec::new();
+    }
+    let mut flags = match sources.spelling_source {
+        Some(source) => sources.spelling.check_against_source(sentence, source),
+        None => sources.spelling.check(sentence),
+    };
+    flags.extend(sources.catalogue.flags(sentence, mode, sources.register));
+    let unit = [ModeSentence {
         text: sentence,
         mode,
     }];
-    let ruleset = &inner.ruleset;
-    ruleset
+    let ruleset = sources.ruleset;
+    flags.extend(
+        ruleset
+            .checkers()
+            .iter()
+            .filter(|checker| checker.evaluator().rule().unit.is_within_a_sentence())
+            .flat_map(|checker| {
+                checker
+                    .evaluator()
+                    .evaluate(&unit, sources.register)
+                    .into_iter()
+                    .map(move |violation| ruleset.flag(violation, checker))
+            }),
+    );
+    flags
+}
+
+/// The paragraph pass over `paragraph`, whose sentences are `sentences`: the flags of the
+/// catalogue's patterns and the ruleset's checkers of a paragraph unit, as [`unit_pass`] orders
+/// them. A paragraph of code has none.
+pub(crate) fn paragraph_pass(
+    sources: &Sources<'_>,
+    paragraph: &Paragraph<'_>,
+    sentences: &[Sentence<'_>],
+) -> Vec<UnitFlag> {
+    if paragraph.mode == FormMode::Code {
+        return Vec::new();
+    }
+    let sentences: Vec<ModeSentence<'_>> = sentences
+        .iter()
+        .map(|sentence| ModeSentence {
+            text: sentence.text,
+            mode: paragraph.mode,
+        })
+        .collect();
+    unit_pass(sources, Unit::Paragraph, &sentences)
+}
+
+/// The document pass over `sentences`, every sentence of the document with its paragraph's mode:
+/// the flags of the catalogue's patterns and the ruleset's checkers of a document unit, as
+/// [`unit_pass`] orders them.
+pub(crate) fn document_pass(
+    sources: &Sources<'_>,
+    sentences: &[ModeSentence<'_>],
+) -> Vec<UnitFlag> {
+    unit_pass(sources, Unit::Document, sentences)
+}
+
+/// The flags of the catalogue's patterns and then the ruleset's checkers whose unit is `unit` over
+/// `sentences` as one unit: the catalogue's in catalogue order, and the ruleset's in ascending order
+/// of checker id.
+fn unit_pass(sources: &Sources<'_>, unit: Unit, sentences: &[ModeSentence<'_>]) -> Vec<UnitFlag> {
+    let register = sources.register;
+    let telltales = sources
+        .catalogue
+        .patterns_of_unit(unit)
+        .flat_map(|pattern| {
+            pattern
+                .evaluator()
+                .evaluate(sentences, register)
+                .into_iter()
+                .map(move |violation| UnitFlag {
+                    sentence: violation.sentence,
+                    flag: pattern.flag(violation),
+                })
+        });
+    let ruleset = sources.ruleset;
+    let style = ruleset
         .checkers()
         .iter()
-        .filter(|checker| checker.evaluator().rule().unit.is_within_a_sentence())
+        .filter(|checker| checker.evaluator().rule().unit == unit)
         .flat_map(|checker| {
             checker
                 .evaluator()
-                .evaluate(&sentence, &inner.register)
+                .evaluate(sentences, register)
                 .into_iter()
-                .map(move |violation| ruleset.flag(violation, checker))
-        })
-        .collect()
+                .map(move |violation| UnitFlag {
+                    sentence: violation.sentence,
+                    flag: ruleset.flag(violation, checker),
+                })
+        });
+    telltales.chain(style).collect()
 }
 
-/// The paragraph pass's flags for `paragraph`, whose sentences are `sentences`: from the paragraph
-/// cache where it holds an entry for the paragraph, and otherwise evaluated and cached. A paragraph
-/// of code is not evaluated and has none.
-pub(super) fn paragraph_pass(
+/// The analyzer's paragraph pass for `paragraph`, whose sentences are `sentences`: from the
+/// paragraph cache where it holds an entry for the paragraph, and otherwise evaluated by
+/// [`paragraph_pass`] and cached. A paragraph of code has no flags and takes no entry.
+pub(super) fn cached_paragraph_pass(
     inner: &Inner,
     paragraph: &Paragraph<'_>,
     sentences: &[Sentence<'_>],
@@ -84,14 +182,7 @@ pub(super) fn paragraph_pass(
         .paragraph_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let sentences: Vec<ModeSentence<'_>> = sentences
-        .iter()
-        .map(|sentence| ModeSentence {
-            text: sentence.text,
-            mode: paragraph.mode,
-        })
-        .collect();
-    let flags = unit_pass(inner, Unit::Paragraph, &sentences);
+    let flags = paragraph_pass(&inner.sources(), paragraph, sentences);
     inner
         .paragraph_cache
         .lock()
@@ -100,48 +191,18 @@ pub(super) fn paragraph_pass(
     flags
 }
 
-/// The document pass's flags over `sentences`, every sentence of the document with its paragraph's
-/// mode, evaluated afresh.
-pub(super) fn document_pass(inner: &Inner, sentences: &[ModeSentence<'_>]) -> Vec<UnitFlag> {
+/// The analyzer's document pass over `sentences`, every sentence of the document with its
+/// paragraph's mode, evaluated afresh by [`document_pass`].
+pub(super) fn counted_document_pass(
+    inner: &Inner,
+    sentences: &[ModeSentence<'_>],
+) -> Vec<UnitFlag> {
     #[cfg(test)]
     inner
         .document_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    unit_pass(inner, Unit::Document, sentences)
-}
-
-/// The flags of the catalogue's patterns and then the ruleset's checkers whose unit is `unit` over
-/// `sentences` as one unit: the catalogue's in catalogue order, and the ruleset's in ascending order
-/// of checker id.
-fn unit_pass(inner: &Inner, unit: Unit, sentences: &[ModeSentence<'_>]) -> Vec<UnitFlag> {
-    let register = inner.register.as_str();
-    let telltales = inner.catalogue.patterns_of_unit(unit).flat_map(|pattern| {
-        pattern
-            .evaluator()
-            .evaluate(sentences, register)
-            .into_iter()
-            .map(move |violation| UnitFlag {
-                sentence: violation.sentence,
-                flag: pattern.flag(violation),
-            })
-    });
-    let ruleset = &inner.ruleset;
-    let style = ruleset
-        .checkers()
-        .iter()
-        .filter(|checker| checker.evaluator().rule().unit == unit)
-        .flat_map(|checker| {
-            checker
-                .evaluator()
-                .evaluate(sentences, register)
-                .into_iter()
-                .map(move |violation| UnitFlag {
-                    sentence: violation.sentence,
-                    flag: ruleset.flag(violation, checker),
-                })
-        });
-    telltales.chain(style).collect()
+    document_pass(&inner.sources(), sentences)
 }
 
 #[cfg(test)]
