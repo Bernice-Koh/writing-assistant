@@ -28,7 +28,7 @@ manifest, and each member inherits them. A dependency two members share has its 
 declared once there too.
 
 The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app,
-for the app's scheduler, the Python project, and the owner by hand. Its subcommands cover the
+for the app's scheduler, the Python project, and runs by hand. Its subcommands cover the
 screen, generation, embedding, synthesis, export, ingest, and backup.
 
 Built today: in the engine, capture, spelling, LanguageTool, the rule layer, the analyzer, the
@@ -47,16 +47,21 @@ insert-only guard, and the tables `schema_version`, `passages`, those of the Car
 a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an
 event until Phase 3's questionnaire, a habit rollup until the habit ledger in Phase 9, or a screen
 result until Phase 4's rewriter calls the screen, and the other artefact tables arrive with the
-features that first write them. `wa` has one subcommand, `wa backup`, which copies the store file
-alone; `wa screen` is planned, and each later subcommand arrives with its own issue. Every
-subcommand opens the store through `Store::open_existing`, which refuses when the store is absent,
-so the app is the store's one creator.
+features that first write them. `wa` has two subcommands: `wa backup`, which copies the store file
+alone, and `wa screen`, which runs the screen over JSONL with a LanguageTool subprocess of its own;
+each later subcommand arrives with its own issue. `wa`'s global options are `--data-root`
+and `--resources`, the resource directory, which defaults to the checkout's `src-tauri/resources`
+for a build under `target/` and otherwise to the directory holding `wa`. Every subcommand opens
+the store through `Store::open_existing`, which refuses when the store is absent, so the app is
+the store's one creator.
 `adapter/` does not exist.
 
 The resources stay under `src-tauri/resources/`, where the app bundles them from, and each file
-exists once in the repository. The engine reaches them by relative path: its tests read the
-dictionary pair, and the telltale catalogue and the spelling variant table are compiled in with
-`include_str!`.
+exists once in the repository. The engine holds no resource directory: the app passes the one it
+is bundled with and `wa` the one `--resources` names, and both resolve the dictionaries and
+LanguageTool under it through `spelling::default_paths` and `languagetool::default_paths`. The
+engine's tests read the dictionary pair by relative path, and the telltale catalogue and the
+spelling variant table are compiled in with `include_str!`.
 
 Two rules follow from the split:
 
@@ -131,7 +136,11 @@ credentials.
   catalogue on it, span resolution through an anchor, and the screen as it lands. It carries
   the correctness guarantees and is cheap to test.
 - Tests never reach a live service. The Anthropic API, the training service, the LanguageTool
-  subprocess, and llama-server are mocked.
+  subprocess, and llama-server are mocked. One exception, decided 3 Nov 2026 with `wa screen`:
+  `crates/wa/tests/screen.rs` runs the built `wa screen` end to end against the LanguageTool and
+  Java runtime under the checkout's `src-tauri/resources/`, to show the port it takes beside a
+  server on 8081 and the subprocess gone at its exit. Where either is absent, as in CI, the test
+  prints one line naming the missing file and passes without running.
 - A harness under `crates/engine/examples/` is a measurement against a real application, run by
   hand. It is not a test.
 
