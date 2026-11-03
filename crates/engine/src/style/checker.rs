@@ -88,6 +88,14 @@ pub enum Unit {
     Document,
 }
 
+impl Unit {
+    /// Whether the unit lies within one sentence, so that a sentence evaluated alone holds every
+    /// unit of the rule found in it. The analyzer evaluates such a rule in its sentence pass.
+    pub fn is_within_a_sentence(self) -> bool {
+        matches!(self, Self::Span | Self::Sentence)
+    }
+}
+
 /// How many matches a unit may hold. A violation of a maximum or a rate flags the matches beyond
 /// the limit, and a violation of a minimum underlines every sentence of the unit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

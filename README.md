@@ -35,9 +35,9 @@ flowchart TD
     Act -->|"recorded, never moves the Card"| Events[("Events")]
 ```
 
-The path from typing to underlines runs today, without the Card's checkers. The Card, the ruleset,
-the rewrite, the screen, and the event record are planned, and the sections below give the phase
-for each.
+The path from typing to underlines runs today, the ruleset's checkers included, and no ruleset
+holds a checker until Phase 3 publishes the first. The Card, the rewrite, the screen, and the event
+record are planned, and the sections below give the phase for each.
 
 Two kinds of input are kept apart. An expressed preference is a questionnaire answer, a reaction
 to a sample, or free-prose feedback, and it is the only thing that changes the Card. Measured
@@ -67,7 +67,7 @@ half-typed word is noise.
 
 | Stage | Work | State |
 |---|---|---|
-| Deterministic | Spelling, the telltale catalogue, and the Card's checkers. Publishes first | Spelling and telltales run today. Card checkers: planned, Phase 3 |
+| Deterministic | Spelling, the telltale catalogue, and the Card's checkers, per sentence, per paragraph and per document. Publishes first | Runs today, the ruleset's checkers among it. The ruleset is empty until Phase 3 publishes one |
 | Grammar | LanguageTool on the same sentences, those of prose paragraphs. Publishes second, with suppression applied | Runs today |
 | Rewrite | On request only: the local base model with the Card in its prompt, each candidate screened before it is shown | Planned, Phase 4 |
 
@@ -79,14 +79,23 @@ A recheck splits the document into paragraphs on the marks capture delivers, a c
 from Word and a newline from a browser, with a carriage return followed by a newline as one mark,
 and drops a paragraph that is empty or whitespace. Each paragraph has a form mode, prose, fragment
 or code (see The rule layer), and splits into its sentences, each checked under its paragraph's
-mode: spelling and the telltale catalogue run on prose and fragments, LanguageTool on prose alone,
-and nothing on code.
+mode: spelling, the telltale catalogue and the ruleset's checkers run on prose and fragments, a
+pattern or a checker only in the modes it declares, LanguageTool on prose alone, and nothing on
+code. Every check runs under the settings' default register until capture supplies the surface's
+register (planned, Phase 2).
+
+The deterministic stage runs three passes. The sentence pass runs spelling, the telltale patterns
+and the checkers whose unit is a span or a sentence on each sentence. The paragraph pass runs the
+patterns and the checkers whose unit is a paragraph on each paragraph that holds a changed
+sentence, and the document pass runs those whose unit is the document on the whole document at
+every recheck, since they are a few counts. A flag of the paragraph or the document pass anchors
+on the sentence that holds its match.
 
 The two stages publish separately, each the whole document's flags. The deterministic stage
 publishes as soon as it has run, with the grammar flags already cached for sentences whose grammar
 check completed on an earlier recheck. The grammar stage then sends LanguageTool every sentence
 whose grammar check has not completed, one at a time while the analyzer keeps polling, and
-publishes a second update that adds their grammar flags. Spelling and telltale flags therefore
+publishes a second update that adds their grammar flags. The deterministic stage's flags therefore
 never wait on LanguageTool. A recheck that starts while the previous recheck's grammar stage is
 still running stops that stage, which publishes nothing.
 
@@ -94,22 +103,27 @@ The analyzer finds a change by polling the document every 200 ms. An event-drive
 planned for Phase 2: the capture backend's text-changed event marks the document as changed, and a
 slow safety poll covers controls that never raise the event.
 
-Flags are cached per sentence by a hash of its paragraph's form mode and its text, so one text in
-a prose paragraph and in a fragment has an entry for each. An entry has two parts: the
-deterministic stage's, and the grammar stage's, marked complete once LanguageTool has answered for
-the sentence, or complete and empty from the start for a sentence of a fragment or of code. Each
-stage runs only on the sentences whose part is missing or incomplete, so an unchanged sentence never
-reaches LanguageTool twice, and a sentence whose check failed or timed out is sent again on the
-next recheck. One source failing degrades that source and never ends checking: with LanguageTool
-down, spelling and telltale flags continue.
+Flags are cached per sentence by a hash of the ruleset version, its paragraph's form mode and its
+text, so one text in a prose paragraph and in a fragment has an entry for each. An entry has two
+parts: the sentence pass's, and the grammar stage's, marked complete once LanguageTool has answered
+for the sentence, or complete and empty from the start for a sentence of a fragment or of code.
+Each stage runs only on the sentences whose part is missing or incomplete, so an unchanged sentence
+never reaches LanguageTool twice, and a sentence whose check failed or timed out is sent again on
+the next recheck. The paragraph pass's flags are cached per paragraph by a hash of the ruleset
+version, the paragraph's mode and its text, so an unchanged paragraph is served from the cache
+wherever it has moved, and the document pass caches nothing. With the version in both keys, an
+entry made under one ruleset version is never served under another. One source failing degrades
+that source and never ends checking: with LanguageTool down, the deterministic stage's flags
+continue.
 
 ### Severity and suppression
 
 Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft.
 Suppression runs on each sentence's flags at every publish, over the flags of the sources that
 have answered for it so far, so a telltale that a grammar flag overlaps shows in the first update
-and leaves with the second, while one that a spelling flag overlaps never shows. It runs in four
-steps, in this order:
+and leaves with the second, while one that a spelling flag overlaps never shows. A flag of the
+paragraph or the document pass is among the flags of the sentence it anchors on, and is suppressed
+as a flag of the sentence pass is. Suppression runs in four steps, in this order:
 
 1. Each flag's span is located within its sentence. A flag anchored on other text is kept and
    takes no part in the later steps, since suppression fires only on a confirmed overlap.
@@ -137,8 +151,9 @@ register scope, which is every register when unset. The engine holds a checker a
 part in the table, and evaluates every matcher and band but the LanguageTool rule id, which the
 grammar stage evaluates: a match of a rule that a checker names raises that checker's style flag
 (see Grammar). Each telltale pattern runs on the engine as a rule of its own, under its pattern id
-and with no clause (see Telltales). No other matcher runs until the analyzer's passes for checkers
-land (planned, Phase 1).
+and with no clause (see Telltales). The grammar stage evaluates a rule-id checker, and the
+deterministic stage evaluates every other checker per sentence, per paragraph with the result
+cached by paragraph hash, and per document on every recheck (see Checking).
 
 | Part | Values |
 |---|---|
@@ -146,9 +161,11 @@ land (planned, Phase 1).
 | Unit | Span, sentence, paragraph, document |
 | Band | Forbidden, a minimum and maximum count, a rate per hundred words |
 
-A span or sentence unit is one sentence. A paragraph or document unit is evaluated as its
-sentences, so its counts run over the whole unit while each flag anchors on the sentence that holds
-its match, and no flag crosses a paragraph mark.
+A unit is evaluated as its sentences, each with its paragraph's form mode, and a rule runs over the
+sentences whose mode it declares and ignores the rest. A span or sentence unit is one sentence. A
+paragraph or document unit is the sentences of the paragraph or the document whose mode the rule
+declares, so its counts, and a rate band's words, run over those alone, while each flag anchors on
+the sentence that holds its match, and no flag crosses a paragraph mark.
 
 A ban on em dashes is a regex over spans with a band of zero. A limit on hedging is a phrase list
 per paragraph with a maximum, and a limit on sentence length is a word count per sentence with a
@@ -183,8 +200,7 @@ records the version in force when it was raised, whatever its origin, beside the
 the rule data compiled into the engine (see Telltales). A style flag cites its
 clause's id, its checker's rule id, which is the checker's content hash or LanguageTool's id for a
 LanguageTool rule, and the clause's text from the Card version current at load. Nothing publishes
-a ruleset until Phase 3. The grammar stage evaluates a rule-id checker and raises its style flag,
-and no other matcher runs until the analyzer's passes for checkers land (planned, Phase 1).
+a ruleset until Phase 3.
 
 Form mode is classified per paragraph from its structure, in one pass over the document's
 paragraphs in order, and decides what runs on the paragraph's sentences.
@@ -296,6 +312,8 @@ The catalogue and the variant-pair table are compiled into the engine. Every fla
 SHA-256 of the catalogue's bytes followed by the table's beside the ruleset version, so the bench
 can tell an edit to either data file from a ruleset change.
 
+A pattern whose unit is a paragraph or the document runs in the analyzer's paragraph or document
+pass, as a checker of that unit does; every pattern in the catalogue today is a span pattern.
 Planned for Phase 1: the count-shaped structural patterns, among them rule-of-three lists and
 boldface overuse, encoded as count checkers on the rule layer.
 

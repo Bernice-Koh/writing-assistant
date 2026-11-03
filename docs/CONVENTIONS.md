@@ -39,7 +39,8 @@ unit (a span, a sentence, a paragraph, or the document), and a band (forbidden, 
 minimum and a maximum, or a rate per hundred words), declared for the form modes and the
 registers it runs in. The telltale catalogue's patterns run on it as rules, each under its pattern
 id with no clause; LanguageTool's matches route through the loaded ruleset's checkers, and the
-analyzer passes that run the other checkers arrive with #100. The store has its file, the thread that owns its connection, the migration runner, the
+analyzer runs the other checkers in a sentence pass, a paragraph pass and a document pass. The
+store has its file, the thread that owns its connection, the migration runner, the
 insert-only guard, and the tables `schema_version`, `passages`, those of the Card and the ruleset,
 `candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes
 a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an

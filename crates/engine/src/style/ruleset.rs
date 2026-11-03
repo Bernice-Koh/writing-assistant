@@ -1,7 +1,7 @@
 //! The ruleset in force: the latest published ruleset version, read once and compiled once, with
 //! the citation each checker's flags embed. A store with no ruleset version, or no store, gives an
 //! empty ruleset with no version, and spelling, grammar and telltale checking run as they do
-//! without one. Running the checkers over a document is the analyzer's (#100).
+//! without one.
 //!
 //! A clause's text is the owner's words, so no log line or `Debug` rendering here carries it: a
 //! warning names a checker by its id.
@@ -117,6 +117,41 @@ impl LoadedRuleset {
         }
     }
 
+    /// A ruleset recording `version` that holds `checkers`, each given beside the text of the
+    /// clause it serves, for a test that needs checkers with no store. Their ids ascend from 1 in
+    /// the order given. Each is compiled and cited as a load cites it, with the rule id a publish
+    /// would give it, so a flag a test raises carries the rule id a loaded ruleset's would. A
+    /// checker that does not compile is left out with the load's warning.
+    #[cfg(test)]
+    pub(crate) fn of_checkers(
+        version: RulesetVersion,
+        checkers: Vec<(super::checker::Checker, &str)>,
+    ) -> Self {
+        let clause_texts: HashMap<ClauseId, &str> = checkers
+            .iter()
+            .map(|(checker, clause_text)| (checker.clause_id, *clause_text))
+            .collect();
+        let stored = checkers
+            .into_iter()
+            .zip(1..)
+            .map(|((checker, _), id)| StoredChecker {
+                id: CheckerId(id),
+                content_hash: crate::store::checker_content_hash(&checker),
+                checker,
+                provenance: crate::store::Provenance {
+                    author: crate::store::CheckerAuthor::Template,
+                    back_translation: None,
+                    test_results: Vec::new(),
+                },
+            });
+        Self {
+            version: Some(version),
+            checkers: stored
+                .filter_map(|stored| loaded(stored, version, &clause_texts))
+                .collect(),
+        }
+    }
+
     /// The style flag for `violation` of `checker`, one of this ruleset's checkers. It cites the
     /// checker's clause, records this ruleset's version, and leaves the catalogue hash for the
     /// analyzer to set. Its message states the count and the limit, the shortfall, or the rate,
@@ -155,19 +190,10 @@ impl LoadedChecker {
         &self.citation
     }
 
-    /// Whether the checker's rule runs on text of form mode `mode` under `register`: the rule
-    /// declares the mode, which code never is, and its register scope is unset or holds the
-    /// register.
+    /// Whether the checker's rule runs on a sentence of a paragraph of form mode `mode` under
+    /// `register`, by [`Evaluator::runs_in`].
     pub fn applies_to(&self, mode: FormMode, register: &str) -> bool {
-        let rule = self.evaluator.rule();
-        let declares_mode = mode
-            .checkable()
-            .is_some_and(|mode| rule.form_modes.contains(&mode));
-        let in_scope = rule
-            .register_scope
-            .as_ref()
-            .is_none_or(|scope| scope.contains(register));
-        declares_mode && in_scope
+        self.evaluator.runs_in(mode, register)
     }
 }
 
@@ -307,6 +333,7 @@ mod tests {
     use super::*;
     use crate::store::{CardMember, CheckerAuthor, ClauseWording, Provenance};
     use crate::style::checker::{Band, CheckableMode, Checker, FormMode, PhraseEntry};
+    use crate::style::evaluator::tests::in_mode;
     use crate::test_support::{capture_logs, TempRoot};
 
     const HEDGES: (&str, &str) = (
@@ -515,6 +542,46 @@ mod tests {
     }
 
     #[test]
+    fn a_fixture_ruleset_compiles_and_cites_its_checkers_as_a_load_of_the_same_checkers_does() {
+        let root = TempRoot::new();
+        let (store, hedges, dashes) = store_with_card(&root);
+        let checkers = [
+            hedging_limit(hedges, at_most(1)),
+            dash_ban(dashes),
+            passive_voice(dashes),
+        ];
+        let stored = publish(&store, &checkers);
+        let loaded = LoadedRuleset::load_blocking(&store).unwrap();
+
+        let fixture = LoadedRuleset::of_checkers(
+            stored.version,
+            checkers
+                .iter()
+                .zip([HEDGES_REWORDED.0, NO_DASHES.0, NO_DASHES.0])
+                .map(|(checker, clause_text)| (checker.clone(), clause_text))
+                .collect(),
+        );
+
+        assert_eq!(fixture.version(), loaded.version());
+        assert_eq!(fixture.checkers().len(), loaded.checkers().len());
+        for (index, (fixed, loaded)) in fixture.checkers().iter().zip(loaded.checkers()).enumerate()
+        {
+            assert_eq!(fixed.id(), CheckerId(index as i64 + 1));
+            assert_eq!(fixed.citation(), loaded.citation(), "checker {index}");
+            assert_eq!(
+                fixed.evaluator().rule(),
+                loaded.evaluator().rule(),
+                "checker {index}"
+            );
+            assert_eq!(
+                fixed.evaluator().owner(),
+                loaded.evaluator().owner(),
+                "checker {index}"
+            );
+        }
+    }
+
+    #[test]
     fn a_checker_that_does_not_compile_is_left_out_with_one_warning_naming_it_and_no_clause() {
         let root = TempRoot::new();
         let (store, hedges, dashes) = store_with_card(&root);
@@ -610,7 +677,7 @@ mod tests {
 
         let violations = checker
             .evaluator()
-            .evaluate(&paragraph, FormMode::Prose, "default");
+            .evaluate(&in_mode(FormMode::Prose, &paragraph), "default");
         let flags: Vec<Flag> = violations
             .iter()
             .map(|violation| ruleset.flag(violation.clone(), checker))

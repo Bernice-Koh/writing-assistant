@@ -1,6 +1,7 @@
 //! Compiles a [`Rule`] once into an [`Evaluator`], and evaluates it over one unit. An evaluation
-//! is a pure function of the unit's sentences, the form mode and the register: it calls no model
-//! and no network, and the same inputs give the same violations in the same order.
+//! is a pure function of the unit's sentences, each with its paragraph's form mode, and the
+//! register: it calls no model and no network, and the same inputs give the same violations in the
+//! same order.
 //!
 //! Every matcher is evaluated here but a LanguageTool rule id, whose matches LanguageTool reports
 //! in the grammar stage (#98). The bands are applied in `band`, and the spelling-variant matcher
@@ -137,15 +138,26 @@ fn band_fault(band: &Band) -> Option<BandFault> {
     }
 }
 
-/// One violation of a rule's band: the span a flag underlines, anchored on the sentence that holds
-/// it, and the numbers the flag's message states.
+/// One sentence of a unit handed to [`Evaluator::evaluate`], with the form mode of its paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeSentence<'a> {
+    pub text: &'a str,
+    pub mode: FormMode,
+}
+
+/// One violation of a rule's band: the sentence that holds it, the span a flag underlines,
+/// anchored on that sentence, and the numbers the flag's message states.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Violation {
+    /// The index of the sentence in the slice [`Evaluator::evaluate`] was handed, counted over
+    /// every sentence of the slice, whether the rule declares its mode or not.
+    pub sentence: usize,
     pub span: Span,
     pub breach: Breach,
 }
 
-/// How a violation breaks its rule's band. The counts are of the whole unit.
+/// How a violation breaks its rule's band. The counts are of the unit's sentences whose form mode
+/// the rule declares.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Breach {
     /// A match under the forbidden band, which every match breaks.
@@ -259,38 +271,45 @@ impl Evaluator {
         &self.rule
     }
 
-    /// The rule's violations in one unit, handed over as its sentences in order: one sentence for
-    /// a span or a sentence unit, the paragraph's for a paragraph unit, and the document's for a
-    /// document unit. The caller splits the text into paragraphs on its paragraph marks and each
-    /// paragraph into sentences, so no sentence holds a paragraph mark and no violation's span
-    /// crosses one. Handed several sentences, a span or a sentence unit's rule reads each as a unit
-    /// of its own.
+    /// The rule's violations in one unit under `register`, handed over as its sentences in order,
+    /// each with the form mode of its paragraph: one sentence for a span or a sentence unit, the
+    /// paragraph's for a paragraph unit, and the document's for a document unit. The caller splits
+    /// the text into paragraphs on its paragraph marks and each paragraph into sentences, so no
+    /// sentence holds a paragraph mark and no violation's span crosses one.
     ///
-    /// The band's counts run over the whole unit, and each violation is a [`Span`] anchored on the
-    /// sentence that holds its match, with its offset and length in UTF-16 code units, the anchor
-    /// contract the flag types hold. They come in document order: by sentence, then by start.
-    /// Empty where the rule does not declare `mode`, the form mode of the unit's text, or where
-    /// `register` is outside its scope.
-    pub fn evaluate<S: AsRef<str>>(
-        &self,
-        sentences: &[S],
-        mode: FormMode,
-        register: &str,
-    ) -> Vec<Violation> {
-        if !self.runs_in(mode, register) {
-            return Vec::new();
-        }
-        let sentences: Vec<&str> = sentences.iter().map(AsRef::as_ref).collect();
+    /// The rule runs over the sentences whose mode it declares and ignores the rest, which take no
+    /// part in a count and raise nothing; it declares no mode of code. Handed several sentences, a
+    /// span or a sentence unit's rule reads each declared one as a unit of its own, and a paragraph
+    /// or a document unit's rule reads the declared ones together as its unit, so the band's counts
+    /// and a rate band's words run over them alone. Empty where `register` is outside the rule's
+    /// scope.
+    ///
+    /// Each violation names its sentence by its index in `sentences` and is a [`Span`] anchored on
+    /// that sentence, with its offset and length in UTF-16 code units, the anchor contract the flag
+    /// types hold. They come in document order: by sentence, then by start.
+    pub fn evaluate(&self, sentences: &[ModeSentence<'_>], register: &str) -> Vec<Violation> {
+        let (indices, texts): (Vec<usize>, Vec<&str>) = sentences
+            .iter()
+            .enumerate()
+            .filter(|(_, sentence)| self.runs_in(sentence.mode, register))
+            .map(|(index, sentence)| (index, sentence.text))
+            .unzip();
         match self.rule.unit {
-            Unit::Span | Unit::Sentence => sentences
+            Unit::Span | Unit::Sentence => indices
                 .iter()
-                .flat_map(|sentence| self.violations_in(std::slice::from_ref(sentence)))
+                .zip(&texts)
+                .flat_map(|(index, text)| {
+                    self.violations_in(std::slice::from_ref(text), std::slice::from_ref(index))
+                })
                 .collect(),
-            Unit::Paragraph | Unit::Document => self.violations_in(&sentences),
+            Unit::Paragraph | Unit::Document => self.violations_in(&texts, &indices),
         }
     }
 
-    fn runs_in(&self, mode: FormMode, register: &str) -> bool {
+    /// Whether the rule runs on a sentence of a paragraph of form mode `mode` under `register`: it
+    /// declares the mode, which code never is, and its register scope is unset or holds the
+    /// register. Evaluation and LanguageTool's routing both read this one test.
+    pub fn runs_in(&self, mode: FormMode, register: &str) -> bool {
         let declares_mode = mode
             .checkable()
             .is_some_and(|mode| self.rule.form_modes.contains(&mode));
@@ -302,7 +321,9 @@ impl Evaluator {
         declares_mode && in_scope
     }
 
-    fn violations_in(&self, unit: &[&str]) -> Vec<Violation> {
+    /// The violations in the unit of the sentences `unit`, each naming its sentence by the entry
+    /// of `indices` at that sentence's place in `unit`.
+    fn violations_in(&self, unit: &[&str], indices: &[usize]) -> Vec<Violation> {
         let Some(found) = self.matcher.find(unit) else {
             return Vec::new();
         };
@@ -313,6 +334,7 @@ impl Evaluator {
         breaches
             .into_iter()
             .map(|(found, breach)| Violation {
+                sentence: indices[found.sentence],
                 span: span_in(unit[found.sentence], found.range),
                 breach,
             })
@@ -473,13 +495,24 @@ pub(super) mod tests {
         Evaluator::compile(RuleOwner::Clause(ClauseId(1)), rule).unwrap()
     }
 
+    /// `texts` as the sentences of paragraphs of `mode`.
+    pub(in crate::style) fn in_mode<'a>(
+        mode: FormMode,
+        texts: &[&'a str],
+    ) -> Vec<ModeSentence<'a>> {
+        texts
+            .iter()
+            .map(|&text| ModeSentence { text, mode })
+            .collect()
+    }
+
     /// The violations of `evaluator` over the unit of `sentences`, in prose under the default
     /// register.
     pub(in crate::style) fn violations(
         evaluator: &Evaluator,
         sentences: &[&str],
     ) -> Vec<Violation> {
-        evaluator.evaluate(sentences, FormMode::Prose, "default")
+        evaluator.evaluate(&in_mode(FormMode::Prose, sentences), "default")
     }
 
     /// The span of each of `evaluator`'s violations over the one sentence `text`.
@@ -759,45 +792,193 @@ pub(super) mod tests {
         prose_only.form_modes = BTreeSet::from([CheckableMode::Prose]);
         let prose_only = compiled(prose_only);
         assert_eq!(
-            prose_only.evaluate(&text, FormMode::Prose, "default").len(),
+            prose_only
+                .evaluate(&in_mode(FormMode::Prose, &text), "default")
+                .len(),
             1
         );
         assert!(prose_only
-            .evaluate(&text, FormMode::Fragment, "default")
+            .evaluate(&in_mode(FormMode::Fragment, &text), "default")
             .is_empty());
     }
 
     #[test]
     fn no_checker_returns_a_match_in_code() {
         let both = compiled(rule(phrases(&["boasts a"])));
+        let text = ["The town boasts a harbour."];
         assert!(both
-            .evaluate(&["The town boasts a harbour."], FormMode::Code, "default")
+            .evaluate(&in_mode(FormMode::Code, &text), "default")
             .is_empty());
     }
 
     #[test]
     fn a_checker_returns_no_match_under_a_register_outside_its_scope() {
-        let text = ["The town boasts a harbour."];
+        let text = in_mode(FormMode::Prose, &["The town boasts a harbour."]);
         let mut email_only = rule(phrases(&["boasts a"]));
         email_only.register_scope = Some(BTreeSet::from(["email".to_owned()]));
         let email_only = compiled(email_only);
-        assert_eq!(
-            email_only.evaluate(&text, FormMode::Prose, "email").len(),
-            1
-        );
-        assert!(email_only
-            .evaluate(&text, FormMode::Prose, "default")
-            .is_empty());
+        assert_eq!(email_only.evaluate(&text, "email").len(), 1);
+        assert!(email_only.evaluate(&text, "default").is_empty());
     }
 
     #[test]
     fn an_unset_register_scope_runs_in_every_register() {
         let every = compiled(rule(phrases(&["boasts a"])));
+        let text = in_mode(FormMode::Prose, &["The town boasts a harbour."]);
         for register in ["default", "email", "chat"] {
-            let matches =
-                every.evaluate(&["The town boasts a harbour."], FormMode::Prose, register);
-            assert_eq!(matches.len(), 1, "{register}");
+            assert_eq!(every.evaluate(&text, register).len(), 1, "{register}");
         }
+    }
+
+    /// The sentences of a document of four paragraphs, each holding the word "perhaps": a heading,
+    /// which is a fragment, a paragraph of prose, a line of code, and a second paragraph of prose.
+    fn mixed_document() -> Vec<ModeSentence<'static>> {
+        vec![
+            ModeSentence {
+                text: "Perhaps a heading",
+                mode: FormMode::Fragment,
+            },
+            ModeSentence {
+                text: "Perhaps it rains.",
+                mode: FormMode::Prose,
+            },
+            ModeSentence {
+                text: "let perhaps = rain();",
+                mode: FormMode::Code,
+            },
+            ModeSentence {
+                text: "It may clear by noon, perhaps.",
+                mode: FormMode::Prose,
+            },
+        ]
+    }
+
+    /// `rule` declared for prose alone.
+    fn in_prose_only(mut rule: Rule) -> Rule {
+        rule.form_modes = BTreeSet::from([CheckableMode::Prose]);
+        rule
+    }
+
+    #[test]
+    fn a_paragraph_or_document_unit_counts_the_sentences_of_the_modes_it_declares_alone() {
+        let document = mixed_document();
+        for unit in [Unit::Paragraph, Unit::Document] {
+            let at_most_one = compiled(in_prose_only(banded(
+                phrases(&["perhaps"]),
+                unit,
+                count(None, Some(1)),
+            )));
+            let flagged = at_most_one.evaluate(&document, "default");
+            // Two of the four matches are in prose, and the second is beyond the maximum.
+            assert_eq!(flagged.len(), 1, "{unit:?}: {flagged:#?}");
+            assert_eq!(flagged[0].sentence, 3, "{unit:?}");
+            assert_eq!(flagged[0].span.anchor, document[3].text, "{unit:?}");
+            assert_eq!(
+                flagged[0].breach,
+                Breach::AboveMaximum {
+                    count: 2,
+                    maximum: 1
+                },
+                "{unit:?}"
+            );
+
+            // Declared for fragments too, the heading's match counts and the code's still does
+            // not.
+            let both = compiled(banded(phrases(&["perhaps"]), unit, count(None, Some(1))));
+            let flagged = both.evaluate(&document, "default");
+            let sentences: Vec<usize> =
+                flagged.iter().map(|violation| violation.sentence).collect();
+            assert_eq!(sentences, [1, 3], "{unit:?}: {flagged:#?}");
+            assert!(flagged.iter().all(|violation| violation.breach
+                == Breach::AboveMaximum {
+                    count: 3,
+                    maximum: 1
+                }));
+        }
+    }
+
+    #[test]
+    fn a_minimum_underlines_the_declared_sentences_alone() {
+        let document = mixed_document();
+        let at_least_five = compiled(in_prose_only(banded(
+            phrases(&["perhaps"]),
+            Unit::Document,
+            count(Some(5), None),
+        )));
+        let flagged = at_least_five.evaluate(&document, "default");
+        let sentences: Vec<usize> = flagged.iter().map(|violation| violation.sentence).collect();
+        assert_eq!(sentences, [1, 3], "{flagged:#?}");
+        assert!(flagged.iter().all(|violation| violation.breach
+            == Breach::BelowMinimum {
+                count: 2,
+                minimum: 5,
+                shortfall: 3
+            }));
+    }
+
+    #[test]
+    fn a_rate_band_counts_the_words_of_the_declared_sentences_alone() {
+        // Ten words of prose and forty-one of fragments: fifty-one in all, and ten declared.
+        let prose = "Perhaps the ferry waits at the old pier until noon.";
+        let fragment = "One two three four five six seven eight nine ten eleven twelve \
+                        thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty \
+                        twentyone twentytwo twentythree twentyfour twentyfive twentysix \
+                        twentyseven twentyeight twentynine thirty thirtyone thirtytwo \
+                        thirtythree thirtyfour thirtyfive thirtysix thirtyseven thirtyeight \
+                        thirtynine forty fortyone";
+        let document = [
+            ModeSentence {
+                text: fragment,
+                mode: FormMode::Fragment,
+            },
+            ModeSentence {
+                text: prose,
+                mode: FormMode::Prose,
+            },
+        ];
+        assert_eq!(
+            (
+                crate::words::word_count(prose),
+                crate::words::word_count(fragment)
+            ),
+            (10, 41)
+        );
+        let rate = |rule: Rule| compiled(rule).evaluate(&document, "default");
+        let at_most_one_per_hundred = || {
+            banded(
+                phrases(&["perhaps"]),
+                Unit::Document,
+                Band::Rate {
+                    maximum_per_hundred_words: 1.0,
+                },
+            )
+        };
+        // Over the ten words of prose alone, the unit is under fifty words and is not measured.
+        assert!(rate(in_prose_only(at_most_one_per_hundred())).is_empty());
+        // Over all fifty-one, one match is about two per hundred words, over the limit of one.
+        let flagged = rate(at_most_one_per_hundred());
+        assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert_eq!(flagged[0].sentence, 1);
+    }
+
+    #[test]
+    fn a_span_unit_skips_an_undeclared_sentence_and_counts_it_in_each_violations_index() {
+        let document = mixed_document();
+        let forbidden = compiled(in_prose_only(banded(
+            phrases(&["perhaps"]),
+            Unit::Span,
+            Band::Forbidden,
+        )));
+        let flagged = forbidden.evaluate(&document, "default");
+        let found: Vec<(usize, &str)> = flagged
+            .iter()
+            .map(|violation| (violation.sentence, violation.span.anchor.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [(1, document[1].text), (3, document[3].text)],
+            "{flagged:#?}"
+        );
     }
 
     #[test]
@@ -840,6 +1021,7 @@ pub(super) mod tests {
         let sentences = ["Perhaps it rains.", "Perhaps it snows, perhaps not."];
         let flagged = violations(&at_most_one, &sentences);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert_eq!(flagged[0].sentence, 1);
         assert_eq!(flagged[0].span.anchor, sentences[1]);
         assert_eq!(
             flagged[0].span.local_start,
@@ -868,6 +1050,7 @@ pub(super) mod tests {
 
         let flagged = violations(&at_most_two(Unit::Document), &document);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert_eq!(flagged[0].sentence, 3);
         assert_eq!(flagged[0].span.anchor, second_paragraph[1]);
         assert_eq!(flagged_text(&flagged[0].span), "perhaps");
         assert_eq!(

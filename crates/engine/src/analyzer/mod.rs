@@ -3,38 +3,50 @@
 //! splits each paragraph into sentences. Checking keys to the pause because a flag on a half-typed
 //! word is noise.
 //!
-//! A sentence is checked under its paragraph's mode. Nothing checks a sentence of code. Spelling
-//! and the telltale catalogue check a sentence of a fragment or of prose, and LanguageTool checks a
-//! sentence of prose alone, so a fragment's grammar part is complete and empty from the start.
+//! A sentence is checked under its paragraph's mode, and every check runs under the register the
+//! analyzer was started with. Nothing checks a sentence of code. Spelling, the telltale catalogue
+//! and the ruleset's checkers check a sentence of a fragment or of prose, a pattern or a checker
+//! only where it declares the sentence's mode, and LanguageTool checks a sentence of prose alone, so
+//! a fragment's grammar part is complete and empty from the start.
 //!
 //! Each recheck runs two stages, and each publishes the whole document's flags on the watch
-//! channel the overlay subscribes to. The deterministic stage runs spelling and the telltale
-//! catalogue over every sentence the cache holds no entry for, and publishes at once, with the
-//! grammar flags the cache holds for sentences whose grammar check completed on an earlier
+//! channel the overlay subscribes to. The deterministic stage runs three passes, in `passes`, and
+//! publishes at once, with the grammar flags the cache holds for sentences whose grammar check
+//! completed on an earlier recheck. The sentence pass runs spelling, the catalogue's patterns and
+//! the ruleset's checkers of a span or a sentence unit over every sentence the sentence cache holds
+//! no entry for. The paragraph pass runs the patterns and the checkers of a paragraph unit over each
+//! paragraph the paragraph cache holds no entry for, which is every paragraph that holds a changed
+//! sentence, and the document pass runs those of a document unit over the whole document on every
 //! recheck. The grammar stage then sends LanguageTool every sentence whose grammar part is not
-//! complete, one at a time, and publishes a second update adding their grammar flags. It runs as a
-//! task of its own, so the poll goes on while LanguageTool answers, and spelling and telltale flags
-//! never wait on it.
+//! complete, one at a time, and publishes a second update adding their grammar flags, among them
+//! the style flags of the checkers whose matcher is a LanguageTool rule id. It runs as a task of its
+//! own, so the poll goes on while LanguageTool answers, and the deterministic stage's flags never
+//! wait on it.
 //!
-//! The cache holds each sentence's two parts under a hash of its paragraph's mode and its text, as
-//! their sources raised them, so one text in a prose paragraph and in a fragment has an entry for
-//! each. Suppression by severity is applied each time the document's flags are assembled for a
-//! publish, over the parts in hand, so a soft flag that a grammar flag overlaps is in the first
-//! update and gone from the second. A grammar check that fails, times out, or meets LanguageTool
-//! degraded or absent leaves the sentence's grammar part incomplete, and the next recheck sends it
-//! again. Each span's occurrence index is counted from its sentence's position in the document as
-//! each update is assembled.
+//! The sentence cache holds each sentence's two parts under a hash of the ruleset version, its
+//! paragraph's mode and its text, as their sources raised them, so one text in a prose paragraph
+//! and in a fragment has an entry for each. The paragraph cache holds the paragraph pass's flags
+//! for a paragraph under a hash of the ruleset version, its mode and its text, so an unchanged
+//! paragraph is served wherever it has moved. With the version in both keys, an entry made under
+//! one ruleset version is never served under another. Suppression by severity is applied each time
+//! the document's flags are assembled for a publish, over each sentence's parts in hand and the
+//! paragraph and document passes' flags anchored on it, so a soft flag that a grammar flag overlaps
+//! is in the first update and gone from the second. A grammar check that fails, times out, or meets
+//! LanguageTool degraded or absent leaves the sentence's grammar part incomplete, and the next
+//! recheck sends it again. Each span's occurrence index is counted from its sentence's position in
+//! the document as each update is assembled.
 //!
 //! Every recheck carries a number. A new recheck aborts the grammar stage of the one before, and a
 //! stage publishes only while its number is the latest, so a stage that a newer recheck replaced
 //! never publishes over the newer text's flags.
 //!
-//! [`form_mode`] covers the paragraphs and their modes, `sentences` the split of a paragraph, and
-//! `dedupe` suppression. [`form_mode`] is public for the native capture harness; [`Analyzer`] is
-//! the only other public surface.
+//! [`form_mode`] covers the paragraphs and their modes, `sentences` the split of a paragraph,
+//! `passes` the rule layer's passes, and `dedupe` suppression. [`form_mode`] is public for the
+//! native capture harness; [`Analyzer`] is the only other public surface.
 
 mod dedupe;
 pub mod form_mode;
+mod passes;
 mod sentences;
 
 use std::collections::hash_map::DefaultHasher;
@@ -51,12 +63,14 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::capture::Capture;
-use crate::flag::Flag;
+use crate::flag::{Flag, RulesetVersion};
 use crate::languagetool::GrammarSource;
 use crate::spelling::SpellChecker;
 use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
+use crate::style::evaluator::ModeSentence;
 use crate::style::ruleset::LoadedRuleset;
+use passes::UnitFlag;
 
 /// How often the debounce loop reads the capture backend's current text to look for a change.
 /// The 200 ms poll stands until the capture backend's text-changed event triggers the recheck.
@@ -66,7 +80,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// produces one recheck after typing pauses rather than one per keystroke, per AC #40(a).
 const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 
-/// How many sentences' worth of flags the LRU cache holds at once. Sized for a long document
+/// How many entries each LRU cache holds at once: sentences' in the sentence cache, and
+/// paragraphs', which a document holds fewer of, in the paragraph cache. Sized for a long document
 /// (a few thousand words is on the order of a few hundred sentences) without growing unbounded
 /// for the life of a long writing session.
 const CACHE_CAPACITY: usize = 1000;
@@ -87,7 +102,11 @@ struct Inner {
     /// The whole document's flags as the latest update published them, empty until the first. The
     /// channel holds the analyzer's one copy of them, which a subscriber reads through `borrow`.
     flags_tx: watch::Sender<Vec<Flag>>,
+    /// The sentence cache, keyed by [`cache_key`] of a sentence.
     cache: Mutex<LruCache<u64, SentenceParts>>,
+    /// The paragraph pass's flags for each paragraph it evaluated, keyed by [`cache_key`] of the
+    /// paragraph, each flag with the index of its sentence within the paragraph.
+    paragraph_cache: Mutex<LruCache<u64, Vec<UnitFlag>>>,
     /// The number of the latest recheck, raised as each starts. Every publish compares its
     /// recheck's number with this one under this lock, and the raise takes the same lock, so no
     /// update of a recheck lands once a newer recheck has started.
@@ -97,6 +116,13 @@ struct Inner {
     /// share a count.
     #[cfg(test)]
     deterministic_checks: std::sync::atomic::AtomicUsize,
+    /// Counts the paragraphs the paragraph pass evaluated, as `deterministic_checks` counts
+    /// sentences. Test-only.
+    #[cfg(test)]
+    paragraph_checks: std::sync::atomic::AtomicUsize,
+    /// Counts the document pass's evaluations. Test-only.
+    #[cfg(test)]
+    document_checks: std::sync::atomic::AtomicUsize,
     /// Every update published, in order. Test-only: the watch channel keeps only the latest.
     #[cfg(test)]
     updates: Mutex<Vec<Vec<Flag>>>,
@@ -106,7 +132,8 @@ struct Inner {
 /// suppression applied.
 #[derive(Debug, Clone)]
 struct SentenceParts {
-    /// Spelling's and the telltale catalogue's flags.
+    /// The sentence pass's flags: spelling's, and those of the catalogue's patterns and the
+    /// ruleset's checkers of a span or a sentence unit.
     deterministic: Vec<Flag>,
     /// LanguageTool's flags, routed through the ruleset. `Some` once a grammar check of the
     /// sentence has answered, which is the part's completion mark; `None` while no check has, which
@@ -123,6 +150,9 @@ struct Recheck {
     sentences: Vec<DocumentSentence>,
     /// Each sentence's parts in hand, in the order of `sentences`.
     parts: Vec<SentenceParts>,
+    /// The paragraph pass's flags and then the document pass's anchored on each sentence, in the
+    /// order of `sentences`.
+    unit_flags: Vec<Vec<Flag>>,
 }
 
 /// One sentence of a [`Recheck`]'s document.
@@ -131,7 +161,7 @@ struct DocumentSentence {
     range: Range<usize>,
     /// The form mode of the sentence's paragraph.
     mode: FormMode,
-    /// The hash of the sentence's mode and text, its key in the cache.
+    /// The sentence's key in the sentence cache.
     key: u64,
 }
 
@@ -178,13 +208,15 @@ impl Analyzer {
             catalogue,
             register,
             flags_tx,
-            cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(CACHE_CAPACITY)
-                    .expect("CACHE_CAPACITY is a nonzero constant declared just above"),
-            )),
+            cache: Mutex::new(LruCache::new(cache_capacity())),
+            paragraph_cache: Mutex::new(LruCache::new(cache_capacity())),
             latest_recheck: Mutex::new(0),
             #[cfg(test)]
             deterministic_checks: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            paragraph_checks: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            document_checks: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             updates: Mutex::new(Vec::new()),
         });
@@ -208,6 +240,22 @@ impl Analyzer {
     fn deterministic_check_count(&self) -> usize {
         self.inner
             .deterministic_checks
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many paragraphs the paragraph pass evaluated, as opposed to serving from the cache.
+    #[cfg(test)]
+    fn paragraph_check_count(&self) -> usize {
+        self.inner
+            .paragraph_checks
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many times the document pass ran.
+    #[cfg(test)]
+    fn document_check_count(&self) -> usize {
+        self.inner
+            .document_checks
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -324,17 +372,22 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
     inner.flags_tx.send_replace(flags);
 }
 
-/// Splits `text` into its paragraphs and each paragraph into its sentences, and gathers each
-/// sentence's parts: from the cache where it holds an entry, and otherwise from a fresh check
-/// under its paragraph's mode, cached as [`deterministic_parts`] leaves them. An unchanged sentence
-/// whose entry aged out under the LRU's capacity is checked afresh, the correct fallback rather
-/// than showing no flags.
+/// Splits `text` into its paragraphs and each paragraph into its sentences, and runs the three
+/// passes. Each sentence's parts come from the sentence cache where it holds an entry, and
+/// otherwise from a fresh check under its paragraph's mode, cached as [`deterministic_parts`]
+/// leaves them. Each paragraph's flags come from [`passes::paragraph_pass`], and the document's
+/// from [`passes::document_pass`]. An unchanged sentence or paragraph whose entry aged out under
+/// the LRU's capacity is checked afresh, the correct fallback rather than showing no flags.
 fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
+    let version = inner.ruleset.version();
     let mut sentences = Vec::new();
     let mut parts = Vec::new();
+    let mut unit_flags: Vec<Vec<Flag>> = Vec::new();
     for paragraph in form_mode::split(&text) {
-        for sentence in sentences::split(paragraph.text) {
-            let key = cache_key(paragraph.mode, sentence.text);
+        let first_sentence = sentences.len();
+        let paragraph_sentences = sentences::split(paragraph.text);
+        for sentence in &paragraph_sentences {
+            let key = cache_key(version, paragraph.mode, sentence.text);
             let cached = inner
                 .cache
                 .lock()
@@ -357,14 +410,25 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
                 key,
             });
             parts.push(sentence_parts);
+            unit_flags.push(Vec::new());
+        }
+        for UnitFlag { sentence, flag } in
+            passes::paragraph_pass(inner, &paragraph, &paragraph_sentences)
+        {
+            unit_flags[first_sentence + sentence].push(flag);
         }
     }
-    let recheck = Recheck {
+    let mut recheck = Recheck {
         number,
         text,
         sentences,
         parts,
+        unit_flags,
     };
+    let document_flags = passes::document_pass(inner, &recheck.mode_sentences());
+    for UnitFlag { sentence, flag } in document_flags {
+        recheck.unit_flags[sentence].push(flag);
+    }
     log::debug!(
         "recheck {number} holds {} sentences of prose, {} of fragments and {} of code, and {} of \
          them have an incomplete grammar part",
@@ -377,9 +441,9 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
 }
 
 /// The parts of `sentence`, a sentence of a paragraph of `mode`, as the deterministic stage leaves
-/// them. No source checks code, so both parts are complete and empty. Spelling and the catalogue
-/// check a fragment and prose. A fragment's grammar part is complete and empty, since grammar does
-/// not run on fragments, and prose's is left incomplete for the grammar stage.
+/// them. No source checks code, so both parts are complete and empty. The sentence pass checks a
+/// fragment and prose. A fragment's grammar part is complete and empty, since grammar does not run
+/// on fragments, and prose's is left incomplete for the grammar stage.
 fn deterministic_parts(inner: &Inner, sentence: &str, mode: FormMode) -> SentenceParts {
     match mode {
         FormMode::Code => SentenceParts {
@@ -397,6 +461,8 @@ fn deterministic_parts(inner: &Inner, sentence: &str, mode: FormMode) -> Sentenc
     }
 }
 
+/// The sentence pass over `sentence`, a sentence of a paragraph of `mode`: spelling's flags, then
+/// the catalogue's, then the ruleset's.
 fn deterministic_flags(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Flag> {
     #[cfg(test)]
     inner
@@ -405,6 +471,7 @@ fn deterministic_flags(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Fla
 
     let mut flags = inner.spelling.check(sentence);
     flags.extend(inner.catalogue.flags(sentence, mode, &inner.register));
+    flags.extend(passes::sentence_pass(inner, sentence, mode));
     flags
 }
 
@@ -482,6 +549,18 @@ impl Recheck {
         &self.text[self.sentences[index].range.clone()]
     }
 
+    /// Every sentence of the document with its paragraph's mode, in document order.
+    fn mode_sentences(&self) -> Vec<ModeSentence<'_>> {
+        self.sentences
+            .iter()
+            .enumerate()
+            .map(|(index, sentence)| ModeSentence {
+                text: self.sentence(index),
+                mode: sentence.mode,
+            })
+            .collect()
+    }
+
     /// The indices of the sentences whose grammar part is incomplete, each a sentence of prose.
     fn incomplete_sentences(&self) -> Vec<usize> {
         (0..self.parts.len())
@@ -498,14 +577,17 @@ impl Recheck {
     }
 
     /// The whole document's flags from the parts in hand: for each sentence, its deterministic
-    /// part and its grammar part where complete, suppressed together, then scoped to the document
-    /// and stamped with the ruleset version and the catalogue hash in force.
+    /// part, the paragraph and document passes' flags anchored on it, and its grammar part where
+    /// complete, suppressed together, then scoped to the document and stamped with the ruleset
+    /// version and the catalogue hash in force.
     fn document_flags(&self, inner: &Inner) -> Vec<Flag> {
         let mut document_flags = Vec::new();
-        for (index, (sentence, parts)) in self.sentences.iter().zip(&self.parts).enumerate() {
+        let sentences = self.sentences.iter().zip(&self.parts).zip(&self.unit_flags);
+        for (index, ((sentence, parts), unit_flags)) in sentences.enumerate() {
             let in_hand: Vec<Flag> = parts
                 .deterministic
                 .iter()
+                .chain(unit_flags)
                 .chain(parts.grammar.iter().flatten())
                 .cloned()
                 .collect();
@@ -522,7 +604,7 @@ impl Recheck {
 }
 
 /// Prefixes `flag`'s id with the position in the document of the sentence it was found in. Every
-/// checking source numbers its flags within the single sentence it was handed, so two sentences
+/// checking source numbers its flags within the sentence it anchors them on, so two sentences
 /// whose flags number the same way arrive with the same id: a misspelled first word in two
 /// sentences produces `spelling:0` twice. The overlay keys both its rendered underlines
 /// and its hover lookup by id, so a duplicate makes one flag's card open for the other.
@@ -557,13 +639,20 @@ fn hash_text(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// The cache key of `sentence`, a sentence of a paragraph of `mode`: the hash of the two together,
-/// since one text is checked by different sources in a paragraph of each mode.
-fn cache_key(mode: FormMode, sentence: &str) -> u64 {
+/// The key of `text`, a sentence or a paragraph of `mode`, in the sentence cache or the paragraph
+/// cache, checked under the ruleset of `version`: the hash of the three together. One text is
+/// checked by different sources in a paragraph of each mode, and an entry made under one ruleset
+/// version holds flags of that version's checkers, so it is never served under another.
+fn cache_key(version: Option<RulesetVersion>, mode: FormMode, text: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
+    version.hash(&mut hasher);
     mode.hash(&mut hasher);
-    sentence.hash(&mut hasher);
+    text.hash(&mut hasher);
     hasher.finish()
+}
+
+fn cache_capacity() -> NonZeroUsize {
+    NonZeroUsize::new(CACHE_CAPACITY).expect("CACHE_CAPACITY is a nonzero constant")
 }
 
 #[cfg(test)]
@@ -579,22 +668,22 @@ mod tests {
     use crate::test_support::dictionary_path;
 
     /// The catalogue compiled from the toggles the settings file is first written with.
-    fn default_catalogue() -> Catalogue {
+    pub(super) fn default_catalogue() -> Catalogue {
         Catalogue::load(&Config::default())
     }
 
-    struct FakeCapture {
+    pub(super) struct FakeCapture {
         text: StdMutex<String>,
     }
 
     impl FakeCapture {
-        fn new(text: &str) -> Self {
+        pub(super) fn new(text: &str) -> Self {
             Self {
                 text: StdMutex::new(text.to_string()),
             }
         }
 
-        fn set_text(&self, text: &str) {
+        pub(super) fn set_text(&self, text: &str) {
             *self.text.lock().unwrap() = text.to_string();
         }
     }
@@ -638,7 +727,7 @@ mod tests {
     /// A grammar source with no LanguageTool behind it. It records every sentence it is sent,
     /// answers each as its [`Answer`] says, and while held keeps every check waiting until it is
     /// released.
-    struct FakeGrammar {
+    pub(super) struct FakeGrammar {
         flagged_words: Vec<&'static str>,
         answer: StdMutex<Answer>,
         sent: StdMutex<Vec<String>>,
@@ -647,7 +736,7 @@ mod tests {
 
     impl FakeGrammar {
         /// A source that answers with a grammar flag on each of `flagged_words`, unheld.
-        fn flagging(flagged_words: &[&'static str]) -> Arc<Self> {
+        pub(super) fn flagging(flagged_words: &[&'static str]) -> Arc<Self> {
             Arc::new(Self {
                 flagged_words: flagged_words.to_vec(),
                 answer: StdMutex::new(Answer::Flags),
@@ -660,16 +749,16 @@ mod tests {
             *self.answer.lock().unwrap() = answer;
         }
 
-        fn hold(&self) {
+        pub(super) fn hold(&self) {
             self.held.send_replace(true);
         }
 
-        fn release(&self) {
+        pub(super) fn release(&self) {
             self.held.send_replace(false);
         }
 
         /// Every sentence sent so far, in order.
-        fn sent(&self) -> Vec<String> {
+        pub(super) fn sent(&self) -> Vec<String> {
             self.sent.lock().unwrap().clone()
         }
 
@@ -730,7 +819,7 @@ mod tests {
         }
     }
 
-    fn test_spell_checker() -> SpellChecker {
+    pub(super) fn test_spell_checker() -> SpellChecker {
         SpellChecker::load(
             &dictionary_path("en_GB.aff"),
             &dictionary_path("en_GB.dic"),
@@ -744,7 +833,7 @@ mod tests {
     /// task observe every intermediate `tokio::time::interval` tick within it, and the debounce
     /// loop relies on seeing each one. Stepping is also how the loop's 200 ms poll runs outside a
     /// test, one tick at a time.
-    async fn step(steps: u32) {
+    pub(super) async fn step(steps: u32) {
         for _ in 0..steps {
             tokio::time::advance(POLL_INTERVAL).await;
         }
@@ -752,18 +841,18 @@ mod tests {
 
     /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
     /// assert on what was flagged without depending on how the span happens to be anchored.
-    fn flagged_text(flag: &Flag) -> String {
+    pub(super) fn flagged_text(flag: &Flag) -> String {
         let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
         let end = flag.span.local_start + flag.span.local_length;
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
     }
 
     /// The flags `analyzer` last published, read from a fresh subscription.
-    fn published_flags(analyzer: &Analyzer) -> Vec<Flag> {
+    pub(super) fn published_flags(analyzer: &Analyzer) -> Vec<Flag> {
         analyzer.subscribe().borrow().clone()
     }
 
-    fn is_telltale(flag: &Flag) -> bool {
+    pub(super) fn is_telltale(flag: &Flag) -> bool {
         matches!(flag.origin, FlagOrigin::AiTell { .. })
     }
 
@@ -985,14 +1074,7 @@ mod tests {
         step(6).await;
         assert_eq!(eror_spans(&analyzer), [eror_here(0), eror_here(1)]);
         assert_eq!(analyzer.deterministic_check_count(), 2);
-        let cached = analyzer
-            .inner
-            .cache
-            .lock()
-            .unwrap()
-            .get(&cache_key(FormMode::Prose, "An eror here."))
-            .cloned()
-            .unwrap();
+        let cached = cached_parts(&analyzer, FormMode::Prose, "An eror here.").unwrap();
         assert!(
             cached
                 .deterministic
@@ -1160,8 +1242,7 @@ mod tests {
         assert_eq!(grammar.sent(), sentences);
         assert_eq!(analyzer.updates().len(), 1);
         for sentence in sentences {
-            let cache = analyzer.inner.cache.lock().unwrap();
-            let parts = cache.peek(&cache_key(FormMode::Prose, sentence)).unwrap();
+            let parts = cached_parts(&analyzer, FormMode::Prose, sentence).unwrap();
             assert!(parts.grammar.is_none(), "{sentence}: {parts:#?}");
         }
 
@@ -1369,15 +1450,16 @@ mod tests {
 
     /// Five sentences: a misspelling, a telltale, and two identical misspelled sentences around a
     /// clean one.
-    const PINNED_DOCUMENT: &str = "This has a mispelling. It stands as a testament to the team. \
-                                   An eror here. Fine start. An eror here.";
+    pub(super) const PINNED_DOCUMENT: &str =
+        "This has a mispelling. It stands as a testament to the team. An eror here. Fine start. \
+         An eror here.";
 
     /// The flags an analyzer at ruleset version 7 publishes for [`PINNED_DOCUMENT`], pinned field
     /// by field from its output, so a change to how a recheck chooses the sentences it checks
     /// shows here as a change to what it publishes. The catalogue hash is read from the compiled
     /// catalogue rather than pinned, since an edit to the catalogue changes it without touching
     /// the analyzer.
-    fn pinned_flags() -> Vec<Flag> {
+    pub(super) fn pinned_flags() -> Vec<Flag> {
         let catalogue_hash = Some(default_catalogue().hash().clone());
         let eror = |id: &str, occurrence| Flag {
             id: id.to_owned(),
@@ -1479,15 +1561,15 @@ mod tests {
         );
     }
 
-    /// The cache's entry for `sentence` in a paragraph of `mode`, if it holds one.
-    fn cached_parts(analyzer: &Analyzer, mode: FormMode, sentence: &str) -> Option<SentenceParts> {
-        analyzer
-            .inner
-            .cache
-            .lock()
-            .unwrap()
-            .peek(&cache_key(mode, sentence))
-            .cloned()
+    /// The sentence cache's entry for `sentence` in a paragraph of `mode`, under the analyzer's
+    /// ruleset version, if it holds one.
+    pub(super) fn cached_parts(
+        analyzer: &Analyzer,
+        mode: FormMode,
+        sentence: &str,
+    ) -> Option<SentenceParts> {
+        let key = cache_key(analyzer.inner.ruleset.version(), mode, sentence);
+        analyzer.inner.cache.lock().unwrap().peek(&key).cloned()
     }
 
     fn telltales_in(flags: &[Flag]) -> Vec<String> {
