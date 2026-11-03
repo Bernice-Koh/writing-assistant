@@ -285,17 +285,32 @@ struct SerialisedChecker {
 
 impl SerialisedChecker {
     fn new(checker: &Checker, provenance: &Provenance) -> Self {
-        // Struct fields serialise in their declared order, and the modes and the registers are
-        // ordered sets, so equal checkers serialise alike.
-        let definition = serde_json::to_string(checker)
-            .expect("a checker holds no map, the one shape whose serialisation can fail");
+        let definition = definition(checker);
         Self {
             clause_id: checker.clause_id,
-            content_hash: sha256_hex(definition.as_bytes()),
+            content_hash: content_hash(&definition),
             definition,
             provenance: provenance.clone(),
         }
     }
+}
+
+/// `checker`'s serde JSON, its row's definition. Struct fields serialise in their declared order,
+/// and the modes and the registers are ordered sets, so equal checkers serialise alike.
+fn definition(checker: &Checker) -> String {
+    serde_json::to_string(checker)
+        .expect("a checker holds no map, the one shape whose serialisation can fail")
+}
+
+/// The content hash of the checker whose definition is `definition`.
+fn content_hash(definition: &str) -> String {
+    sha256_hex(definition.as_bytes())
+}
+
+/// The content hash a publish gives `checker`, for a test that builds a ruleset with no store.
+#[cfg(test)]
+pub(crate) fn checker_content_hash(checker: &Checker) -> String {
+    content_hash(&definition(checker))
 }
 
 /// The work of one checker insert. Its outer result is SQLite's, and its inner one is the store's

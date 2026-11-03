@@ -61,6 +61,8 @@ pub use events::{Event, EventId, EventKind, StoredEvent, Stream};
 pub use habit_rollups::{HabitRollup, HabitRollupId, HabitTotal};
 pub use items::{Contrast, Item, ItemId, ItemSlot, ItemType, NewItem};
 pub use passages::{Passage, PassageId, PassageKind};
+#[cfg(test)]
+pub(crate) use ruleset::checker_content_hash;
 pub use ruleset::{
     CheckerAuthor, CheckerId, Provenance, PublishedRuleset, RulesetPublish, StoredChecker,
     TestResult,
