@@ -69,7 +69,7 @@ and the command that runs it.
 
 ## Dependencies and tooling
 
-- Rust: `cargo`, with `Cargo.lock` committed.
+- Rust: `cargo`, with `Cargo.lock` committed, on the release `rust-toolchain.toml` pins.
 - Frontend (`src/`): `npm`, with `package-lock.json` committed. `extension/` is plain
   JavaScript with no `package.json` of its own, linted from the root config.
 - Python (`adapter/`): `uv`, with `pyproject.toml` and `uv.lock` committed and the environment
@@ -99,6 +99,21 @@ The Rust job runs on Windows because the engine and the app link the Windows API
 nowhere else. Clippy's `--all-targets` flag compiles the harnesses under
 `crates/engine/examples/`; CI does not run them. Third-party actions are pinned to a commit
 hash, and GitHub's own actions to a major version.
+
+The Rust toolchain is pinned to one release, declared twice: `rust-toolchain.toml` at the
+repository root names it with the `rustfmt` and `clippy` components, so rustup uses it in
+every checkout, and the Rust job installs the same release by name. `rustup toolchain install`
+run in a checkout installs the release the file names; rustup also installs it on first use,
+with a warning that this auto-installation is deprecated. A local run of the three checks and
+the gate's run therefore use the same compiler, clippy and rustfmt, and a lint that arrives
+in a newer release cannot fail the gate on a branch that passed locally. Bumping the release
+is a chore pull request that edits both declarations. `rust-version` in the workspace
+manifest is the minimum release a consumer builds with and is a separate declaration.
+
+SonarCloud's automatic analysis, enabled in its web interface and not in the workflow, posts
+a quality-gate check named `SonarCloud Code Analysis` on every pull request. It has no local
+run, so its result is read from the pull request's checks; `gh pr checks` lists it beside
+the jobs.
 
 No Python job exists; one arrives with `adapter/`. The Rust and Frontend jobs hold no
 credentials.
@@ -152,8 +167,9 @@ branch-then-review regardless of team size.
 
 Branch names: `feat/<short>`, `fix/<short>`, `docs/<short>`, `chore/<short>`.
 
-A pull request merges once GitHub Actions passes on the pull request itself, not only on a
-local run of the same checks. Merge with a merge commit; delete the branch afterwards.
+A pull request merges once GitHub Actions and the SonarCloud check pass on the pull request
+itself, not only on a local run of the same checks. Merge with a merge commit; delete the
+branch afterwards.
 
 ## GitHub issues
 
