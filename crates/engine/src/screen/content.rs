@@ -5,7 +5,7 @@
 //! content failures as a class of their own.
 //!
 //! Every comparison errs toward rejection. A candidate that fails is regenerated once, so a false
-//! failure costs one generation, while a false pass shows the owner a changed fact.
+//! failure costs one generation, while a false pass shows a changed fact.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -26,6 +26,11 @@ const NEGATION_WORDS: [&str; 10] = [
 
 /// A contraction's negative, split off its word as a token of its own.
 const CONTRACTED_NOT: &str = "n't";
+
+/// The other endings a contraction or a possessive adds to a word, each split off its word as a
+/// token of its own that counts under no rule, so `Tan's` holds the capitalised token `Tan` and
+/// `nothing's` the negation word `nothing`.
+const CLITICS: [&str; 6] = ["'s", "'m", "'re", "'ve", "'d", "'ll"];
 
 /// Whether one rule of the content check held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,15 +68,19 @@ impl ContentResult {
 /// Each right single quotation mark, U+2019, is mapped to a straight apostrophe in both texts
 /// before anything is tokenised, since Word turns a typed apostrophe into the curly one and a model
 /// writes either. A token is then a word by the engine's one definition, in `crate::words`, with a
-/// final `n't` split off as a token of its own, so `isn't` is `is` and `n't`.
+/// final `'s`, `'m`, `'re`, `'ve`, `'d` or `'ll` split off as a token of its own, and then a final
+/// `n't`, so `isn't` is `is` and `n't`, and `Tan's` is `Tan` and `'s`. A split-off ending other
+/// than `n't` counts under no rule.
 ///
-/// - Numbers: the two texts hold the same numbers, with the same count of each. A number is a
-///   token of ASCII digits with optional commas, read as thousands separators wherever they fall
-///   between digits, and an optional decimal point. Numbers compare by value through a canonical
-///   decimal string, never through floating point: the commas stripped, then trailing zeros after
-///   the point and a trailing point removed, so `1,000` equals `1000` and `2.50` equals `2.5`.
-///   Leading zeros are kept, so `09` and `9` differ. A number word such as `three` is not counted,
-///   and nor is a token that holds a letter, such as `3pm`.
+/// - Numbers: the two texts hold the same numbers and the same tokens that hold a digit and are
+///   not numbers, with the same count of each. A number is a token of ASCII digits with optional
+///   commas, read as thousands separators wherever they fall between digits, and an optional
+///   decimal point. Numbers compare by value through a canonical decimal string, never through
+///   floating point: the commas stripped, then trailing zeros after the point and a trailing point
+///   removed, so `1,000` equals `1000` and `2.50` equals `2.5`. Leading zeros are kept, so `09` and
+///   `9` differ. Any other token that holds a digit, by Unicode's numeric property, such as `3pm`,
+///   `1990s`, `2nd` or `v1.2.3`, is an entry of its own, compared as written, so `3pm` and `4pm`
+///   differ, as do `3pm` and `3 pm`. A number word such as `three` is not counted.
 /// - Capitalised tokens: a capitalised token starts with an uppercase letter and is not the
 ///   pronoun `I`. It is sentence-initial when it is the first word of a sentence under the split
 ///   the analyzer uses, Unicode's sentence boundaries from `unicode-segmentation`. A capitalised
@@ -123,16 +132,23 @@ fn tokens(text: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     for sentence in text.unicode_sentences() {
         for (index, (_, word)) in words(sentence).enumerate() {
-            let (base, contracted_not) = split_contracted_not(word);
+            let (rest, clitic) = CLITICS
+                .into_iter()
+                .find_map(|clitic| split_ending(word, clitic))
+                .map_or((word, None), |(rest, clitic)| (rest, Some(clitic)));
+            let (base, contracted_not) = split_ending(rest, CONTRACTED_NOT)
+                .map_or((rest, None), |(base, contracted_not)| {
+                    (base, Some(contracted_not))
+                });
             if !base.is_empty() {
                 tokens.push(Token {
                     text: base,
                     sentence_initial: index == 0,
                 });
             }
-            if let Some(contracted_not) = contracted_not {
+            for ending in [contracted_not, clitic].into_iter().flatten() {
                 tokens.push(Token {
-                    text: contracted_not,
+                    text: ending,
                     sentence_initial: false,
                 });
             }
@@ -141,13 +157,12 @@ fn tokens(text: &str) -> Vec<Token<'_>> {
     tokens
 }
 
-/// `word` without a final `n't`, in any case, and the `n't` when it has one.
-fn split_contracted_not(word: &str) -> (&str, Option<&str>) {
+/// `word` split before its final `ending`, matched in any case, when it ends with it.
+fn split_ending<'w>(word: &'w str, ending: &str) -> Option<(&'w str, &'w str)> {
     word.len()
-        .checked_sub(CONTRACTED_NOT.len())
+        .checked_sub(ending.len())
         .and_then(|at| word.split_at_checked(at))
-        .filter(|(_, ending)| ending.eq_ignore_ascii_case(CONTRACTED_NOT))
-        .map_or((word, None), |(base, ending)| (base, Some(ending)))
+        .filter(|(_, found)| found.eq_ignore_ascii_case(ending))
 }
 
 fn multiset<K: Eq + Hash>(items: impl Iterator<Item = K>) -> HashMap<K, usize> {
@@ -158,13 +173,29 @@ fn multiset<K: Eq + Hash>(items: impl Iterator<Item = K>) -> HashMap<K, usize> {
     counts
 }
 
-/// Each number of `tokens` by its canonical decimal string, with its count.
-fn numbers(tokens: &[Token]) -> HashMap<String, usize> {
-    multiset(
-        tokens
-            .iter()
-            .filter_map(|token| canonical_number(token.text)),
-    )
+/// One entry of the numbers multiset.
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum NumberEntry<'t> {
+    /// A number, by its canonical decimal string.
+    Value(String),
+    /// A token that holds a digit and is not a number, as written.
+    AsWritten(&'t str),
+}
+
+/// Each number of `tokens` by its value and each other token that holds a digit as written, with
+/// its count.
+fn numbers<'t>(tokens: &[Token<'t>]) -> HashMap<NumberEntry<'t>, usize> {
+    multiset(tokens.iter().filter_map(|token| {
+        canonical_number(token.text)
+            .map(NumberEntry::Value)
+            .or_else(|| {
+                token
+                    .text
+                    .chars()
+                    .any(char::is_numeric)
+                    .then_some(NumberEntry::AsWritten(token.text))
+            })
+    }))
 }
 
 /// `token` as a canonical decimal string, when it is a number, so two numbers of one value are
@@ -302,8 +333,29 @@ mod tests {
     }
 
     #[test]
-    fn a_token_that_holds_a_letter_is_not_a_number() {
-        assert_eq!(check("We met at 3pm.", "We met at 3 pm.").numbers, Fail);
+    fn a_token_that_holds_a_digit_and_is_not_a_number_is_its_own_entry_compared_as_written() {
+        for token in ["3pm", "1990s", "2nd", "v1.2.3"] {
+            let text = format!("It was {token} again.");
+            assert_eq!(check(&text, &text).numbers, Pass, "{token}");
+        }
+        for (passage, candidate) in [
+            ("We met at 3pm.", "We met at 4pm."),
+            ("We met at 3pm.", "We met at 3 pm."),
+            ("We met at 3pm.", "We met at 3PM."),
+            ("It was the 1990s.", "It was the 1980s."),
+            ("She came 2nd.", "She came 3rd."),
+            ("Install v1.2.3 today.", "Install v1.2.4 today."),
+            ("Install v1.2.3 today.", "Install v1.2.3 and v1.2.3 today."),
+        ] {
+            assert_eq!(check(passage, candidate).numbers, Fail, "{candidate}");
+        }
+    }
+
+    #[test]
+    fn leading_zeros_stay() {
+        assert_eq!(check("Gate 09 opens.", "Gate 9 opens.").numbers, Fail);
+        assert_eq!(check("Gate 09 opens.", "Gate 09 opens.").numbers, Pass);
+        assert_eq!(check("Agent 007 left.", "Agent 7 left.").numbers, Fail);
     }
 
     #[test]
@@ -474,6 +526,47 @@ mod tests {
         assert_eq!(
             negations(&tokens("It is not late.")),
             negations(&contracted)
+        );
+    }
+
+    #[test]
+    fn a_contractions_or_a_possessives_ending_is_split_off_and_counts_under_no_rule() {
+        let split: Vec<&str> = tokens("Tan's dog. I'm sure they're, we've, he'd and she'll.")
+            .iter()
+            .map(|token| token.text)
+            .collect();
+        assert_eq!(
+            split,
+            [
+                "Tan", "'s", "dog", "I", "'m", "sure", "they", "'re", "we", "'ve", "he", "'d",
+                "and", "she", "'ll"
+            ]
+        );
+        assert_eq!(
+            check("We took Tan's ferry.", "We took the ferry of Tan.").capitalised_tokens,
+            Pass
+        );
+        assert_eq!(
+            check(
+                "Yes, I'm late for the ferry today.",
+                "Yes, I am late for the ferry today."
+            ),
+            ALL_PASS
+        );
+        assert_eq!(
+            check(
+                "Here nothing's late for the ferry today.",
+                "Here nothing is late for the ferry today."
+            ),
+            ALL_PASS
+        );
+        assert_eq!(
+            check(
+                "They shouldn\u{2019}t\u{2019}ve left.",
+                "They should not have left."
+            )
+            .negations,
+            Pass
         );
     }
 
