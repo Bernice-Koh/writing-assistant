@@ -91,10 +91,9 @@ async fn start_checking_pipeline(
     app.manage(settings);
     let store = open_store().await;
     // Read once, like the settings: a version published while the app runs is in force from the
-    // next start. Handed to the analyzer, which routes LanguageTool's matches through it, and
-    // managed for the analyzer passes that run its checkers (#100).
+    // next start. Handed to the analyzer, which runs its checkers and routes LanguageTool's matches
+    // through it.
     let ruleset = Arc::new(load_ruleset(store.as_ref()).await);
-    app.manage(Arc::clone(&ruleset));
     // Managed as an `Option`, so a reader meets a store that failed to open as `None` rather than
     // as unmanaged state. Nothing reads it yet.
     app.manage(store);
@@ -134,7 +133,7 @@ async fn start_checking_pipeline(
         Arc::clone(&capture),
         spelling,
         grammar,
-        Arc::clone(&ruleset),
+        ruleset,
         catalogue,
         register,
     ));
