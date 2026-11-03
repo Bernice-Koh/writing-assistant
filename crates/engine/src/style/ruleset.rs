@@ -1,7 +1,7 @@
 //! The ruleset in force: the latest published ruleset version, read once and compiled once, with
 //! the citation each checker's flags embed. A store with no ruleset version, or no store, gives an
 //! empty ruleset with no version, and spelling, grammar and telltale checking run as they do
-//! without one. Running the checkers over a document is the analyzer's (#100).
+//! without one.
 //!
 //! A clause's text is the owner's words, so no log line or `Debug` rendering here carries it: a
 //! warning names a checker by its id.
