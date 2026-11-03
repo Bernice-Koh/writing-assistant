@@ -17,6 +17,7 @@ pub mod error;
 mod tokens;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::path::Path;
 
@@ -107,6 +108,29 @@ impl SpellChecker {
     /// and is mapped back to the straight one otherwise, so accepting a suggestion never changes
     /// the apostrophes a text is typed with.
     pub fn check(&self, text: &str) -> Vec<Flag> {
+        self.check_accepting(text, |_| false)
+    }
+
+    /// [`check`](Self::check) of `text`, a rewrite of `source`, in which a word the dictionary
+    /// lacks raises no flag when `source` holds it as written or with only its first letter's case
+    /// changed, so a proper noun a rewrite carries over from its source is never a misspelling of
+    /// the rewrite. The source's words are gathered by the segmentation `check` walks: each segment
+    /// of Unicode's word boundaries that holds a letter, skipped token or not, held with its first
+    /// letter in lower case, and a word of `text` is looked up the same way.
+    pub fn check_against_source(&self, text: &str, source: &str) -> Vec<Flag> {
+        let source_words: HashSet<String> = source
+            .split_word_bounds()
+            .filter(|segment| segment.chars().any(char::is_alphabetic))
+            .map(with_first_letter_lowercased)
+            .collect();
+        self.check_accepting(text, |word| {
+            source_words.contains(&with_first_letter_lowercased(word))
+        })
+    }
+
+    /// Flags each alphabetic word of `text` outside a skipped token that the dictionary lacks and
+    /// `accepted` does not accept.
+    fn check_accepting(&self, text: &str, accepted: impl Fn(&str) -> bool) -> Vec<Flag> {
         let skipped_tokens = tokens::skipped_tokens(text);
         let in_skipped_token = |byte_start: usize| {
             skipped_tokens
@@ -120,6 +144,7 @@ impl SpellChecker {
             if word.chars().any(char::is_alphabetic)
                 && !in_skipped_token(byte_start)
                 && !self.dictionary.check(word)
+                && !accepted(word)
             {
                 flags.push(self.flag_for(text, word, local_start, local_length));
             }
@@ -157,6 +182,19 @@ impl SpellChecker {
             catalogue_hash: None,
         }
     }
+}
+
+/// `word` with its first character in lower case, so two words that differ only in that letter's
+/// case are one.
+fn with_first_letter_lowercased(word: &str) -> String {
+    let mut characters = word.chars();
+    characters
+        .next()
+        .map(char::to_lowercase)
+        .into_iter()
+        .flatten()
+        .chain(characters)
+        .collect()
 }
 
 fn read_to_string(path: &Path) -> Result<String, SpellingError> {
@@ -238,6 +276,43 @@ mod tests {
         assert_eq!(flagged_text(&flags[1]), "recieve");
         // Sliced from the anchor, so these offsets genuinely point at each occurrence in turn.
         assert_eq!(flags[1].span.local_start, text.find("recieve two").unwrap());
+    }
+
+    /// A passage holding a name the dictionary lacks, written for these tests.
+    const SOURCE: &str = "We met Xilvane at the pier.";
+
+    #[test]
+    fn a_word_the_dictionary_lacks_and_the_source_holds_as_written_raises_no_flag() {
+        let checker = checker();
+        let rewrite = "At the pier, we met Xilvane.";
+        assert_eq!(checker.check(rewrite).len(), 1);
+        let flags = checker.check_against_source(rewrite, SOURCE);
+        assert!(flags.is_empty(), "{flags:#?}");
+    }
+
+    #[test]
+    fn a_word_the_source_holds_with_only_its_first_letters_case_changed_raises_no_flag() {
+        let checker = checker();
+        for (rewrite, source) in [
+            ("xilvane met us at the pier.", SOURCE),
+            ("Xilvane met us at the pier.", "We met xilvane at the pier."),
+        ] {
+            let flags = checker.check_against_source(rewrite, source);
+            assert!(flags.is_empty(), "{rewrite}: {flags:#?}");
+        }
+        // A change to the case of any other letter is a different word.
+        let flags = checker.check_against_source("We met XILVANE at the pier.", SOURCE);
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(&flags[0]), "XILVANE");
+    }
+
+    #[test]
+    fn a_word_the_dictionary_lacks_and_the_source_does_not_hold_is_flagged() {
+        let text = "We met Xilvane and Brontish at the pier.";
+        let flags = checker().check_against_source(text, SOURCE);
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(&flags[0]), "Brontish");
+        assert_eq!(flags[0], checker().check(text)[1]);
     }
 
     #[test]
