@@ -155,19 +155,10 @@ impl LoadedChecker {
         &self.citation
     }
 
-    /// Whether the checker's rule runs on text of form mode `mode` under `register`: the rule
-    /// declares the mode, which code never is, and its register scope is unset or holds the
-    /// register.
+    /// Whether the checker's rule runs on a sentence of a paragraph of form mode `mode` under
+    /// `register`, by [`Evaluator::runs_in`].
     pub fn applies_to(&self, mode: FormMode, register: &str) -> bool {
-        let rule = self.evaluator.rule();
-        let declares_mode = mode
-            .checkable()
-            .is_some_and(|mode| rule.form_modes.contains(&mode));
-        let in_scope = rule
-            .register_scope
-            .as_ref()
-            .is_none_or(|scope| scope.contains(register));
-        declares_mode && in_scope
+        self.evaluator.runs_in(mode, register)
     }
 }
 
@@ -307,6 +298,7 @@ mod tests {
     use super::*;
     use crate::store::{CardMember, CheckerAuthor, ClauseWording, Provenance};
     use crate::style::checker::{Band, CheckableMode, Checker, FormMode, PhraseEntry};
+    use crate::style::evaluator::tests::in_mode;
     use crate::test_support::{capture_logs, TempRoot};
 
     const HEDGES: (&str, &str) = (
@@ -610,7 +602,7 @@ mod tests {
 
         let violations = checker
             .evaluator()
-            .evaluate(&paragraph, FormMode::Prose, "default");
+            .evaluate(&in_mode(FormMode::Prose, &paragraph), "default");
         let flags: Vec<Flag> = violations
             .iter()
             .map(|violation| ruleset.flag(violation.clone(), checker))

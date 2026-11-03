@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use super::checker::{FormMode, Rule};
-use super::evaluator::{Evaluator, RuleOwner, Violation};
+use super::evaluator::{Evaluator, ModeSentence, RuleOwner, Violation};
 use super::phrase::CurlyMarks;
 use super::variants;
 use crate::flag::{CatalogueHash, Flag, FlagOrigin};
@@ -127,12 +127,16 @@ impl Catalogue {
     /// identical bare matches in one sentence, a single emoji or a dash each, would share an index
     /// and address the same match.
     pub fn flags(&self, sentence: &str, mode: FormMode, register: &str) -> Vec<Flag> {
+        let sentence = [ModeSentence {
+            text: sentence,
+            mode,
+        }];
         self.patterns
             .iter()
             .flat_map(|compiled| {
                 compiled
                     .evaluator
-                    .evaluate(&[sentence], mode, register)
+                    .evaluate(&sentence, register)
                     .into_iter()
                     .map(|violation| compiled.flag(violation))
             })
