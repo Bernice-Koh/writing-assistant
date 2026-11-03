@@ -1,7 +1,7 @@
-//! The ruleset in force: the latest published ruleset version, read once and compiled once, with
-//! the citation each checker's flags embed. A store with no ruleset version, or no store, gives an
-//! empty ruleset with no version, and spelling, grammar and telltale checking run as they do
-//! without one.
+//! The ruleset in force: the latest published ruleset version, or one a caller names, read once and
+//! compiled once, with the citation each checker's flags embed. A store with no ruleset version, or
+//! no store, gives an empty ruleset with no version, and spelling, grammar and telltale checking
+//! run as they do without one.
 //!
 //! A clause's text is the owner's words, so no log line or `Debug` rendering here carries it: a
 //! warning names a checker by its id.
@@ -62,6 +62,36 @@ impl LoadedRuleset {
         let ruleset = store.latest_ruleset_version_blocking()?;
         let card = store.latest_card_version_blocking()?;
         Ok(Self::compiled(ruleset, card.as_ref()))
+    }
+
+    /// The ruleset version `version` in `store`, loaded as [`load`](Self::load) loads the latest,
+    /// each checker citing its clause's text from the latest Card version, so a bench can screen
+    /// under a version the ruleset has since moved past.
+    ///
+    /// # Errors
+    /// [`StoreError::NoRulesetVersion`] when the store holds no such version, and otherwise as
+    /// [`Store::ruleset_version`] and [`Store::latest_card_version`].
+    pub async fn load_version(store: &Store, version: RulesetVersion) -> Result<Self, StoreError> {
+        let ruleset = store.ruleset_version(version).await?;
+        let card = store.latest_card_version().await?;
+        Ok(Self::compiled(Some(ruleset), card.as_ref()))
+    }
+
+    /// [`load_version`](Self::load_version) for a synchronous caller, such as `wa`, which blocks on
+    /// the store's replies.
+    ///
+    /// # Errors
+    /// As [`load_version`](Self::load_version).
+    ///
+    /// # Panics
+    /// When called from async code, which awaits [`load_version`](Self::load_version) instead.
+    pub fn load_version_blocking(
+        store: &Store,
+        version: RulesetVersion,
+    ) -> Result<Self, StoreError> {
+        let ruleset = store.ruleset_version_blocking(version)?;
+        let card = store.latest_card_version_blocking()?;
+        Ok(Self::compiled(Some(ruleset), card.as_ref()))
     }
 
     fn compiled(ruleset: Option<PublishedRuleset>, card: Option<&PublishedCard>) -> Self {
@@ -650,6 +680,43 @@ mod tests {
     }
 
     #[test]
+    fn a_named_version_loads_its_own_checkers_after_the_ruleset_has_moved_on() {
+        let root = TempRoot::new();
+        let (store, hedges, dashes) = store_with_card(&root);
+        let first = publish(&store, &[hedging_limit(hedges, at_most(1))]);
+        let second = publish(&store, &[dash_ban(dashes)]);
+
+        let named = LoadedRuleset::load_version_blocking(&store, first.version).unwrap();
+        let latest = LoadedRuleset::load_blocking(&store).unwrap();
+
+        assert_eq!(named.version(), Some(first.version));
+        let named_ids: Vec<CheckerId> = named.checkers().iter().map(LoadedChecker::id).collect();
+        assert_eq!(named_ids, [first.checkers[0].id]);
+        // Cited from the latest Card version, as a load of the latest cites.
+        assert_eq!(
+            named.checkers()[0].citation().clause_text,
+            HEDGES_REWORDED.0
+        );
+        assert_eq!(latest.version(), Some(second.version));
+        assert_ne!(latest.version(), named.version());
+    }
+
+    #[test]
+    fn a_named_version_the_store_does_not_hold_is_an_error_naming_it() {
+        let root = TempRoot::new();
+        let (store, hedges, _) = store_with_card(&root);
+        let published = publish(&store, &[hedging_limit(hedges, at_most(1))]);
+        let absent = RulesetVersion(published.version.0 + 1);
+
+        let error = LoadedRuleset::load_version_blocking(&store, absent).unwrap_err();
+
+        assert!(
+            matches!(error, StoreError::NoRulesetVersion { version } if version == absent),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_store_with_no_ruleset_version_or_no_store_gives_an_empty_ruleset_with_no_version() {
         let root = TempRoot::new();
         let store = Store::open(root.path()).unwrap();
@@ -863,7 +930,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn the_awaited_load_behaves_as_the_blocking_one() {
+    async fn the_awaited_loads_behave_as_the_blocking_ones() {
         let root = TempRoot::new();
         let store = Store::open(root.path()).unwrap();
         let card = store
@@ -877,9 +944,14 @@ mod tests {
             .unwrap();
 
         let ruleset = LoadedRuleset::load(&store).await.unwrap();
+        let named = LoadedRuleset::load_version(&store, published.version)
+            .await
+            .unwrap();
 
-        assert_eq!(ruleset.version(), Some(published.version));
-        assert_eq!(ruleset.checkers().len(), 1);
-        assert_eq!(ruleset.checkers()[0].citation().clause_text, HEDGES.0);
+        for ruleset in [ruleset, named] {
+            assert_eq!(ruleset.version(), Some(published.version));
+            assert_eq!(ruleset.checkers().len(), 1);
+            assert_eq!(ruleset.checkers()[0].citation().clause_text, HEDGES.0);
+        }
     }
 }
