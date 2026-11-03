@@ -141,6 +141,23 @@ fn telltale_enabled_by_default(pattern_id: &str) -> bool {
 /// editors write one into a UTF-8 file. A top-level key that names no setting is ignored with one
 /// `warn` line, and the load succeeds.
 pub fn load(data_root: &Path) -> Result<Config, StoreError> {
+    match load_existing(data_root)? {
+        Some(config) => Ok(config),
+        None => {
+            let config = Config::default();
+            save(data_root, &config)?;
+            Ok(config)
+        }
+    }
+}
+
+/// The config under `data_root` read as [`load`] reads it, or `None` when no config file exists,
+/// in which case nothing is written. `wa` reads the settings through this, so the app stays the
+/// one writer of the defaults, as it is the one creator of the store.
+///
+/// # Errors
+/// As [`load`], short of a failed write.
+pub fn load_existing(data_root: &Path) -> Result<Option<Config>, StoreError> {
     let path = data_root.join(CONFIG_FILE_NAME);
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
@@ -152,13 +169,9 @@ pub fn load(data_root: &Path) -> Result<Config, StoreError> {
                 })?;
             warn_of_unknown_keys(json, &path);
             config.drop_unknown_telltale_toggles(&path);
-            Ok(config)
+            Ok(Some(config))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let config = Config::default();
-            save(data_root, &config)?;
-            Ok(config)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(StoreError::Read { path, source }),
     }
 }
@@ -385,6 +398,24 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), contents.as_bytes());
         assert!(!dir.join(format!("{CONFIG_FILE_NAME}.tmp")).exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reading_an_existing_config_writes_nothing_where_there_is_none() {
+        let dir = unique_temp_dir();
+        assert_eq!(load_existing(&dir).unwrap(), None);
+        assert!(!dir.exists());
+
+        let held = root_holding(r#"{ "telltale_toggles": { "emojis": false } }"#);
+        assert_eq!(load_existing(&held).unwrap(), Some(load(&held).unwrap()));
+        std::fs::remove_dir_all(&held).ok();
+
+        let malformed = root_holding("{ \"checking_enabled\": tru }");
+        assert!(matches!(
+            load_existing(&malformed),
+            Err(StoreError::Parse { .. })
+        ));
+        std::fs::remove_dir_all(&malformed).ok();
     }
 
     #[test]
