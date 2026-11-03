@@ -23,7 +23,7 @@ were actually read from.
 
 ## Patterns not encoded
 
-Seven of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
+Six of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
 frequency-based habit, not a fixed phrasing, and does not reduce to a phrase or regex match against
 one sentence without producing either constant false positives or requiring real parsing this module
 does not attempt:
@@ -35,8 +35,6 @@ does not attempt:
   grammatical parsing beyond phrase or regex matching.
 - **15, Overuse of Boldface**: a single bolded phrase is not a tell on its own, per the source's own
   detection guidance; this is a frequency pattern, not a single-span match.
-- **17, Title Case in Headings**: needs per-word capitalisation counting against a detected heading
-  line, a different scan shape than the sentence-level matching every other entry here uses.
 - **29, Fragmented Headers**: needs comparing a heading line against the paragraph that follows it,
   not a single-sentence match.
 - **30, Diff-Anchored Writing**: `SKILL.md` gives no fixed "words to watch" list for this pattern,
@@ -110,10 +108,11 @@ tacked-on-clause construction the pattern describes.
 
 ### Structural patterns
 
-A structural pattern counts a habit of frequency over a paragraph or the document, which no single
-match shows. Each one's unit, band and modes were decided on 14 October 2026 in #101 and are held
-here as catalogue data. Each band is a version-one default, revisited against real documents after
-Phase 3. Each structural pattern is on by default, with a toggle of its own.
+A structural pattern is a habit of form measured over a paragraph or the document: a frequency that
+no single match shows, or the capitalisation of a heading. Each one's unit, band and modes were
+decided on 14 October 2026 in #101 and are held here as catalogue data. Each band is a version-one
+default, revisited against real documents after Phase 3. Each structural pattern is on by default,
+with a toggle of its own.
 
 Pattern 10 (rule of three) is a regex over the paragraph under a count band of at most one,
 declared for prose alone. The regex finds a list in one sentence: three or more items separated by
@@ -129,6 +128,20 @@ from an opening word or phrase followed by a pair, as in "In 2020, sales rose an
 which has a list's shape and matches; under the band it is flagged only as a paragraph's second
 match. An item of more than three words between the first and the last breaks the list, so such a
 list is missed or read as two.
+
+Pattern 17 (title case in headings) is a capitalised-words matcher over the paragraph under the
+forbidden band, declared for fragments alone. A sentence of at least three words of which at least
+three quarters start with an upper-case letter is one match, from its first word to its last, and
+the two thresholds are the entry's data. A heading's marker holds no letter or digit and is no
+word, and a word that starts with a digit counts towards the length and not the share. Three words
+keep a two-word label such as `Next Steps` clear, and three quarters flags a heading that leaves
+one short word in lower case, `Notes On the Design`, while a heading in sentence case stays under
+the share unless proper nouns make up three quarters of its words. The source names title case in
+a heading as the tell itself, so the band is forbidden and every such line is flagged. A fragment
+is a heading, a list item or a short line, and the pattern reads those alone, since a prose
+sentence with many capitalised words is a run of names and not a heading. The matcher cannot tell
+a heading made of proper nouns, `The Style Card`, from title case, nor a Markdown table's header
+row, whose cells are capitalised single words, and flags both.
 
 Pattern 26 (hyphenated word pairs) is a regex over the document under a rate band of at most two
 per hundred words, declared for prose and fragment. The regex finds words of letters joined by

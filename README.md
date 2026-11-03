@@ -292,9 +292,9 @@ which then has no grammar flags this time, a result distinct from a check that f
 ### Telltales
 
 Underlining LLM phrasing is independent of the Card. The catalogue ships with the tool and keeps
-its own flag origin. It holds 23 patterns, hand-encoded from Wikipedia's Signs of AI writing page
+its own flag origin. It holds 24 patterns, hand-encoded from Wikipedia's Signs of AI writing page
 as read through an intermediary's skill file. `src-tauri/resources/ai-telltales/NOTICE.md`
-records the provenance, the matching notes, and the seven patterns left unencoded.
+records the provenance, the matching notes, and the six patterns left unencoded.
 
 Each pattern is a rule on the rule layer, compiled under its pattern id with no clause. A phrasing
 pattern is a phrase list or a regex over spans under the forbidden band, declared for prose and
@@ -326,10 +326,10 @@ default, revisited against real documents after Phase 3, and the notice records 
 | Pattern | Matcher | Unit | Band | Modes |
 |---|---|---|---|---|
 | `rule-of-three` | Regex: a list of three or more items in one sentence, with `and` or `or` before the last | Paragraph | At most one | Prose |
+| `title-case` | Capitalised words: a line of three or more words, three quarters or more of them capitalised | Paragraph | Forbidden | Fragment |
 | `hyphenated-word-pairs` | Regex: words of letters joined by single hyphens, a compound one match | Document | At most two per hundred words, not measured under fifty words | Prose and fragment |
 
-Planned for Phase 1: title case and boldface overuse, encoded as structural patterns on the rule
-layer.
+Planned for Phase 1: boldface overuse, encoded as a structural pattern on the rule layer.
 
 ### Language convention
 
