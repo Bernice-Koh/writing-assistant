@@ -49,6 +49,12 @@ pub(crate) fn route_captured_response(
 /// commits to running without grammar checking rather than restarting forever.
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 
+/// The port the app and `wa` hand [`LanguageToolSupervisor::start`], which scans upward from it for
+/// a free one, so two processes started at it both run, the second on the next free port.
+/// LanguageTool's own default when run standalone, so its server is recognisable among a
+/// machine's listening ports.
+pub const PREFERRED_PORT: u16 = 8081;
+
 /// The source of one sentence's grammar flags, which the analyzer's grammar stage and the screen
 /// call. A trait object rather than the supervisor itself, so their tests answer, hold, fail and
 /// time out checks with no LanguageTool subprocess. [`LanguageToolSupervisor`] is the
