@@ -1,5 +1,5 @@
-//! The shared unit every checking source produces and the analyzer, the Tauri command layer, and
-//! the overlay all consume. Three unrelated modules produce a [`Flag`] today: spelling,
+//! The shared unit every checking source produces and the analyzer, the screen, the Tauri command
+//! layer, and the overlay all consume. Three unrelated modules produce a [`Flag`] today: spelling,
 //! LanguageTool, and the rule layer in `style`, through the telltale catalogue and the ruleset's
 //! checkers. Owning the type inside any one of them would make the others reach sideways across
 //! the crate for it, so it lives here instead.
@@ -172,8 +172,8 @@ pub struct Flag {
     /// `src-tauri/resources/ai-telltales/patterns.json`, followed by the variant-pair table's,
     /// `src-tauri/resources/spelling-variants/pairs.json`, as lowercase hex. An edit to either
     /// data file changes it and an edit to the ruleset does not, so the two are told apart. The
-    /// analyzer sets it on every flag it publishes; a checking source builds its flags with
-    /// `None`.
+    /// analyzer sets it on every flag it publishes, and the screen on every flag of a screening; a
+    /// checking source builds its flags with `None`.
     pub catalogue_hash: Option<CatalogueHash>,
 }
 

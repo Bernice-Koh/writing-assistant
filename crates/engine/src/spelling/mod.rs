@@ -6,15 +6,18 @@
 //! Spelling skips a token shaped like a URL, a path or an identifier, whatever the form mode of
 //! the paragraph that holds it, since such a token is not prose. The token is the run of
 //! non-whitespace characters that holds the word, and it is skipped when it holds a scheme
-//! separator, a slash, an at sign, a dot between letters or an underscore, or has a capital letter
-//! directly after a lowercase one. A full stop after the token's last letter, as at the end of a
-//! sentence, is not a dot between letters. Only the token is skipped: a misspelt word beside it is
-//! still flagged.
+//! separator, a slash or a backslash, an at sign, an equals sign or an ampersand, or an
+//! underscore, when it holds a letter and a dot between two characters that are each a letter or a
+//! digit, or when it has a capital letter directly after a lowercase one. A full stop after the
+//! token's last letter, as at the end of a sentence, sits between a letter and nothing, and a
+//! number such as `3.5` holds no letter, so neither is skipped. Only the token is skipped: a
+//! misspelt word beside it is still flagged.
 
 pub mod error;
 mod tokens;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::path::Path;
 
@@ -30,6 +33,11 @@ use crate::flag::{Flag, FlagOrigin, Span};
 /// whole list by the time it is cut, so the cap bounds what a flag carries to the hover card and
 /// saves the deterministic stage no time.
 const MAX_SUGGESTIONS: usize = 5;
+
+/// The apostrophe Word types in place of the straight one, U+2019.
+const CURLY_APOSTROPHE: char = '\u{2019}';
+
+const STRAIGHT_APOSTROPHE: &str = "'";
 
 /// Wraps a loaded `en_GB` dictionary with the Singapore supplement merged in through
 /// [`Dictionary::add`], so a supplement word is checked and suggested through the same lookup as
@@ -95,8 +103,36 @@ impl SpellChecker {
     /// The curly apostrophe Word types, U+2019, is looked up as the straight one through the affix
     /// file's `ICONV` line, which spellbook applies, so a misspelt contraction is flagged whole,
     /// apostrophe included, at its offset in the text as written. The `OCONV` line gives every
-    /// suggestion the curly apostrophe, whichever one the word was typed with.
+    /// suggestion the curly apostrophe, and a suggestion keeps the form the flagged word was typed
+    /// with: the curly one stays only where the word holds a curly apostrophe and no straight one,
+    /// and is mapped back to the straight one otherwise, so accepting a suggestion never changes
+    /// the apostrophes a text is typed with.
     pub fn check(&self, text: &str) -> Vec<Flag> {
+        self.check_accepting(text, |_| false)
+    }
+
+    /// [`check`](Self::check) of `text`, a rewrite of `source`, in which a word the dictionary
+    /// lacks raises no flag when `source` holds it with the same letters, in the same case or with
+    /// only its first letter's case changed, whichever apostrophe either text writes. A proper noun
+    /// a rewrite carries over from its source is then never a misspelling of the rewrite, and a
+    /// model that writes the straight apostrophe where the source has the curly one, or the
+    /// reverse, changes no word, as the affix file's `ICONV` line and the content check already
+    /// read the two as one. The source's words are gathered by the segmentation `check` walks: each
+    /// segment of Unicode's word boundaries that holds a letter, skipped token or not, held with its
+    /// first letter in lower case and each U+2019 read as U+0027, and a word of `text` is looked up
+    /// by the same key.
+    pub fn check_against_source(&self, text: &str, source: &str) -> Vec<Flag> {
+        let source_words: HashSet<String> = source
+            .split_word_bounds()
+            .filter(|segment| segment.chars().any(char::is_alphabetic))
+            .map(source_word_key)
+            .collect();
+        self.check_accepting(text, |word| source_words.contains(&source_word_key(word)))
+    }
+
+    /// Flags each alphabetic word of `text` outside a skipped token that the dictionary lacks and
+    /// `accepted` does not accept.
+    fn check_accepting(&self, text: &str, accepted: impl Fn(&str) -> bool) -> Vec<Flag> {
         let skipped_tokens = tokens::skipped_tokens(text);
         let in_skipped_token = |byte_start: usize| {
             skipped_tokens
@@ -110,6 +146,7 @@ impl SpellChecker {
             if word.chars().any(char::is_alphabetic)
                 && !in_skipped_token(byte_start)
                 && !self.dictionary.check(word)
+                && !accepted(word)
             {
                 flags.push(self.flag_for(text, word, local_start, local_length));
             }
@@ -125,6 +162,12 @@ impl SpellChecker {
         let mut suggestions = Vec::new();
         self.dictionary.suggest(word, &mut suggestions);
         suggestions.truncate(MAX_SUGGESTIONS);
+        let typed_curly = word.contains(CURLY_APOSTROPHE) && !word.contains(STRAIGHT_APOSTROPHE);
+        if !typed_curly {
+            for suggestion in &mut suggestions {
+                *suggestion = suggestion.replace(CURLY_APOSTROPHE, STRAIGHT_APOSTROPHE);
+            }
+        }
         Flag {
             id: format!("spelling:{local_start}"),
             origin: FlagOrigin::Spelling,
@@ -141,6 +184,27 @@ impl SpellChecker {
             catalogue_hash: None,
         }
     }
+}
+
+/// The key [`SpellChecker::check_against_source`] compares a word by: `word` with its first
+/// character in lower case and each curly apostrophe, U+2019, read as the straight one, so two
+/// words that differ only in that letter's case or in their apostrophes are one.
+fn source_word_key(word: &str) -> String {
+    let mut characters = word.chars();
+    characters
+        .next()
+        .map(char::to_lowercase)
+        .into_iter()
+        .flatten()
+        .chain(characters)
+        .map(|character| {
+            if character == CURLY_APOSTROPHE {
+                '\''
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn read_to_string(path: &Path) -> Result<String, SpellingError> {
@@ -224,6 +288,55 @@ mod tests {
         assert_eq!(flags[1].span.local_start, text.find("recieve two").unwrap());
     }
 
+    /// A passage holding a name the dictionary lacks, written for these tests.
+    const SOURCE: &str = "We met Xilvane at the pier.";
+
+    #[test]
+    fn a_word_the_dictionary_lacks_and_the_source_holds_as_written_raises_no_flag() {
+        let checker = checker();
+        let rewrite = "At the pier, we met Xilvane.";
+        assert_eq!(checker.check(rewrite).len(), 1);
+        let flags = checker.check_against_source(rewrite, SOURCE);
+        assert!(flags.is_empty(), "{flags:#?}");
+    }
+
+    #[test]
+    fn a_word_the_source_holds_with_only_its_first_letters_case_changed_raises_no_flag() {
+        let checker = checker();
+        for (rewrite, source) in [
+            ("xilvane met us at the pier.", SOURCE),
+            ("Xilvane met us at the pier.", "We met xilvane at the pier."),
+        ] {
+            let flags = checker.check_against_source(rewrite, source);
+            assert!(flags.is_empty(), "{rewrite}: {flags:#?}");
+        }
+        // A change to the case of any other letter is a different word.
+        let flags = checker.check_against_source("We met XILVANE at the pier.", SOURCE);
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(&flags[0]), "XILVANE");
+    }
+
+    #[test]
+    fn a_word_the_dictionary_lacks_and_the_source_does_not_hold_is_flagged() {
+        let text = "We met Xilvane and Brontish at the pier.";
+        let flags = checker().check_against_source(text, SOURCE);
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flagged_text(&flags[0]), "Brontish");
+        assert_eq!(flags[0], checker().check(text)[1]);
+    }
+
+    #[test]
+    fn a_word_the_source_holds_with_the_other_apostrophe_raises_no_flag() {
+        let checker = checker();
+        let curly = "We met Xilvane\u{2019}s brother at the pier.";
+        let straight = "At the pier, we met Xilvane's brother.";
+        for (rewrite, source) in [(straight, curly), (curly, straight)] {
+            assert_eq!(checker.check(rewrite).len(), 1, "{rewrite}");
+            let flags = checker.check_against_source(rewrite, source);
+            assert!(flags.is_empty(), "{rewrite}: {flags:#?}");
+        }
+    }
+
     #[test]
     fn does_not_flag_a_singapore_supplement_term() {
         let flags = checker().check("Meet me at the kopitiam near the HDB.");
@@ -299,25 +412,55 @@ mod tests {
     }
 
     #[test]
-    fn a_misspelt_contraction_is_offered_the_curly_apostrophe_whichever_was_typed() {
-        // The affix file's `OCONV` line maps the straight apostrophe to U+2019 in every
-        // suggestion, so accepting one in straight-apostrophe text inserts a curly apostrophe.
+    fn a_suggestion_keeps_the_apostrophe_the_flagged_word_was_typed_with() {
+        // The affix file's `OCONV` line gives every suggestion U+2019, which is mapped back for a
+        // word typed with a straight apostrophe or with none.
         let checker = checker();
-        for word in ["dosen\u{2019}t", "dosen't"] {
+        for (word, expected) in [
+            ("dosen\u{2019}t", "doesn\u{2019}t"),
+            ("dosen't", "doesn't"),
+            ("didnt", "didn't"),
+        ] {
             let flags = checker.check(word);
             assert_eq!(flags.len(), 1, "{flags:#?}");
-            assert_eq!(flags[0].suggestions.first().unwrap(), "doesn\u{2019}t");
+            assert!(
+                flags[0]
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| suggestion == expected),
+                "{word}: {:?}",
+                flags[0].suggestions
+            );
+            let other = if expected.contains(CURLY_APOSTROPHE) {
+                STRAIGHT_APOSTROPHE
+            } else {
+                "\u{2019}"
+            };
+            assert!(
+                flags[0]
+                    .suggestions
+                    .iter()
+                    .all(|suggestion| !suggestion.contains(other)),
+                "{word}: {:?}",
+                flags[0].suggestions
+            );
         }
     }
 
     /// One token of each shape the skip rule names, in the rule's order: a scheme separator, a
-    /// slash, an at sign, a dot between letters, an underscore, and a capital after a lowercase
-    /// letter.
-    const SKIPPED_TOKENS: [&str; 6] = [
+    /// slash, a backslash, an at sign, an equals sign, an ampersand, a dot between letters, a dot
+    /// between a digit and a letter, a dot between digits in a token that holds a letter, an
+    /// underscore, and a capital after a lowercase letter.
+    const SKIPPED_TOKENS: [&str; 11] = [
         "https://exampel.com/pth",
         "src/analyzr",
+        "src\\analyzr",
         "naem@exampel.com",
+        "q=helo",
+        "helo&wrld",
         "overlay.tsx",
+        "fiel2.txt",
+        "vershun1.2",
         "get_current_flags",
         "FlagOrigin",
     ];
@@ -358,6 +501,30 @@ mod tests {
             assert_eq!(flags.len(), 1, "{token}: {flags:#?}");
             assert_eq!(flagged_text(&flags[0]), "recieve");
         }
+    }
+
+    #[test]
+    fn a_query_string_the_sentence_splitter_cut_off_its_url_is_skipped() {
+        let text = "See https://exampel.com/serch?q=helo&lang=en for the list.";
+        let sentences: Vec<&str> = text.unicode_sentences().collect();
+        assert_eq!(
+            sentences,
+            [
+                "See https://exampel.com/serch?",
+                "q=helo&lang=en for the list."
+            ]
+        );
+        let checker = checker();
+        for sentence in sentences {
+            let flags = checker.check(sentence);
+            assert!(flags.is_empty(), "{sentence}: {flags:#?}");
+        }
+    }
+
+    #[test]
+    fn a_version_or_a_file_name_with_a_digit_before_its_dot_is_skipped() {
+        let flags = checker().check("Install v1.2 and open fiel2.txt first.");
+        assert!(flags.is_empty(), "{flags:#?}");
     }
 
     #[test]

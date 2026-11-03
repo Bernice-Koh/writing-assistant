@@ -4,10 +4,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// One sentence of the document, trimmed.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Sentence<'a> {
+pub(crate) struct Sentence<'a> {
     /// The byte offset in the document's text where the trimmed sentence starts.
-    pub(super) start: usize,
-    pub(super) text: &'a str,
+    pub(crate) start: usize,
+    pub(crate) text: &'a str,
 }
 
 /// Splits `text` into its sentences.
@@ -18,7 +18,7 @@ pub(super) struct Sentence<'a> {
 /// sentence, changing its exact text with nothing the user actually edited in it. The analyzer's
 /// cache is keyed by a sentence's text, so an untrimmed former-last sentence would miss the cache
 /// and be rechecked on every sentence appended, the single most common way a document grows.
-pub(super) fn split(text: &str) -> Vec<Sentence<'_>> {
+pub(crate) fn split(text: &str) -> Vec<Sentence<'_>> {
     text.unicode_sentences()
         .map(str::trim)
         .filter(|sentence| !sentence.is_empty())

@@ -3,12 +3,12 @@
 //! under, with the app version, the hard and soft results and the killing rule. The three form a
 //! lookup key and not a uniqueness rule: a screening under a key already screened adds a row, and
 //! a lookup returns the latest. Recording the catalogue hash beside the ruleset version tells a
-//! catalogue change from a ruleset change. Nothing writes a screen result until the screen (#103)
-//! exists.
+//! catalogue change from a ruleset change. The killing rule is the screen's [`KillingRule`].
+//! Nothing writes a screen result until Phase 4's rewriter, the screen's first caller.
 //!
 //! The store validates the results as JSON and does not type them: the screen defines their shapes
-//! and the verdict and reads them back through its own types. They can quote words of a
-//! candidate's text, so no error, log line or `Debug` rendering here carries them.
+//! and the verdict. They can quote words of a candidate's text, so no error, log line or `Debug`
+//! rendering here carries them.
 
 use std::fmt;
 
@@ -21,6 +21,7 @@ use super::json::Json;
 use super::passages::from_column;
 use super::thread::Store;
 use crate::flag::{CatalogueHash, RulesetVersion};
+use crate::screen::KillingRule;
 
 const INSERT_SCREEN_RESULT: &str = "insert a screen result";
 const READ_SCREEN_RESULT: &str = "read the latest screen result";
@@ -29,17 +30,6 @@ const READ_SCREEN_RESULT: &str = "read the latest screen result";
 /// later screening under one key has a higher id. An `i64` because SQLite's integers are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScreenResultId(pub i64);
-
-/// The first check a candidate failed, in the screen's order: content, spelling, grammar, style,
-/// tells. The screen (#103) reuses this type or moves it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum KillingRule {
-    Content,
-    Spelling,
-    Grammar,
-    Style,
-    Tells,
-}
 
 /// One screening of a candidate.
 #[derive(Clone, PartialEq, Eq)]
@@ -264,14 +254,6 @@ fn latest(
 }
 
 impl KillingRule {
-    const ALL: [Self; 5] = [
-        Self::Content,
-        Self::Spelling,
-        Self::Grammar,
-        Self::Style,
-        Self::Tells,
-    ];
-
     /// The rule as the `killing_rule` column holds it, one of the names its CHECK constraint
     /// allows.
     fn column_value(self) -> &'static str {
@@ -293,7 +275,7 @@ impl ToSql for KillingRule {
 
 impl FromSql for KillingRule {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        from_column(value, &Self::ALL, Self::column_value)
+        from_column(value, &Self::ORDER, Self::column_value)
     }
 }
 
@@ -395,7 +377,10 @@ mod tests {
         let (store, hash, version) = store_with_candidate(&root);
         let mut results = vec![failed(&hash, version), passed(&hash, version)];
         results[1].catalogue_hash = catalogue(b"another catalogue");
-        for (rule, bytes) in KillingRule::ALL.iter().zip([b"c", b"s", b"g", b"y", b"t"]) {
+        for (rule, bytes) in KillingRule::ORDER
+            .iter()
+            .zip([b"c", b"s", b"g", b"y", b"t"])
+        {
             results.push(ScreenResult {
                 killing_rule: Some(*rule),
                 catalogue_hash: catalogue(bytes),

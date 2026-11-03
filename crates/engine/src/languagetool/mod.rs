@@ -2,8 +2,8 @@
 //! exit) and runs the grammar stage's checks against it, in LanguageTool's `en-GB` variant and its
 //! picky mode. `process` covers the subprocess itself; `client` the HTTP API, the shape of a
 //! response and the route of each of LanguageTool's categories; `routing` the turn of one
-//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset. The analyzer reaches
-//! the checks through [`GrammarSource`], which the supervisor implements.
+//! sentence's matches into [`crate::flag::Flag`]s through the loaded ruleset. The analyzer and the
+//! screen reach the checks through [`GrammarSource`], which the supervisor implements.
 
 mod client;
 pub mod error;
@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use tokio::process::Child;
 
+#[cfg(test)]
+pub(crate) use client::fixtures as captured_responses;
 pub use client::LanguageToolClient;
 pub use error::LanguageToolError;
 pub use process::{default_paths, LanguageToolPaths};
@@ -23,16 +25,34 @@ use crate::flag::Flag;
 use crate::style::checker::FormMode;
 use crate::style::ruleset::LoadedRuleset;
 
+/// The flags `response`, a response captured from LanguageTool to one sentence of `mode` under
+/// `register`, routes to through `ruleset` by the routing the supervisor runs, so a fake grammar
+/// source answers through it with no subprocess.
+#[cfg(test)]
+pub(crate) fn route_captured_response(
+    response: &str,
+    ruleset: &LoadedRuleset,
+    mode: FormMode,
+    register: &str,
+) -> Vec<Flag> {
+    routing::route(
+        client::fixtures::matches_in(response),
+        ruleset,
+        mode,
+        register,
+    )
+}
+
 /// How many times [`supervise`] restarts the subprocess after an unexpected exit before giving
 /// up and staying degraded for the rest of the session. Three gives a real subprocess crash-loop
 /// (a bad JVM flag, a corrupt bundled jar) a couple of chances to be transient before the app
 /// commits to running without grammar checking rather than restarting forever.
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 
-/// The grammar stage's source of one sentence's flags, which the analyzer calls. A trait object
-/// rather than the supervisor itself, so the analyzer's tests answer, hold, fail and time out
-/// checks with no LanguageTool subprocess. [`LanguageToolSupervisor`] is the implementation the app
-/// runs.
+/// The source of one sentence's grammar flags, which the analyzer's grammar stage and the screen
+/// call. A trait object rather than the supervisor itself, so their tests answer, hold, fail and
+/// time out checks with no LanguageTool subprocess. [`LanguageToolSupervisor`] is the
+/// implementation the app runs.
 #[async_trait::async_trait]
 pub trait GrammarSource: Send + Sync {
     /// Runs the grammar stage's check of `sentence`, one sentence of form mode `mode` under
@@ -43,7 +63,9 @@ pub trait GrammarSource: Send + Sync {
     /// When the subprocess is degraded or the request fails or times out, which fails the check for
     /// this sentence. The analyzer treats a failure as no grammar flags this time, leaves the
     /// sentence's grammar part incomplete so that the next recheck sends it again, and keeps
-    /// serving the other sources' flags, so a down LanguageTool never stops checking.
+    /// serving the other sources' flags, so a down LanguageTool never stops checking. The screen
+    /// treats a failure as a run that did not happen, since a screening without grammar would read
+    /// as clean.
     async fn check(
         &self,
         sentence: &str,

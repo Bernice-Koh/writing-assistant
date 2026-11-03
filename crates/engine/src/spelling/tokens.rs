@@ -18,18 +18,25 @@ pub(super) fn skipped_tokens(text: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// The slash test covers the scheme separator, `://`, which holds two.
+/// The slash test covers the scheme separator, `://`, which holds two, and a Windows path's
+/// backslash counts as a slash. The equals sign and the ampersand join a query string's
+/// parameters, and the sentence splitter can cut a query string off its URL at the question mark,
+/// leaving a token with no slash.
 fn is_url_path_or_identifier_shaped(token: &str) -> bool {
-    token.contains(['/', '@', '_'])
-        || has_a_dot_between_letters(token)
+    token.contains(['/', '\\', '@', '_', '=', '&'])
+        || has_a_dot_inside_a_name(token)
         || has_a_capital_directly_after_a_lowercase_letter(token)
 }
 
-fn has_a_dot_between_letters(token: &str) -> bool {
+/// Whether `token` holds a letter and a dot between two characters that are each a letter or a
+/// digit, as a file name or a version does: `overlay.tsx`, `file2.txt`, `v1.2`. A number such as
+/// `3.5` holds no letter and is not one.
+fn has_a_dot_inside_a_name(token: &str) -> bool {
     let characters: Vec<char> = token.chars().collect();
-    characters
-        .windows(3)
-        .any(|window| window[0].is_alphabetic() && window[1] == '.' && window[2].is_alphabetic())
+    characters.iter().any(|character| character.is_alphabetic())
+        && characters.windows(3).any(|window| {
+            window[0].is_alphanumeric() && window[1] == '.' && window[2].is_alphanumeric()
+        })
 }
 
 fn has_a_capital_directly_after_a_lowercase_letter(token: &str) -> bool {
@@ -67,8 +74,8 @@ mod tests {
 
     #[test]
     fn a_word_of_ordinary_prose_is_not_skipped() {
-        // A capital before a lowercase letter, an apostrophe, a hyphen, a dot between digits and
-        // curly quotes are each ordinary.
+        // A capital before a lowercase letter, an apostrophe, a hyphen and curly quotes are each
+        // ordinary.
         for token in [
             "Kopitiam",
             "LONDON",
@@ -76,10 +83,34 @@ mod tests {
             "don\u{2019}t",
             "O\u{2019}Brien",
             "well-known",
-            "3.5km",
             "\u{201c}recieve,\u{201d}",
         ] {
             assert!(!is_url_path_or_identifier_shaped(token), "{token}");
+        }
+    }
+
+    #[test]
+    fn a_backslash_counts_as_a_slash() {
+        for token in ["src\\analyzr", "C:\\Users\\naem", "\\\\servr\\shaer"] {
+            assert!(is_url_path_or_identifier_shaped(token), "{token}");
+        }
+    }
+
+    #[test]
+    fn a_dot_between_letters_or_digits_counts_in_a_token_that_holds_a_letter() {
+        for token in ["fiel2.txt", "v1.2", "v1.2.3", "3.5km", "overlay.tsx"] {
+            assert!(is_url_path_or_identifier_shaped(token), "{token}");
+        }
+        // A number holds no letter, and a dot at a token's edge sits between nothing.
+        for token in ["3.5", "1,250.50", "3.", ".5", "recieve."] {
+            assert!(!is_url_path_or_identifier_shaped(token), "{token}");
+        }
+    }
+
+    #[test]
+    fn an_equals_sign_or_an_ampersand_counts() {
+        for token in ["q=helo&lang=en", "q=helo", "a&b"] {
+            assert!(is_url_path_or_identifier_shaped(token), "{token}");
         }
     }
 

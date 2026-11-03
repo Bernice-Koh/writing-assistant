@@ -36,8 +36,9 @@ flowchart TD
 ```
 
 The path from typing to underlines runs today, the ruleset's checkers included, and no ruleset
-holds a checker until Phase 3 publishes the first. The Card, the rewrite, the screen, and the event
-record are planned, and the sections below give the phase for each.
+holds a checker until Phase 3 publishes the first. The screen is built in the engine, and nothing
+calls it until the rewrite does. The Card, the rewrite, and the event record are planned, and the
+sections below give the phase for each.
 
 Two kinds of input are kept apart. An expressed preference is a questionnaire answer, a reaction
 to a sample, or free-prose feedback, and it is the only thing that changes the Card. Measured
@@ -529,12 +530,27 @@ it would be decided on measured latency and the owner's own use.
 The prompt puts the Card first, rendered for the passage's register, so that the server's prefix
 cache holds it across rewrites within one Card version.
 
-Every candidate passes the screen before it is shown. The screen (planned, Phase 1) is the
-deterministic layer applied to a candidate, with a content-preservation check: the candidate's
-numbers, capitalised tokens, negation words, and length are compared with the passage's, and a
-candidate that fails is not shown. A model supplies wording; the facts are the passage's. The
-screen has one implementation, in the engine. The app calls it in process and the bench calls it
-through `wa screen`, so what the bench measures is what ships.
+Every candidate passes the screen before it is shown. The screen is built in the engine, as a
+function the rewriter calls in process, and nothing calls it until Phase 4. It is the deterministic
+layer applied to a candidate. It first runs the content-preservation check: the candidate's numbers,
+capitalised tokens, negation words, and length are compared with the passage's. A model supplies
+wording; the facts are the passage's. It then runs spelling, the telltale catalogue, the ruleset's
+checkers, and LanguageTool's grammar over the candidate through the functions the analyzer runs on
+typed text, with the candidate segmented into paragraphs and form modes as typed text is. Spelling
+accepts a word the passage holds, so a name carried over from the passage is not a misspelling.
+
+Content failures, spelling flags, and grammar flags are hard results; style flags and telltale
+flags are soft. A candidate fails on any result and passes on none. The killing rule is the source
+of the first result in the order content, spelling, grammar, style, telltales. Hard against soft
+never changes the verdict: it decides what the working card does with a failed candidate,
+regenerate it once or show it underlined, and what synthesis records. The screen suppresses
+nothing, and lists every result each source raised, since the verdict fails on any. A grammar
+check that does not run, with LanguageTool down or past its bound, ends the screening with an error
+and never passes it. Each screening records the ruleset version, the catalogue's content hash, the
+telltale patterns switched on, and the app version it ran under.
+
+The screen has one implementation, in the engine. The bench calls it through `wa screen`, which is
+planned (#104), so what the bench measures is what ships.
 
 The working card offers Rewrite on a flag's card and on a selection, which is reached from a
 marker at the selection's tail or a global hotkey. Accept finds the anchor again and runs the
@@ -594,15 +610,15 @@ flowchart LR
 The Rust code is a Cargo workspace of three crates, with a virtual manifest and the lockfile at the
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
-`crates/wa`. Of the engine's contents in the table, the screen is planned for Phase 1, the store's
-remaining artefact tables for the phases that first write them, and the two
-clients for Phase 3. The store holds `schema_version`, `passages`, the Card and ruleset tables,
-`candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`, and the app
-reads the latest ruleset version and Card version from it at startup. Nothing writes a passage or a
-candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an event until
-Phase 3's questionnaire, or a habit rollup until the habit ledger in Phase 9; the screen, planned
-for Phase 1, is the first writer of a screen result. `wa` has one subcommand, `wa backup`, which
-copies the store file alone; `wa screen` is planned for Phase 1.
+`crates/wa`. Of the engine's contents in the table, the store's remaining artefact tables are
+planned for the phases that first write them, and the two clients for Phase 3. The screen is built,
+and nothing calls it until Phase 4's rewriter. The store holds `schema_version`, `passages`, the
+Card and ruleset tables, `candidates`, `screen_results`, `items`, `item_slots`, `events`, and
+`habit_rollups`, and the app reads the latest ruleset version and Card version from it at startup.
+Nothing writes a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset
+until Phase 3, an event until Phase 3's questionnaire, a habit rollup until the habit ledger in
+Phase 9, or a screen result until Phase 4's rewriter, its first writer. `wa` has one subcommand,
+`wa backup`, which copies the store file alone; `wa screen` is planned for Phase 1.
 
 | Crate | Holds |
 |---|---|
@@ -727,8 +743,8 @@ version, the hard and soft results as JSON, and the killing rule where a check f
 candidate's hash, the ruleset version and the catalogue hash form a lookup key and not a uniqueness
 rule: a candidate screened again under a new ruleset, a new catalogue or a new build gains a row
 and loses none, and a lookup returns the latest row under its key, which every candidate sharing
-the hash shares. Nothing writes a candidate until Phase 4 or a screen result until the screen
-exists.
+the hash shares. Nothing writes a candidate or a screen result until Phase 4, whose rewriter is the
+screen's first caller.
 
 An item is the record of what was shown to the owner: a passage, a candidate in each of two slots,
 and the versions in force. Its row in `items` holds its type, which is fresh core, fresh fringe,

@@ -1,4 +1,5 @@
 mod dictionary_words;
+mod fake_grammar;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,9 @@ use std::sync::Once;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 pub(crate) use dictionary_words::dictionary_words;
+pub(crate) use fake_grammar::{Answer, FakeGrammar};
+
+use crate::spelling::SpellChecker;
 
 /// A directory under the OS temp directory unique to this call, not yet created, handed to a test
 /// as its data root so that no test touches the real one, and concurrently running tests never
@@ -50,6 +54,17 @@ pub(crate) fn dictionary_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../src-tauri/resources/dictionaries")
         .join(name)
+}
+
+/// The spell checker the app loads, over the vendored dictionary pair and the Singapore
+/// supplement.
+pub(crate) fn test_spell_checker() -> SpellChecker {
+    SpellChecker::load(
+        &dictionary_path("en_GB.aff"),
+        &dictionary_path("en_GB.dic"),
+        &dictionary_path("en_sg_supplement.txt"),
+    )
+    .expect("the vendored dictionary pair and supplement are well-formed, checked in CI")
 }
 
 /// The app's Tauri configuration, which declares the bundle identifier the data root is named by.

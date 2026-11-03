@@ -67,7 +67,7 @@ pub use ruleset::{
     CheckerAuthor, CheckerId, Provenance, PublishedRuleset, RulesetPublish, StoredChecker,
     TestResult,
 };
-pub use screen_results::{KillingRule, ScreenResult, ScreenResultId, StoredScreenResult};
+pub use screen_results::{ScreenResult, ScreenResultId, StoredScreenResult};
 pub use split::Split;
 pub use thread::Store;
 
