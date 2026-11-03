@@ -157,7 +157,7 @@ cached by paragraph hash, and per document on every recheck (see Checking).
 
 | Part | Values |
 |---|---|
-| Matcher | Phrase list, regex, LanguageTool rule id, spelling variant, word count |
+| Matcher | Phrase list, regex, LanguageTool rule id, spelling variant, word count, capitalised words |
 | Unit | Span, sentence, paragraph, document |
 | Band | Forbidden, a minimum and maximum count, a rate per hundred words |
 
@@ -185,6 +185,12 @@ it matches each word written in a form that convention does not write, and a che
 convention the table does not hold does not compile. Without one, it prefers the convention the
 unit writes most often, or on an equal count the one written first. At the document unit it flags
 each word of the minority convention, and nothing in a document of one convention.
+
+The capitalised-words matcher holds two thresholds, a minimum number of words and a share. It
+matches a sentence of at least that many words of which at least that share start with an
+upper-case letter, as one match from its first word to its last, and a share that is not a number
+from 0 to 1 does not compile. A word that starts with a digit counts towards the length and not
+the share.
 
 A style flag carries the text of its clause, and the hover card cites the clause the text broke.
 
