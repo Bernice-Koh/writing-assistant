@@ -31,6 +31,11 @@ use crate::flag::{Flag, FlagOrigin, Span};
 /// saves the deterministic stage no time.
 const MAX_SUGGESTIONS: usize = 5;
 
+/// The apostrophe Word types in place of the straight one, U+2019.
+const CURLY_APOSTROPHE: char = '\u{2019}';
+
+const STRAIGHT_APOSTROPHE: &str = "'";
+
 /// Wraps a loaded `en_GB` dictionary with the Singapore supplement merged in through
 /// [`Dictionary::add`], so a supplement word is checked and suggested through the same lookup as
 /// any other word, with no second word set to keep in sync.
@@ -95,7 +100,10 @@ impl SpellChecker {
     /// The curly apostrophe Word types, U+2019, is looked up as the straight one through the affix
     /// file's `ICONV` line, which spellbook applies, so a misspelt contraction is flagged whole,
     /// apostrophe included, at its offset in the text as written. The `OCONV` line gives every
-    /// suggestion the curly apostrophe, whichever one the word was typed with.
+    /// suggestion the curly apostrophe, and a suggestion keeps the form the flagged word was typed
+    /// with: the curly one stays only where the word holds a curly apostrophe and no straight one,
+    /// and is mapped back to the straight one otherwise, so accepting a suggestion never changes
+    /// the apostrophes a text is typed with.
     pub fn check(&self, text: &str) -> Vec<Flag> {
         let skipped_tokens = tokens::skipped_tokens(text);
         let in_skipped_token = |byte_start: usize| {
@@ -125,6 +133,12 @@ impl SpellChecker {
         let mut suggestions = Vec::new();
         self.dictionary.suggest(word, &mut suggestions);
         suggestions.truncate(MAX_SUGGESTIONS);
+        let typed_curly = word.contains(CURLY_APOSTROPHE) && !word.contains(STRAIGHT_APOSTROPHE);
+        if !typed_curly {
+            for suggestion in &mut suggestions {
+                *suggestion = suggestion.replace(CURLY_APOSTROPHE, STRAIGHT_APOSTROPHE);
+            }
+        }
         Flag {
             id: format!("spelling:{local_start}"),
             origin: FlagOrigin::Spelling,
@@ -299,14 +313,38 @@ mod tests {
     }
 
     #[test]
-    fn a_misspelt_contraction_is_offered_the_curly_apostrophe_whichever_was_typed() {
-        // The affix file's `OCONV` line maps the straight apostrophe to U+2019 in every
-        // suggestion, so accepting one in straight-apostrophe text inserts a curly apostrophe.
+    fn a_suggestion_keeps_the_apostrophe_the_flagged_word_was_typed_with() {
+        // The affix file's `OCONV` line gives every suggestion U+2019, which is mapped back for a
+        // word typed with a straight apostrophe or with none.
         let checker = checker();
-        for word in ["dosen\u{2019}t", "dosen't"] {
+        for (word, expected) in [
+            ("dosen\u{2019}t", "doesn\u{2019}t"),
+            ("dosen't", "doesn't"),
+            ("didnt", "didn't"),
+        ] {
             let flags = checker.check(word);
             assert_eq!(flags.len(), 1, "{flags:#?}");
-            assert_eq!(flags[0].suggestions.first().unwrap(), "doesn\u{2019}t");
+            assert!(
+                flags[0]
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| suggestion == expected),
+                "{word}: {:?}",
+                flags[0].suggestions
+            );
+            let other = if expected.contains(CURLY_APOSTROPHE) {
+                STRAIGHT_APOSTROPHE
+            } else {
+                "\u{2019}"
+            };
+            assert!(
+                flags[0]
+                    .suggestions
+                    .iter()
+                    .all(|suggestion| !suggestion.contains(other)),
+                "{word}: {:?}",
+                flags[0].suggestions
+            );
         }
     }
 
