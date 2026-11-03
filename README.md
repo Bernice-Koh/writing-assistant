@@ -286,12 +286,13 @@ which then has no grammar flags this time, a result distinct from a check that f
 ### Telltales
 
 Underlining LLM phrasing is independent of the Card. The catalogue ships with the tool and keeps
-its own flag origin. It holds 21 patterns, hand-encoded from Wikipedia's Signs of AI writing page
+its own flag origin. It holds 22 patterns, hand-encoded from Wikipedia's Signs of AI writing page
 as read through an intermediary's skill file. `src-tauri/resources/ai-telltales/NOTICE.md`
-records the provenance, the matching notes, and the nine patterns left unencoded.
+records the provenance, the matching notes, and the eight patterns left unencoded.
 
-Each pattern is a rule on the rule layer: a phrase list or a regex over spans under the forbidden
-band, declared for prose and fragment paragraphs, compiled under its pattern id with no clause. A
+Each pattern is a rule on the rule layer, compiled under its pattern id with no clause. A phrasing
+pattern is a phrase list or a regex over spans under the forbidden band, declared for prose and
+fragment paragraphs, and a structural pattern counts a habit over a paragraph or the document. A
 telltale flag names its pattern id beside its origin and cites the pattern's source. Phrase
 matching is case-insensitive and flags every occurrence. A phrase edge that is a letter or digit
 matches only at a word boundary. A curly apostrophe or quotation mark in the text matches the
@@ -312,10 +313,16 @@ The catalogue and the variant-pair table are compiled into the engine. Every fla
 SHA-256 of the catalogue's bytes followed by the table's beside the ruleset version, so the bench
 can tell an edit to either data file from a ruleset change.
 
-A pattern whose unit is a paragraph or the document runs in the analyzer's paragraph or document
-pass, as a checker of that unit does; every pattern in the catalogue today is a span pattern.
-Planned for Phase 1: the count-shaped structural patterns, among them rule-of-three lists and
-boldface overuse, encoded as count checkers on the rule layer.
+The structural patterns below run in the analyzer's paragraph or document pass, by their unit, as
+a checker of that unit does, and every other pattern is a span pattern. Each band is a version-one
+default, revisited against real documents after Phase 3, and the notice records its reasoning.
+
+| Pattern | Matcher | Unit | Band | Modes |
+|---|---|---|---|---|
+| `rule-of-three` | Regex: a list of three or more items in one sentence, with `and` or `or` before the last | Paragraph | At most one | Prose |
+
+Planned for Phase 1: hyphenated word pairs, title case, and boldface overuse, encoded as structural
+patterns on the rule layer.
 
 ### Language convention
 

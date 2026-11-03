@@ -211,6 +211,20 @@
     "source": "humanizer SKILL.md section 9, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "rule-of-three",
+    "category": "language-and-grammar",
+    "description": "Ideas forced into lists of three to look comprehensive, more than one such list in a paragraph",
+    "matcher": {
+      "kind": "regex",
+      "source": "\\b\\w[\\w'\\x{2019}-]*(?:,\\s+\\w[\\w'\\x{2019}-]*(?:\\s+\\w[\\w'\\x{2019}-]*){0,2})+,?\\s+(?:and|or)\\s+\\w[\\w'\\x{2019}-]*"
+    },
+    "unit": "paragraph",
+    "band": { "kind": "count", "minimum": null, "maximum": 1 },
+    "formModes": ["prose"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 10, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "em-en-dashes",
     "category": "style",
     "description": "An em dash, en dash, or spaced double hyphen used as a dash, one of the most reliable AI tells",
