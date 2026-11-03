@@ -23,36 +23,32 @@ were actually read from.
 
 ## Patterns not encoded
 
-Nine of the thirty patterns `SKILL.md` documents are not in `patterns.json`. Each is a structural or
-frequency-based habit, not a fixed phrasing, and does not reduce to a phrase or regex match against
-one sentence without producing either constant false positives or requiring real parsing this module
-does not attempt:
+Five of the thirty patterns `SKILL.md` documents are not in `patterns.json`. None is a fixed
+phrasing, and none reduces to a match or a count over one paragraph or the whole document, the
+units a rule is measured over, without constant false positives or parsing this module does not
+attempt:
 
-- **10, Rule of Three Overuse**: needs counting parallel items across a sentence, not a fixed phrase.
 - **11, Elegant Variation**: needs tracking a repeated referent's cycling synonyms across sentences.
 - **12, False Ranges**: "from X to Y" is extremely common in ordinary writing; judging whether X and
   Y form a meaningful scale needs semantic judgement, not syntax.
 - **13, Passive Voice and Subjectless Fragments**: reliable passive-voice detection needs
-  grammatical parsing beyond phrase or regex matching.
-- **15, Overuse of Boldface**: a single bolded phrase is not a tell on its own, per the source's own
-  detection guidance; this is a frequency pattern, not a single-span match.
-- **17, Title Case in Headings**: needs per-word capitalisation counting against a detected heading
-  line, a different scan shape than the sentence-level matching every other entry here uses.
-- **26, Hyphenated Word Pair Overuse**: the actual tell is uniform hyphenation regardless of
-  grammatical position; a single hyphenated compound like "cross-functional team" is ordinary
-  English on its own.
-- **29, Fragmented Headers**: needs comparing a heading line against the paragraph that follows it,
-  not a single-sentence match.
+  grammatical parsing beyond phrase or regex matching. A Style Card clause can reach passive voice
+  through a LanguageTool rule id from Phase 3 (#59).
+- **29, Fragmented Headers**: a count as well, and not encoded at version one, since it needs the
+  paragraph that follows a heading, and a rule is measured over one paragraph or the whole
+  document, not a heading with the paragraph after it.
 - **30, Diff-Anchored Writing**: `SKILL.md` gives no fixed "words to watch" list for this pattern,
   only a description of narrating a change rather than describing a thing as it stands.
 
 ## Matching notes
 
 Each pattern is a rule on the engine's rule layer, written in `patterns.json` in the rule's own
-form: a phrase list or a regex, over spans, under the forbidden band, declared for prose and
-fragment paragraphs in every register. Beside its rule a pattern holds its id, its description, its
-source citation and its raw flag, and it serves no Style Card clause. A flag carries the pattern's
-id in its origin and the pattern's source citation as its detail.
+form. A phrasing pattern is a phrase list or a regex, over spans, under the forbidden band, declared
+for prose and fragment paragraphs in every register. A structural pattern is measured over a
+paragraph or the document, in the modes it declares (see Structural patterns below). Beside its rule
+a pattern holds its id, its description, its source citation and its raw flag, and it serves no
+Style Card clause. A flag carries the pattern's id in its origin and the pattern's source citation
+as its detail.
 
 Phrase matching is case-insensitive and flags every occurrence of a phrase. An edge of a phrase
 that is a letter or digit matches only at a word boundary, so `here is a` does not match inside
@@ -109,3 +105,64 @@ ordinary prose, keeping only the more distinctive words and phrases; pattern 3 (
 endings) is matched by regex, requiring a preceding comma, rather than by the bare gerund words
 alone, since words like "ensuring" or "fostering" are unremarkable outside the specific
 tacked-on-clause construction the pattern describes.
+
+### Structural patterns
+
+A structural pattern is a habit of form measured over a paragraph or the document: a frequency that
+no single match shows, or the capitalisation of a heading. Each one's unit, band and modes were
+decided on 14 October 2026 in #101 and are held here as catalogue data. Each band is a version-one
+default, revisited against real documents after Phase 3. Each structural pattern is on by default,
+with a toggle of its own.
+
+Pattern 10 (rule of three) is a regex over the paragraph under a count band of at most one,
+declared for prose alone. The regex finds a list in one sentence: three or more items separated by
+commas, with `and` or `or` before the last and the serial comma optional. Each item between the
+first and the last is one to three words, and the match takes the first item's last word and the
+last item's first word, so its underline lies within the list and a list of four or more items is
+one match. A pair joined by `and` is no match, nor is a list with no conjunction, and a comma must
+be followed by a space, so `1,000 and 2,000` is no match. One list of three in a paragraph is
+ordinary writing, and the tell is ideas forced into threes again and again, so the band allows one
+list and flags each list beyond it. A fragment is left out: a list item or a heading that
+enumerates has the structure its form declares, not a habit of prose. The regex cannot tell a list
+from an opening word or phrase followed by a pair, as in "In 2020, sales rose and costs fell",
+which has a list's shape and matches; under the band it is flagged only as a paragraph's second
+match. An item of more than three words between the first and the last breaks the list, so such a
+list is missed or read as two.
+
+Pattern 15 (overuse of boldface) is a regex over the paragraph under a count band of at most two,
+declared for prose and fragment. The regex finds a run of text between `**` and `**`, or between
+`__` and `__`, on one line, with no space just inside either mark, as Markdown has it, so
+`2 ** 3 ** 4` is no match; a run between underscores also needs no letter or digit outside either
+mark, so `snake__case__name` is no match. One or two bold phrases in a paragraph are ordinary
+emphasis, and the tell the source describes is bold applied mechanically, phrase after phrase, so
+the band allows two runs a paragraph and flags each beyond them. The pattern sees the marks typed
+as text and nothing else: capture delivers a document's characters and not their formatting, so
+bold applied as formatting, as in Word, is invisible to it.
+
+Pattern 17 (title case in headings) is a capitalised-words matcher over the paragraph under the
+forbidden band, declared for fragments alone. A sentence of at least three words of which at least
+three quarters start with an upper-case letter is one match, from its first word to its last, and
+the two thresholds are the entry's data. A heading's marker holds no letter or digit and is no
+word, and a word that starts with a digit counts towards the length and not the share. Three words
+keep a two-word label such as `Next Steps` clear, and three quarters flags a heading that leaves
+one short word in lower case, `Notes On the Design`, while a heading in sentence case stays under
+the share unless proper nouns make up three quarters of its words. The source names title case in
+a heading as the tell itself, so the band is forbidden and every such line is flagged. A fragment
+is a heading, a list item or a short line, and the pattern reads those alone, since a prose
+sentence with many capitalised words is a run of names and not a heading. The matcher cannot tell
+a heading made of proper nouns, `The Style Card`, from title case, nor a Markdown table's header
+row, whose cells are capitalised single words, and flags both.
+
+Pattern 26 (hyphenated word pairs) is a regex over the document under a rate band of at most two
+per hundred words, declared for prose and fragment. The regex finds words of letters joined by
+single hyphens as one match, `cross-functional` and a chain such as `end-to-end` alike, and the
+hyphen-minus, the hyphen and the non-breaking hyphen each join a pair. A number range, a dash
+written as two hyphens or as a spaced hyphen, a word with a hyphen at its edge, `pre-` or `-ish`,
+and a word holding a digit, `COVID-19`, are no match. A single compound is ordinary English, and
+the tell is hyphenation applied across a text, so the band is a rate over the whole document and
+not a count: it allows one compound in every fifty words, so a long document keeps its ordinary
+compounds, and it flags the matches beyond the count the document's length allows. A rate band
+does not measure a unit under fifty words, so a short note raises nothing. The regex matches a
+compound in any position and does not tell the attributive position, where the hyphen is
+standard, from the predicate position the source names, and it matches a hyphenated name in
+running text, such as `llama-server`.

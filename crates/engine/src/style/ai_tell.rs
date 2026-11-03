@@ -226,11 +226,30 @@ impl Catalogue {
 mod stems;
 
 #[cfg(test)]
+mod structural;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
     use super::*;
     use crate::style::checker::{Band, CheckableMode, Matcher, PhraseEntry, Unit};
+
+    /// The patterns that count a habit over a paragraph or the document, in catalogue order. Every
+    /// other pattern bans a phrasing in a span.
+    pub(super) const STRUCTURAL_PATTERNS: [&str; 4] = [
+        "rule-of-three",
+        "boldface",
+        "title-case",
+        "hyphenated-word-pairs",
+    ];
+
+    /// Every pattern that bans a phrasing in a span, in catalogue order.
+    fn phrasing_patterns() -> impl Iterator<Item = &'static Pattern> {
+        patterns()
+            .iter()
+            .filter(|pattern| !STRUCTURAL_PATTERNS.contains(&pattern.id.as_str()))
+    }
 
     pub(super) fn scan(text: &str) -> Vec<Flag> {
         Catalogue::every_pattern().flags(text, FormMode::Prose, "default")
@@ -549,12 +568,12 @@ mod tests {
             assert!(seen.insert(id), "pattern id {id:?} repeats");
         }
         assert_eq!(seen.len(), patterns().len());
-        assert_eq!(seen.len(), 21);
+        assert_eq!(seen.len(), 25);
     }
 
     #[test]
-    fn every_pattern_is_a_phrase_list_or_a_regex_on_spans_under_the_forbidden_band() {
-        for pattern in patterns() {
+    fn every_phrasing_pattern_is_a_phrase_list_or_a_regex_on_spans_under_the_forbidden_band() {
+        for pattern in phrasing_patterns() {
             let rule = &pattern.rule;
             let signals = match &rule.matcher {
                 Matcher::PhraseList { entries } => entries.len(),
@@ -569,9 +588,9 @@ mod tests {
     }
 
     #[test]
-    fn every_pattern_declares_prose_and_fragment() {
+    fn every_phrasing_pattern_declares_prose_and_fragment() {
         let both = BTreeSet::from([CheckableMode::Prose, CheckableMode::Fragment]);
-        for pattern in patterns() {
+        for pattern in phrasing_patterns() {
             assert_eq!(pattern.rule.form_modes, both, "{:?}", pattern.id);
         }
         let catalogue = Catalogue::every_pattern();

@@ -34,13 +34,14 @@ screen, generation, embedding, synthesis, export, ingest, and backup.
 Built today: in the engine, capture, spelling, LanguageTool, the rule layer, the analyzer, the
 screen, the flag types, the settings file, and the store; in the app, the overlay and one command.
 The rule layer has the checker model: a checker is a Style Card clause's id and a rule, and a rule
-is a matcher (a phrase list, a regex, a LanguageTool rule id, a spelling variant, or a word count),
-a unit (a span, a sentence, a paragraph, or the document), and a band (forbidden, a count with a
-minimum and a maximum, or a rate per hundred words), declared for the form modes and the
-registers it runs in. The telltale catalogue's patterns run on it as rules, each under its pattern
-id with no clause; LanguageTool's matches route through the loaded ruleset's checkers, and the
-analyzer runs the other checkers in a sentence pass, a paragraph pass and a document pass. The
-store has its file, the thread that owns its connection, the migration runner, the
+is a matcher (a phrase list, a regex, a LanguageTool rule id, a spelling variant, a word count, or a
+share of capitalised words), a unit (a span, a sentence, a paragraph, or the document), and a band
+(forbidden, a count with a minimum and a maximum, or a rate per hundred words), declared for the
+form modes and the registers it runs in. The telltale catalogue's patterns run on it as rules, each
+under its pattern id with no clause; LanguageTool's matches route through the loaded ruleset's
+checkers, and the analyzer runs the other checkers in a sentence pass, a paragraph pass and a
+document pass.
+The store has its file, the thread that owns its connection, the migration runner, the
 insert-only guard, and the tables `schema_version`, `passages`, those of the Card and the ruleset,
 `candidates`, `screen_results`, `items`, `item_slots`, `events`, and `habit_rollups`; nothing writes
 a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset until Phase 3, an

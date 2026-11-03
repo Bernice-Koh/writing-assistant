@@ -211,6 +211,20 @@
     "source": "humanizer SKILL.md section 9, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "rule-of-three",
+    "category": "language-and-grammar",
+    "description": "Ideas forced into lists of three to look comprehensive, more than one such list in a paragraph",
+    "matcher": {
+      "kind": "regex",
+      "source": "\\b\\w[\\w'\\x{2019}-]*(?:,\\s+\\w[\\w'\\x{2019}-]*(?:\\s+\\w[\\w'\\x{2019}-]*){0,2})+,?\\s+(?:and|or)\\s+\\w[\\w'\\x{2019}-]*"
+    },
+    "unit": "paragraph",
+    "band": { "kind": "count", "minimum": null, "maximum": 1 },
+    "formModes": ["prose"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 10, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "em-en-dashes",
     "category": "style",
     "description": "An em dash, en dash, or spaced double hyphen used as a dash, one of the most reliable AI tells",
@@ -229,6 +243,20 @@
     "source": "humanizer SKILL.md section 14, Wikipedia:Signs of AI writing"
   },
   {
+    "id": "boldface",
+    "category": "style",
+    "description": "Phrases set in bold mechanically, more than two bold runs in a paragraph",
+    "matcher": {
+      "kind": "regex",
+      "source": "\\*\\*[^*\\s](?:[^*\\r\\n]*[^*\\s])?\\*\\*|\\b__[^_\\s](?:[^_\\r\\n]*[^_\\s])?__\\b"
+    },
+    "unit": "paragraph",
+    "band": { "kind": "count", "minimum": null, "maximum": 2 },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 15, Wikipedia:Signs of AI writing"
+  },
+  {
     "id": "inline-header-lists",
     "category": "style",
     "description": "A bullet list where each item opens with a bolded label followed by a colon",
@@ -238,6 +266,17 @@
     "formModes": ["prose", "fragment"],
     "raw": false,
     "source": "humanizer SKILL.md section 16, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "title-case",
+    "category": "style",
+    "description": "A heading or label in title case, with nearly every word capitalised",
+    "matcher": { "kind": "capitalisedWords", "minimumWords": 3, "share": 0.75 },
+    "unit": "paragraph",
+    "band": { "kind": "forbidden" },
+    "formModes": ["fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 17, Wikipedia:Signs of AI writing"
   },
   {
     "id": "emojis",
@@ -387,6 +426,17 @@
     "formModes": ["prose", "fragment"],
     "raw": false,
     "source": "humanizer SKILL.md section 25, Wikipedia:Signs of AI writing"
+  },
+  {
+    "id": "hyphenated-word-pairs",
+    "category": "filler-and-hedging",
+    "description": "Word pairs hyphenated uniformly, more than two in every hundred words of the document",
+    "matcher": { "kind": "regex", "source": "\\b\\p{L}+(?:[-\\x{2010}\\x{2011}]\\p{L}+)+\\b" },
+    "unit": "document",
+    "band": { "kind": "rate", "maximumPerHundredWords": 2.0 },
+    "formModes": ["prose", "fragment"],
+    "raw": false,
+    "source": "humanizer SKILL.md section 26, Wikipedia:Signs of AI writing"
   },
   {
     "id": "persuasive-authority-tropes",

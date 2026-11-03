@@ -869,6 +869,21 @@ mod tests {
         );
     }
 
+    /// The content hashes the two fixture checkers are stored under, written out as hex, so a
+    /// change to the checker model that changes either serialisation, a renamed or reordered field
+    /// or variant among them, gives a stored checker a second rule id and fails here.
+    #[test]
+    fn the_fixture_checkers_keep_the_content_hashes_they_are_stored_under() {
+        assert_eq!(
+            checker_content_hash(&hedging_limit(ClauseId(1), 1)),
+            "9a2a455611b8c063c2720e980f981321aeb57910d2617e8e010e3edf028167ca"
+        );
+        assert_eq!(
+            checker_content_hash(&sentence_length(ClauseId(2))),
+            "fe6f6ac207b6b5dbadcd6ee053e45e3500c3115290c9bd5575301387137744d7"
+        );
+    }
+
     #[test]
     fn the_first_publish_inserts_a_version_even_of_no_checkers_and_a_second_inserts_nothing() {
         let root = TempRoot::new();
