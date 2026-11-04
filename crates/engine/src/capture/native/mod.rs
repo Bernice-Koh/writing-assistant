@@ -16,6 +16,7 @@ pub mod error;
 mod focus;
 pub mod insert;
 mod process;
+pub mod read;
 mod text_change;
 
 use std::sync::mpsc as ready_channel;
