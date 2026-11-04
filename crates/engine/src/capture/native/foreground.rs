@@ -2,6 +2,9 @@
 //! and bringing the document's own window to the front before an insertion types into it. Split
 //! into the unsafe Win32 calls and pure decisions any test can exercise without a live desktop.
 
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{IUIAutomation, IUIAutomationElement};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -16,6 +19,15 @@ use crate::capture::Foreground;
 /// Caps the walk from an element up to the nearest ancestor with a window handle. A document
 /// element sits a few levels below its window; the cap only matters for a malformed tree.
 const MAX_ANCESTORS: usize = 32;
+
+/// How long a refocus reads the foreground window for the target after `SetForegroundWindow`.
+/// The target's thread takes the activation when it next reads its queue, so a read straight after
+/// the call can still show the window that was in front. On 5 November 2026 a refocus into
+/// Notepad that took read the covering window straight after the call in 10 of 10 runs, and with
+/// this wait a refocus that took read the target at the first read after 20 ms in 20 of 20 runs,
+/// 10 into Notepad and 10 into Word (#157).
+const REFOCUS_WAIT: Duration = Duration::from_millis(500);
+const REFOCUS_POLL: Duration = Duration::from_millis(20);
 
 /// A top-level window and the id of the process that owns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,14 +156,14 @@ pub fn refocus_outcome(
 
 /// Makes `target` the foreground window before a keystroke: proceeds when it already is, and
 /// otherwise restores it if it is minimised, calls `SetForegroundWindow`, and reads the foreground
-/// window again. Answers whether a refocus ran and took; a refocus that did not take is
-/// [`NativeCaptureError::RefocusFailed`], and a target with no window
-/// [`NativeCaptureError::NoTargetWindow`].
+/// window again every 20 ms until it is the target or 500 ms have passed. Answers whether a refocus
+/// ran and took; a refocus that did not take is [`NativeCaptureError::RefocusFailed`], and a target
+/// with no window [`NativeCaptureError::NoTargetWindow`].
 ///
 /// Windows decides whether the call takes. The remarks on `SetForegroundWindow`'s reference page
 /// list the conditions, one of which must hold for the calling process: among them, that it
 /// received the last input event, or that the foreground lock time-out has expired. Nothing here
-/// works around them; when none holds, the read after the call shows another window in front, and
+/// works around them; when none holds, the reads after the call show another window in front, and
 /// the insertion stops before the keystroke it was about to send.
 pub fn bring_to_front(target: Option<Window>) -> Result<bool, NativeCaptureError> {
     let before = window();
@@ -176,9 +188,20 @@ pub fn bring_to_front(target: Option<Window>) -> Result<bool, NativeCaptureError
         }
         let _ = SetForegroundWindow(target.hwnd);
     }
-    let outcome = refocus_outcome(target, before, window(), process_name);
-    if let Err(error) = &outcome {
-        log::warn!("{error}; the insertion stops before its next keystroke");
+    let started = Instant::now();
+    let mut after = window();
+    while !after.is_some_and(|after| after.hwnd == target.hwnd) && started.elapsed() < REFOCUS_WAIT
+    {
+        sleep(REFOCUS_POLL);
+        after = window();
+    }
+    let outcome = refocus_outcome(target, before, after, process_name);
+    match &outcome {
+        Ok(()) => log::debug!(
+            "the target's window read as the foreground window after {} ms",
+            started.elapsed().as_millis()
+        ),
+        Err(error) => log::warn!("{error}; the insertion stops before its next keystroke"),
     }
     outcome.map(|()| true)
 }
