@@ -38,19 +38,19 @@ const INITIAL_Y: f64 = 200.0;
 const INITIAL_WIDTH: f64 = 360.0;
 const INITIAL_HEIGHT: f64 = 120.0;
 
-/// How often `track_document_view`, `track_hover`, and `track_flags`'s own position refresh each
-/// poll. The three loops poll by design: scrolling and window movement raise no dependable event,
-/// so a position is known only by asking for it. They are throttled only if measured CPU calls
-/// for it.
+/// How often `track_document_view`, `track_hover`, and `track_flags` each poll. The three loops
+/// poll by design: scrolling and window movement raise no dependable event, so a position is known
+/// only by asking for it. What a tick of `track_flags` asks for is throttled instead, by
+/// `flags::refresh_for`, on #153's measurement of its cost.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A [`POLL_INTERVAL`] interval that drops missed ticks instead of firing them back to back.
 /// Tokio's default, `MissedTickBehavior::Burst`, treats a tick whose work overran the interval as
 /// a debt to repay immediately, and every one of these loops spends its tick on UI Automation
-/// calls against one shared capture thread: `track_flags` issues one `span_rect` per flag. A
-/// tick slow enough to be missed would then queue more of exactly the calls that made it slow.
-/// None of these loops needs a fixed number of ticks, only a bounded gap between refreshes, so a
-/// missed one is worth nothing and dropping it is free.
+/// calls against one shared capture thread: a tick of `track_flags` that re-resolves every flag
+/// issues one `span_rect` per flag. A tick slow enough to be missed would then queue more of
+/// exactly the calls that made it slow. None of these loops needs a fixed number of ticks, only a
+/// bounded gap between refreshes, so a missed one is worth nothing and dropping it is free.
 fn poll_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

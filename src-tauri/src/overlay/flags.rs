@@ -1,34 +1,46 @@
-//! The flags loop: resolves each flag's on-screen rectangles through the capture backend for the
-//! overlay to render and the hover loop to hit-test.
+//! The flags loop: resolves each flag's on-screen rectangles through the capture backend, and
+//! re-resolves them on a change, or when a sentinel flag has moved, rather than on every tick.
 
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use wa_engine::analyzer::Analyzer;
-use wa_engine::capture::{Capture, CursorRect};
+use wa_engine::capture::{Capture, CaptureError, CursorRect};
 use wa_engine::flag::Flag;
 
 use super::{lock, poll_interval, scale_factor, PositionedFlag, SharedOverlay};
+
+/// While no flag is positioned, as when every flag is scrolled out of view, the ticks between two
+/// re-resolutions of every flag: once a second. With no positioned flag there is no sentinel to
+/// notice a scroll, and a flag scrolled back into view is otherwise underlined only at the next
+/// flag update.
+const UNPOSITIONED_REFRESH_TICKS: u32 = 10;
 
 /// Spawns a background task that resolves the on-screen positions of `analyzer`'s current flags
 /// through `capture`, stores them in `shared` for `track_hover`'s hit-testing, and emits them,
 /// relativised to the overlay window, as a `flags-updated` event for the overlay's own webview to
 /// render.
 ///
-/// Triggered two ways: reactively, the moment `analyzer`'s own `subscribe` channel reports a new
-/// flag set, and periodically, on the same `POLL_INTERVAL` cadence
-/// [`track_document_view`](super::track_document_view) already polls on. The periodic leg exists
-/// because a flag's *position* can go stale for reasons that have nothing to do with the flag set
-/// itself changing: the focused document scrolling, the window resizing, or focus having moved to a
-/// different document entirely, whose text no longer contains a still-cached flag's anchor at all.
-/// Manual verification against #48 found exactly that last case: closing a document and focusing a
-/// new one left the previous document's flags rendered, misplaced, inside the newly repositioned
-/// overlay window, because nothing re-resolved their positions until the analyzer's own debounced
-/// recheck eventually caught up, seconds later. Re-resolving on every poll tick, not only on a
-/// flag-set change, means a stale or momentarily unresolvable position self-heals within one
-/// `POLL_INTERVAL` instead of lingering, since `resolve_positions` already drops any flag whose
-/// anchor cannot currently be found.
+/// Every flag is re-resolved, at one `span_rect` call each, on a flag update from the analyzer
+/// and on a tick where the document-view rectangle changed since the last re-resolution. On any
+/// other tick only the sentinel, the first positioned flag, is re-resolved, and every flag is
+/// re-resolved when the sentinel's rectangles moved: scrolling moves every visible flag, so a
+/// scroll is noticed within one tick at the cost of one `FindText` instead of one per flag (#153
+/// measured the per-flag cost on every tick at 58% of one core for 135 flags in a debug build).
+/// A sentinel the document no longer holds counts as moved. While no flag is positioned, every
+/// flag is re-resolved once a second. An edit between two visible flags moves the later one
+/// without moving the sentinel, and is caught by the analyzer's flag update after its quiet
+/// period.
+///
+/// The periodic leg exists because a flag's *position* can go stale for reasons that have
+/// nothing to do with the flag set changing: the document scrolling, the window resizing, or focus
+/// moving to a different document, whose text no longer contains a cached flag's anchor. Manual
+/// verification against #48 found that last case: closing a document and focusing a new one left
+/// the previous document's flags rendered, misplaced, inside the newly placed overlay window until
+/// the analyzer's recheck caught up, seconds later. A document focused in place of another either
+/// changes the document-view rectangle or fails the sentinel's search, so every flag is
+/// re-resolved on the next tick and the stale ones are dropped.
 pub fn track_flags(
     app: AppHandle,
     capture: Arc<dyn Capture>,
@@ -38,8 +50,10 @@ pub fn track_flags(
     tauri::async_runtime::spawn(async move {
         let mut updates = analyzer.subscribe();
         let mut interval = poll_interval();
+        let mut resolved_view: Option<CursorRect> = None;
+        let mut ticks_since_all: u32 = 0;
         loop {
-            tokio::select! {
+            let flags_updated = tokio::select! {
                 changed = updates.changed() => {
                     if changed.is_err() {
                         log::debug!(
@@ -47,18 +61,98 @@ pub fn track_flags(
                         );
                         return;
                     }
+                    true
                 }
-                _ = interval.tick() => {}
+                _ = interval.tick() => false,
+            };
+            ticks_since_all = ticks_since_all.saturating_add(1);
+            let (view, sentinel) = {
+                let state = lock(&shared);
+                (state.view, state.flags.first().cloned())
+            };
+            let tick = Tick {
+                flags_updated,
+                view_changed: view != resolved_view,
+                has_sentinel: sentinel.is_some(),
+                has_flags: !updates.borrow().is_empty(),
+                ticks_since_all,
+            };
+            match refresh_for(tick) {
+                Refresh::Nothing => continue,
+                Refresh::Sentinel => {
+                    let sentinel =
+                        sentinel.expect("the sentinel is only chosen when a flag is positioned");
+                    let fresh = capture.span_rect(&sentinel.flag.span).await;
+                    if !sentinel_moved(&sentinel.rects, &fresh) {
+                        continue;
+                    }
+                }
+                Refresh::All => {}
             }
-            let flags = updates.borrow_and_update().clone();
+            ticks_since_all = 0;
+            let flags = updates.borrow().clone();
             let positioned = resolve_positions(&capture, flags).await;
             lock(&shared).flags = positioned;
+            resolved_view = view;
             let relative = relative_flags(&app, &shared);
             if let Err(error) = app.emit("flags-updated", &relative) {
                 log::warn!("failed to emit flags-updated: {error}");
             }
         }
     });
+}
+
+/// What one tick of [`track_flags`] knows when it decides what to re-resolve.
+#[derive(Debug, Clone, Copy)]
+struct Tick {
+    /// The analyzer published a flag set since the last tick.
+    flags_updated: bool,
+    /// The document-view rectangle differs from the one every flag was last re-resolved against.
+    view_changed: bool,
+    /// At least one flag is positioned, so the first of them can serve as the sentinel.
+    has_sentinel: bool,
+    /// The analyzer's flag set is not empty.
+    has_flags: bool,
+    /// Ticks since every flag was last re-resolved, this one included.
+    ticks_since_all: u32,
+}
+
+/// What a tick of [`track_flags`] re-resolves.
+#[derive(Debug, PartialEq, Eq)]
+enum Refresh {
+    /// Every flag.
+    All,
+    /// The sentinel alone, and every flag when its rectangles moved.
+    Sentinel,
+    /// Nothing.
+    Nothing,
+}
+
+/// Every flag on a flag update or a changed document view; otherwise the sentinel when a flag is
+/// positioned; otherwise, while the analyzer holds flags none of which is positioned, every flag
+/// once [`UNPOSITIONED_REFRESH_TICKS`] ticks have passed; otherwise nothing.
+fn refresh_for(tick: Tick) -> Refresh {
+    if tick.flags_updated || tick.view_changed {
+        Refresh::All
+    } else if tick.has_sentinel {
+        Refresh::Sentinel
+    } else if tick.has_flags && tick.ticks_since_all >= UNPOSITIONED_REFRESH_TICKS {
+        Refresh::All
+    } else {
+        Refresh::Nothing
+    }
+}
+
+/// Whether the sentinel's `fresh` rectangles differ from those it was positioned at, an error,
+/// such as an anchor the document no longer holds, counting as a move.
+fn sentinel_moved(
+    positioned: &[CursorRect],
+    fresh: &Result<Vec<CursorRect>, CaptureError>,
+) -> bool {
+    match fresh {
+        Ok(rects) => rects.as_slice() != positioned,
+        Err(_) => true,
+    }
 }
 
 /// Resolves each of `flags`' on-screen rectangles through `capture`, in absolute screen
@@ -190,5 +284,91 @@ mod tests {
         let flags = vec![positioned("a", vec![rect(239.0, 233.0, 336.0, 34.0)])];
         let relative = to_relative(&flags, rect(-1.0, 133.0, 3074.0, 1628.0), 2.0);
         assert_eq!(relative[0].rects, vec![rect(120.0, 50.0, 168.0, 17.0)]);
+    }
+
+    fn idle() -> Tick {
+        Tick {
+            flags_updated: false,
+            view_changed: false,
+            has_sentinel: true,
+            has_flags: true,
+            ticks_since_all: 1,
+        }
+    }
+
+    #[test]
+    fn a_flag_update_re_resolves_every_flag() {
+        let tick = Tick {
+            flags_updated: true,
+            ..idle()
+        };
+        assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn a_changed_document_view_re_resolves_every_flag() {
+        let tick = Tick {
+            view_changed: true,
+            ..idle()
+        };
+        assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn an_idle_tick_re_resolves_the_sentinel_alone() {
+        assert_eq!(refresh_for(idle()), Refresh::Sentinel);
+    }
+
+    #[test]
+    fn an_idle_tick_with_no_flags_re_resolves_nothing() {
+        let tick = Tick {
+            has_sentinel: false,
+            has_flags: false,
+            ticks_since_all: UNPOSITIONED_REFRESH_TICKS,
+            ..idle()
+        };
+        assert_eq!(refresh_for(tick), Refresh::Nothing);
+    }
+
+    #[test]
+    fn with_no_flag_positioned_every_flag_is_re_resolved_once_a_second() {
+        let waiting = Tick {
+            has_sentinel: false,
+            ticks_since_all: UNPOSITIONED_REFRESH_TICKS - 1,
+            ..idle()
+        };
+        assert_eq!(refresh_for(waiting), Refresh::Nothing);
+        let due = Tick {
+            ticks_since_all: UNPOSITIONED_REFRESH_TICKS,
+            ..waiting
+        };
+        assert_eq!(refresh_for(due), Refresh::All);
+    }
+
+    #[test]
+    fn a_sentinel_at_its_positioned_rectangles_has_not_moved() {
+        let at = vec![rect(100.0, 100.0, 50.0, 20.0)];
+        assert!(!sentinel_moved(&at, &Ok(at.clone())));
+    }
+
+    #[test]
+    fn a_sentinel_scrolled_up_a_line_has_moved() {
+        let at = vec![rect(100.0, 100.0, 50.0, 20.0)];
+        assert!(sentinel_moved(
+            &at,
+            &Ok(vec![rect(100.0, 80.0, 50.0, 20.0)])
+        ));
+    }
+
+    #[test]
+    fn a_sentinel_scrolled_out_of_view_has_moved() {
+        let at = vec![rect(100.0, 100.0, 50.0, 20.0)];
+        assert!(sentinel_moved(&at, &Ok(Vec::new())));
+    }
+
+    #[test]
+    fn a_sentinel_the_document_no_longer_holds_has_moved() {
+        let at = vec![rect(100.0, 100.0, 50.0, 20.0)];
+        assert!(sentinel_moved(&at, &Err(CaptureError::TextNotFound)));
     }
 }
