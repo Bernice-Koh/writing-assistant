@@ -824,6 +824,37 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_last_paragraph_of_a_document_past_words_part_length_is_checked() {
+        // Word's document range returns 65,000 characters a call (#153), and the native read joins
+        // the parts (#160); the analyzer checks the whole text it is handed.
+        let filler = vec!["This sentence is fine."; 3000].join("\r");
+        let text = format!("{filler}\rThe last paragraph has a mispelling.");
+        assert!(text.chars().count() > 65_000);
+        let fake = Arc::new(FakeCapture::new(&text));
+        let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
+        let analyzer = Analyzer::start(
+            capture,
+            test_spell_checker(),
+            None,
+            Arc::new(LoadedRuleset::empty()),
+            Arc::new(default_catalogue()),
+            "default".to_owned(),
+        );
+
+        step(6).await;
+        let flags = published_flags(&analyzer);
+        let misspelt: Vec<&Flag> = flags
+            .iter()
+            .filter(|flag| flagged_text(flag) == "mispelling")
+            .collect();
+        assert_eq!(misspelt.len(), 1, "{flags:#?}");
+        assert_eq!(
+            misspelt[0].span.anchor,
+            "The last paragraph has a mispelling."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn only_the_changed_sentence_in_a_two_sentence_document_is_rechecked() {
         let fake = Arc::new(FakeCapture::new("This has a mispelling. This one is fine."));
         let capture: Arc<dyn Capture> = Arc::clone(&fake) as Arc<dyn Capture>;
