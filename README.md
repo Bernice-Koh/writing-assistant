@@ -377,6 +377,12 @@ WebView2 renders the frontend in a child process with its own process id.
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. A plausibility check on the caret rectangle rejects it |
 | Gmail compose, GitHub comment box | Neither is verified through native capture, the backend the app starts. The web backend's content script covers both hosts, and the app does not start it. Verification through native capture: planned, Phase 2 |
 
+Measured on 4 November 2026 on this machine, at a display scale of 200%, by
+`crates/engine/examples/read_cost.rs` over 30 reads per surface of one text of 20,200 words: the
+read of a Word document took a median of 1.2 ms and returned only its first 65,000 of 110,572
+characters, Notepad returned the whole text in a median of 0.85 ms and a Chromium `contenteditable`
+field in 4.9 ms, and a Chromium `textarea`'s value returned its first 10,000 characters in 0.23 ms.
+
 Planned for Phase 2: surface identity on the trait, the process name with an optional page URL,
 mapped to a register through a map in settings.
 
@@ -413,8 +419,9 @@ overlay calls it yet: the working card's Accept is planned for Phase 4. Syntheti
 whichever window holds keyboard focus, so a check that the target is the foreground window, with a
 refocus when it is not, is planned for Phase 2.
 
-Three harnesses under `crates/engine/examples/` measure native capture, the insertion cascade, and
-the web bridge against real applications. They are run by hand and are not tests.
+Four harnesses under `crates/engine/examples/` measure native capture, the cost of its read, the
+insertion cascade, and the web bridge against real applications. They are run by hand and are not
+tests.
 
 ### Overlay
 
@@ -425,6 +432,12 @@ suggestions.
 
 Three loops poll every 100 ms, for the document's rectangle, the flags' positions, and the
 pointer. Polling is the design here: scrolling and window movement raise no dependable event.
+
+Measured on 4 November 2026 on this machine, at a display scale of 200%, in a dev run, which is a
+debug build, over 60 one-second samples with a Notepad document of 20,200 words focused and idle:
+the app and its WebView2 processes spent a median of 57.7% of one core with 135 flags on the
+document, against 14.1% on the same text with no flag, and Notepad's own process a median of 63.3%
+against 0%.
 
 The card has no actions today. Planned for Phase 2: a non-activating window, so that a click on
 the card never takes keyboard focus from the document. Planned for Phase 4: the working card.
