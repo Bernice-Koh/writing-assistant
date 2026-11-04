@@ -346,8 +346,8 @@ base, and the Singapore supplement is a plain word list that grows without a cha
 
 ## Capture and overlay
 
-One trait, `Capture`, covers text delivery, span positioning, and replacement. The rest of the
-engine does not know which backend served a request.
+One trait, `Capture`, covers text delivery, span positioning, replacement, and whose window is in
+the foreground. The rest of the engine does not know which backend served a request.
 
 A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
 code units, never as an absolute offset. UI Automation's character counting drifts across Word's
@@ -374,7 +374,7 @@ WebView2 renders the frontend in a child process with its own process id.
 | Word for the web | Read through native capture. Chromium bridges the page's accessibility tree to UI Automation, and Word for the web backs that tree with the real document |
 | Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
-| VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. A plausibility check on the caret rectangle rejects it |
+| VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. This finding led to a plausibility check on the caret rectangle. The caret is no longer read, since the full-viewport overlay has no use for it, and the check went with it |
 | Gmail compose, GitHub comment box | Neither is verified through native capture, the backend the app starts. The web backend's content script covers both hosts, and the app does not start it. Verification through native capture: planned, Phase 2 |
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, by
@@ -425,22 +425,37 @@ tests.
 
 ### Overlay
 
-A transparent, always-on-top window laid over the focused document's on-screen area. It passes
-clicks through to the document except over an underline. Each flag is underlined in place, with a
-line style per origin, and hovering an underline shows a card with the flag's message and
-suggestions.
+A transparent, always-on-top window laid over the focused document's on-screen area. It is
+non-activating: a click on it never takes keyboard focus from the document. It passes clicks
+through to the document except over an underline or the card. Each flag is underlined in place,
+with a line style per origin, and hovering an underline shows a card with the flag's message and
+suggestions. The card reports its rendered rectangle, and the hover holds while the pointer is
+over the underline or the card, so the pointer can move onto the card. The window hides while a
+window of another process is in front of the document, and shows again when the document's window
+is back in front. When the document's element reports no bounds of its own, the window takes the
+foreground window's rectangle, unless that window is one of the app's own, and then it stays
+where it was.
 
-Three loops poll every 100 ms, for the document's rectangle, the flags' positions, and the
-pointer. Polling is the design here: scrolling and window movement raise no dependable event.
+Three loops poll every 100 ms: one for the document's rectangle and the foreground window, one for
+the flags' positions, and one for the pointer. Polling is the design here: scrolling and window
+movement raise no dependable event. The flags loop re-resolves every flag's position on a flag
+update and when the document's rectangle changed. On any other tick it re-resolves one sentinel,
+the first positioned flag, and every flag when the sentinel has moved, so a scroll is noticed
+within a tick at the cost of one search. While no flag is positioned, it re-resolves every flag
+once a second.
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, in a dev run, which is a
 debug build, over 60 one-second samples with a Notepad document of 20,200 words focused and idle:
 the app and its WebView2 processes spent a median of 57.7% of one core with 135 flags on the
 document, against 14.1% on the same text with no flag, and Notepad's own process a median of 63.3%
-against 0%.
+against 0%. Measured again on 4 November 2026 under the same protocol on a release build: before the
+flags loop re-resolved on a change, the app and its WebView2 processes spent a median of 37.3% of
+one core with 135 flags and 3.2% with none, and Notepad's own process 64.1%; after it, a median of
+0.0% in both conditions, with means over the minute of 1.2% with 135 flags and 1.1% with none, and
+Notepad's own process a median of 0.0% and a mean of 2.1%.
 
-The card has no actions today. Planned for Phase 2: a non-activating window, so that a click on
-the card never takes keyboard focus from the document. Planned for Phase 4: the working card.
+Phase 2 built the non-activating window and the card's place in the hover's hit region, so the card
+can carry buttons; the card has no actions today. Planned for Phase 4: the working card.
 
 ## The Style Card
 
