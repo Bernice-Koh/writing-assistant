@@ -1,6 +1,7 @@
-//! Creates and drives the full-viewport overlay window: the always-on-top, transparent surface
-//! that mirrors the focused document's own on-screen area, underlines every flagged span in
-//! place, and shows a card on hover. `create`'s window mechanics were proven in #9;
+//! Creates and drives the full-viewport overlay window: the always-on-top, transparent,
+//! non-activating surface that mirrors the focused document's own on-screen area, underlines
+//! every flagged span in place, and shows a card on hover. `create`'s window mechanics were
+//! proven in #9;
 //! `track_document_view` is what replaces its placeholder position and fixed size with the
 //! native backend's live document-view data, per #23 and #42. `track_flags` and `track_hover` are
 //! #42's own additions: resolving each flag's on-screen position and toggling the window's
@@ -52,6 +53,12 @@ fn poll_interval() -> tokio::time::Interval {
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    // Non-activating: a click on the overlay, the working card's buttons among them, never takes
+    // keyboard focus from the document, whose window the insertion cascade types into. An action
+    // that needs the keyboard activates the window explicitly; none exists yet. `focusable(false)`
+    // is how tao gives the window `WS_EX_NOACTIVATE`. Set on the handle directly, the style would
+    // be dropped at the first hover: tao rebuilds the extended style from its own window flags on
+    // every flag change, and `set_ignore_cursor_events` is one.
     let window = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
         .title("Writing Assistant Overlay")
         .transparent(true)
@@ -60,6 +67,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
+        .focusable(false)
         .position(INITIAL_X, INITIAL_Y)
         .inner_size(INITIAL_WIDTH, INITIAL_HEIGHT)
         .build()?;
