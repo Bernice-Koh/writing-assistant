@@ -19,7 +19,7 @@ mod tokens;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use spellbook::Dictionary;
 use unicode_segmentation::UnicodeSegmentation;
@@ -38,6 +38,26 @@ const MAX_SUGGESTIONS: usize = 5;
 const CURLY_APOSTROPHE: char = '\u{2019}';
 
 const STRAIGHT_APOSTROPHE: &str = "'";
+
+/// The three files [`SpellChecker::load`] reads.
+#[derive(Debug, Clone)]
+pub struct DictionaryPaths {
+    pub aff: PathBuf,
+    pub dic: PathBuf,
+    pub supplement: PathBuf,
+}
+
+/// The dictionary pair and the Singapore supplement under `resources_dir`, in its `dictionaries`
+/// folder, where the app's bundle places them. The app and `wa` resolve the files through this one
+/// function, and the directory is always the caller's.
+pub fn default_paths(resources_dir: &Path) -> DictionaryPaths {
+    let dictionaries = resources_dir.join("dictionaries");
+    DictionaryPaths {
+        aff: dictionaries.join("en_GB.aff"),
+        dic: dictionaries.join("en_GB.dic"),
+        supplement: dictionaries.join("en_sg_supplement.txt"),
+    }
+}
 
 /// Wraps a loaded `en_GB` dictionary with the Singapore supplement merged in through
 /// [`Dictionary::add`], so a supplement word is checked and suggested through the same lookup as
@@ -234,6 +254,17 @@ mod tests {
         let anchor: Vec<u16> = flag.span.anchor.encode_utf16().collect();
         let end = flag.span.local_start + flag.span.local_length;
         String::from_utf16_lossy(&anchor[flag.span.local_start..end])
+    }
+
+    #[test]
+    fn default_paths_resolve_under_the_dictionaries_folder_of_the_given_resources_dir() {
+        let paths = default_paths(Path::new("C:/resources"));
+        assert_eq!(paths.aff, Path::new("C:/resources/dictionaries/en_GB.aff"));
+        assert_eq!(paths.dic, Path::new("C:/resources/dictionaries/en_GB.dic"));
+        assert_eq!(
+            paths.supplement,
+            Path::new("C:/resources/dictionaries/en_sg_supplement.txt")
+        );
     }
 
     /// Two separate loads stand in for two processes: with a seeded hasher each load drew its own

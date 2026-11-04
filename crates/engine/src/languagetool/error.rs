@@ -30,6 +30,10 @@ pub enum LanguageToolError {
     #[error("LanguageTool is degraded, its restart attempts exhausted")]
     Degraded,
 
+    /// The supervisor was shut down, so no check is sent again.
+    #[error("LanguageTool was shut down")]
+    ShutDown,
+
     /// Held without its URL, since a check's URL carries the text checked in its query.
     #[error("request to LanguageTool failed: {0}")]
     Request(#[source] reqwest::Error),

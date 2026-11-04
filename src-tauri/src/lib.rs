@@ -10,18 +10,12 @@ use tauri::Manager;
 use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{self, Capture};
 use wa_engine::languagetool::{self, GrammarSource, LanguageToolSupervisor};
-use wa_engine::spelling::SpellChecker;
+use wa_engine::spelling::{self, SpellChecker};
 use wa_engine::store::{self, config, Config, Store, StoreError};
 use wa_engine::style::ai_tell::{self, Catalogue};
 use wa_engine::style::ruleset::LoadedRuleset;
 
 use overlay::{PositionedFlag, SharedFlags};
-
-/// Where `LanguageToolSupervisor::start` starts scanning for a free port. LanguageTool's own
-/// conventional default when run standalone, kept here rather than picked arbitrarily so a
-/// developer inspecting running processes recognises it; `find_free_port` already scans past it
-/// if something else holds it.
-const LANGUAGETOOL_PREFERRED_PORT: u16 = 8081;
 
 /// The current, positioned flag set for the active document, relative to the overlay window's
 /// own origin: the same shape [`overlay::track_flags`] emits as `flags-updated`, read here for a
@@ -103,31 +97,27 @@ async fn start_checking_pipeline(
          dictionaries can be found",
     );
 
+    let dictionaries = spelling::default_paths(&resources_dir);
     let spelling = SpellChecker::load(
-        &resources_dir.join("dictionaries").join("en_GB.aff"),
-        &resources_dir.join("dictionaries").join("en_GB.dic"),
-        &resources_dir
-            .join("dictionaries")
-            .join("en_sg_supplement.txt"),
+        &dictionaries.aff,
+        &dictionaries.dic,
+        &dictionaries.supplement,
     )
     .expect("the vendored dictionary pair and supplement are well-formed, checked in CI");
 
     let languagetool_paths = languagetool::default_paths(&resources_dir);
-    let grammar: Option<Arc<dyn GrammarSource>> = match LanguageToolSupervisor::start(
-        languagetool_paths,
-        LANGUAGETOOL_PREFERRED_PORT,
-    )
-    .await
-    {
-        Ok(supervisor) => Some(Arc::new(supervisor)),
-        Err(error) => {
-            log::warn!(
-                "LanguageTool could not start, degrading to spelling and AI-tell flags only: \
-                 {error}"
-            );
-            None
-        }
-    };
+    let grammar: Option<Arc<dyn GrammarSource>> =
+        match LanguageToolSupervisor::start(languagetool_paths, languagetool::PREFERRED_PORT).await
+        {
+            Ok(supervisor) => Some(Arc::new(supervisor)),
+            Err(error) => {
+                log::warn!(
+                    "LanguageTool could not start, degrading to spelling and AI-tell flags only: \
+                     {error}"
+                );
+                None
+            }
+        };
 
     let analyzer = Arc::new(Analyzer::start(
         Arc::clone(&capture),

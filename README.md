@@ -531,13 +531,14 @@ The prompt puts the Card first, rendered for the passage's register, so that the
 cache holds it across rewrites within one Card version.
 
 Every candidate passes the screen before it is shown. The screen is built in the engine, as a
-function the rewriter calls in process, and nothing calls it until Phase 4. It is the deterministic
-layer applied to a candidate. It first runs the content-preservation check: the candidate's numbers,
-capitalised tokens, negation words, and length are compared with the passage's. A model supplies
-wording; the facts are the passage's. It then runs spelling, the telltale catalogue, the ruleset's
-checkers, and LanguageTool's grammar over the candidate through the functions the analyzer runs on
-typed text, with the candidate segmented into paragraphs and form modes as typed text is. Spelling
-accepts a word the passage holds, so a name carried over from the passage is not a misspelling.
+function the rewriter calls in process from Phase 4 and `wa screen` calls today. It is the
+deterministic layer applied to a candidate. It first runs the content-preservation check: the
+candidate's numbers, capitalised tokens, negation words, and length are compared with the passage's.
+A model supplies wording; the facts are the passage's. It then runs spelling, the telltale
+catalogue, the ruleset's checkers, and LanguageTool's grammar over the candidate through the
+functions the analyzer runs on typed text, with the candidate segmented into paragraphs and form
+modes as typed text is. Spelling accepts a word the passage holds, so a name carried over from the
+passage is not a misspelling.
 
 Content failures, spelling flags, and grammar flags are hard results; style flags and telltale
 flags are soft. A candidate fails on any result and passes on none. The killing rule is the source
@@ -549,8 +550,9 @@ check that does not run, with LanguageTool down or past its bound, ends the scre
 and never passes it. Each screening records the ruleset version, the catalogue's content hash, the
 telltale patterns switched on, and the app version it ran under.
 
-The screen has one implementation, in the engine. The bench calls it through `wa screen`, which is
-planned (#104), so what the bench measures is what ships.
+The screen has one implementation, in the engine. The bench calls it through `wa screen`, writing
+passage and candidate pairs to its standard input as JSONL and reading one result per line from its
+standard output, so what the bench measures is what ships.
 
 The working card offers Rewrite on a flag's card and on a selection, which is reached from a
 marker at the selection's tail or a global hotkey. Accept finds the anchor again and runs the
@@ -583,7 +585,7 @@ flowchart LR
         LT[["LanguageTool<br/>supervised subprocess"]]
         Store[("Store<br/>SQLite: schema_version, passages,<br/>the Card and ruleset tables,<br/>candidates, screen_results,<br/>items, item_slots,<br/>events, habit_rollups;<br/>none of them written yet")]
         LS[["llama-server<br/>supervised subprocess, planned"]]
-        WA["wa<br/>command-line binary, no subcommands yet"]
+        WA["wa<br/>command-line binary: backup, screen"]
         Py["adapter/<br/>bench and job scripts, planned"]
     end
 
@@ -593,6 +595,7 @@ flowchart LR
     Apps -->|"text and positions"| App
     App -->|"replacement"| Apps
     App <-->|"grammar"| LT
+    WA <-->|"grammar, its own subprocess"| LT
     App <--> Store
     App -->|"rewrite, pre-sort"| LS
     WA <--> Store
@@ -611,23 +614,24 @@ The Rust code is a Cargo workspace of three crates, with a virtual manifest and 
 repository root. The engine library is `wa-engine` in `crates/engine`, the Tauri app keeps the
 package name `writing-assistant` in `src-tauri/`, where the Tauri CLI expects it, and `wa` is in
 `crates/wa`. Of the engine's contents in the table, the store's remaining artefact tables are
-planned for the phases that first write them, and the two clients for Phase 3. The screen is built,
-and nothing calls it until Phase 4's rewriter. The store holds `schema_version`, `passages`, the
-Card and ruleset tables, `candidates`, `screen_results`, `items`, `item_slots`, `events`, and
-`habit_rollups`, and the app reads the latest ruleset version and Card version from it at startup.
-Nothing writes a passage or a candidate until Phase 4, an item until Phase 5, a Card or a ruleset
-until Phase 3, an event until Phase 3's questionnaire, a habit rollup until the habit ledger in
-Phase 9, or a screen result until Phase 4's rewriter, its first writer. `wa` has one subcommand,
-`wa backup`, which copies the store file alone; `wa screen` is planned for Phase 1.
+planned for the phases that first write them, and the two clients for Phase 3. The screen is built;
+`wa screen` calls it, and the rewriter calls it in process from Phase 4. The store holds
+`schema_version`, `passages`, the Card and ruleset tables, `candidates`, `screen_results`, `items`,
+`item_slots`, `events`, and `habit_rollups`, and the app reads the latest ruleset version and Card
+version from it at startup. Nothing writes a passage or a candidate until Phase 4, an item until
+Phase 5, a Card or a ruleset until Phase 3, an event until Phase 3's questionnaire, a habit rollup
+until the habit ledger in Phase 9, or a screen result until Phase 4's rewriter, its first writer.
+`wa` has two subcommands: `wa backup`, which copies the store file alone, and `wa screen`, which
+runs the screen over JSONL.
 
 | Crate | Holds |
 |---|---|
 | Engine library | Capture, the analyzer, the rule layer, the screen, the store, the clients for llama-server and the frontier API, and the flag types |
 | Tauri app | Commands, the overlay, and the windows |
-| `wa` | The command-line binary: screen, generate, embed, synth, export, ingest, and backup |
+| `wa` | The command-line binary. Built: backup and screen. Each of generate, embed, synth, export, and ingest arrives with its own issue |
 
 The Tauri binary does not double as a command-line tool. `wa` runs the engine without the app, for
-the app's scheduler, the Python project, and the owner by hand.
+the app's scheduler, the Python project, and use by hand.
 
 ### Processes
 
@@ -636,7 +640,7 @@ the app's scheduler, the Python project, and the owner by hand.
 | The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the store thread, the analyzer, the overlay, and the main window | Runs today |
 | LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
 | llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
-| `wa` | The engine on the command line | Built. `wa backup` copies the store file alone; `wa screen` is planned for Phase 1 |
+| `wa` | The engine on the command line | Built, with two subcommands. `wa backup` copies the store file alone; `wa screen` runs the screen over JSONL with a LanguageTool subprocess of its own |
 | `adapter/` | A Python `uv` project: the bench, and job submission, polling, download, and conversion | Planned, Phase 5 |
 
 LanguageTool's supervision is the pattern for both subprocesses. A free port is probed upward from
@@ -676,8 +680,34 @@ nothing at the destination. The copy is one file in rollback-journal mode with n
 beside it, and the engine's open switches it to write-ahead mode, so a copy put back as
 `store.sqlite` opens at the schema version it was taken at. On success `wa backup` prints the
 destination's path and exits zero; a failure prints one line naming the path at fault and exits
-non-zero. `--data-root <dir>` points `wa` at another data root, such as a copied one, and defaults
-to the data root, `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`.
+non-zero.
+
+`wa` takes two global options. `--data-root <dir>` points it at another data root, such as a copied
+one, and defaults to the data root, `%LOCALAPPDATA%\com.bernicekoh.writing-assistant`.
+`--resources <dir>` names the resource directory the dictionaries, LanguageTool and its Java
+runtime are read from. It defaults, for a build under a checkout's `target/` folder, to the
+checkout's `src-tauri/resources`, and otherwise to the directory holding `wa`, where the app's
+bundle places each resource family. The engine holds no resource directory of its own, and the app
+and `wa` resolve each file under theirs through the same engine functions. The telltale catalogue
+and the spelling variant table are compiled into the engine and read from no directory.
+
+`wa screen` runs the screen over JSONL. Each line of standard input is an object with `id`, any JSON
+value, and `passage`, `candidate` and `register`, each a string. Each gets one line of standard
+output, in input order and written as it completes: the id beside the screening's fields, or the id,
+`null` where none could be read, beside an error with a class and a message. The class is
+`invalidInput` for a line that is not JSON, not an object, or lacks a field or holds one of the
+wrong type, and `grammarCheckDidNotRun` when a grammar check failed. No message quotes the line's
+text. The output is UTF-8 with LF endings.
+
+`wa screen` screens under the latest ruleset version, or the one `--ruleset-version <n>` names, and
+under the telltale toggles of the settings file, or the defaults where there is none, which `wa`
+does not write. It starts its own LanguageTool on the first free port from 8081, so it runs beside
+the app's, and before it exits, an error exit included, it kills the subprocess and waits for it to
+end. LanguageTool's own log goes to standard error. It exits 0 when every line was screened and 2
+when the run finished with at least one error line. It exits 1 when it stopped without finishing:
+before reading any input, for a missing resource file, an absent store, a ruleset version the store
+lacks, a settings file that does not parse, or LanguageTool failing to start, each named in one line
+on standard error; or partway, when standard input or standard output failed.
 
 The schema is a list of numbered SQL migrations, files compiled into the engine and applied in
 order when the store opens, on the store thread before it serves a request. Each runs in its own
@@ -934,7 +964,8 @@ npm run tauri dev
 The script downloads LanguageTool 6.6, checks the archive against a pinned SHA-256, and builds a
 trimmed Java runtime with `jlink`, both into `src-tauri/resources/`. The runtime's module list was
 derived against Java release 21, and the runtime the script built on the development machine is
-21.0.12. Until the script has run, only spelling and telltale flags appear.
+21.0.12. Until the script has run, only spelling and telltale flags appear, and `wa screen` exits
+naming the missing runtime.
 
 ## Documentation
 

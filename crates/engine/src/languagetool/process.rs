@@ -28,6 +28,7 @@
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
@@ -83,6 +84,13 @@ pub(crate) fn spawn(paths: &LanguageToolPaths, port: u16) -> Result<Child, Langu
         // Neither stdout nor stderr carries user draft text: LanguageTool's own process log is
         // startup diagnostics and per-request timing, per its own logging configuration, not the
         // text it was asked to check.
+        //
+        // The log goes to this process's stderr, so `wa screen`'s stdout carries its JSONL alone.
+        // In the app's debug build both reach one console. Measured 3 Nov 2026 against a release
+        // build's case, a process with no console and so no stderr handle: the spawn succeeds as
+        // an inherited one does. The server reads no input, and takes none of this process's.
+        .stdin(Stdio::null())
+        .stdout(std::io::stderr())
         .kill_on_drop(true)
         .spawn()
         .map_err(|source| LanguageToolError::Spawn {
