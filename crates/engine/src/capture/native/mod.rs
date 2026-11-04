@@ -17,6 +17,7 @@ mod focus;
 pub mod foreground;
 pub mod insert;
 mod process;
+pub mod read;
 mod text_change;
 
 use std::sync::mpsc as ready_channel;
@@ -184,6 +185,26 @@ struct TextChangeScope {
     /// The id of the process that owns `element`, against which the foreground window's is
     /// classified.
     process_id: u32,
+    /// Whether a read of this scope's element has logged that it took more than one part. A new
+    /// scope starts on every focus change to an element outside this app, so the line is once
+    /// per focus, while the analyzer reads five times a second.
+    multi_part_read_logged: bool,
+}
+
+/// Reads the whole text of `scope`'s element. The first read in the scope that took more than one
+/// part logs the count and the length at `info`, so a log shows a document past a provider's cap;
+/// the line never holds text.
+fn read_scope_text(scope: &mut TextChangeScope) -> Result<String, NativeCaptureError> {
+    let read = read::document_text(&scope.element)?;
+    if read.parts > 1 && !scope.multi_part_read_logged {
+        scope.multi_part_read_logged = true;
+        log::info!(
+            "read the focused document in {} parts, {} characters",
+            read.parts,
+            read.text.chars().count()
+        );
+    }
+    Ok(read.text)
 }
 
 fn run(
@@ -277,6 +298,7 @@ fn run(
                             element,
                             handler,
                             process_id: pid,
+                            multi_part_read_logged: false,
                         });
                     }
                     Err(error) => {
@@ -288,8 +310,8 @@ fn run(
             // line above records it.
             Signal::TextChanged => {}
             Signal::GetText(reply) => {
-                let result = match &current_scope {
-                    Some(scope) => insert::current_text(&scope.element).map_err(CaptureError::from),
+                let result = match &mut current_scope {
+                    Some(scope) => read_scope_text(scope).map_err(CaptureError::from),
                     None => Err(CaptureError::NoFocus),
                 };
                 let _ = reply.send(result);

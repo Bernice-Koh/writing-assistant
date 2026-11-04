@@ -72,9 +72,10 @@ pub enum Foreground {
 /// round-trips a message.
 #[async_trait::async_trait]
 pub trait Capture: Send + Sync {
-    /// The full current text of whatever the backend considers "the document": an element's
-    /// value for native ([`native::insert::current_text`]), or the captured element's text for
-    /// web.
+    /// The full current text of whatever the backend considers "the document": the focused
+    /// element's `TextPattern` document range, read whole in parts, or its value where it has no
+    /// `TextPattern`, for native ([`native::insert::current_text`]), or the captured element's
+    /// text for web.
     async fn current_text(&self) -> Result<String, CaptureError>;
 
     /// Replaces `span`'s text with `replacement`: the `local_length` UTF-16 code units starting

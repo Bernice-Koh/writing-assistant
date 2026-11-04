@@ -8,11 +8,11 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use windows::Win32::UI::Accessibility::{
-    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId,
-    UIA_ValuePatternId,
+    IUIAutomationElement, IUIAutomationTextPattern, UIA_TextPatternId,
 };
 
 use super::error::NativeCaptureError;
+use super::read;
 
 pub mod clipboard;
 pub mod select;
@@ -370,28 +370,13 @@ fn changed_and_contains(element: &IUIAutomationElement, before: &str, text: &str
         .unwrap_or(false)
 }
 
-/// Reads an element's current text: `ValuePattern.CurrentValue()` where available (simple
-/// controls), falling back to `TextPattern`'s full document range (rich text, browser fields).
-/// `pub`, not just an internal cascade helper: the manual-verification harness needs the same
-/// read-back to log whether each independently-tried stage's marker actually landed.
+/// Reads an element's whole current text: its `TextPattern` document range, read in parts past a
+/// provider's cap, and its value where it has no `TextPattern` or the range read fails
+/// ([`read::document_text`]). `pub`, not just an internal cascade helper: the manual-verification
+/// harness needs the same read-back to log whether each independently-tried stage's marker actually
+/// landed.
 pub fn current_text(element: &IUIAutomationElement) -> Result<String, NativeCaptureError> {
-    // SAFETY: `element` is live; GetCurrentPatternAs fails safely when unsupported.
-    if let Ok(value_pattern) =
-        unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
-    {
-        // SAFETY: `value_pattern` was just obtained from a live element.
-        if let Ok(text) = unsafe { value_pattern.CurrentValue() } {
-            return Ok(text.to_string());
-        }
-    }
-    // SAFETY: `element` is live; GetCurrentPatternAs fails safely when unsupported.
-    let text_pattern =
-        unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
-            .map_err(|_| NativeCaptureError::NoTextPattern)?;
-    // SAFETY: `text_pattern` was just obtained from a live element.
-    let range = unsafe { text_pattern.DocumentRange() }?;
-    // SAFETY: `range` is a live range from the call above; -1 requests the full range's text.
-    Ok(unsafe { range.GetText(-1) }?.to_string())
+    read::document_text(element).map(|read| read.text)
 }
 
 /// Reads the live selection's own text straight from UI Automation (`TextPattern.GetSelection`)
