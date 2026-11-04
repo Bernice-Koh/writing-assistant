@@ -429,10 +429,21 @@ reading the element's text back, never on the return status of the call that mad
 
 Setting an element's whole value is not a stage, since it cannot target a span.
 
+Synthetic keystrokes and the paste shortcut reach whichever window holds the foreground, so the
+cascade checks the target's window against the foreground window before it selects the span and
+again before each stage that sends a keystroke. The target's window is the top-level window of the
+document's element, found from the element's own window handle or its nearest ancestor's. When
+another window is in front, the native backend restores the target's window if it is minimised,
+calls `SetForegroundWindow` on it, and reads the foreground window again. Windows grants that call
+only to a process that meets one of the conditions listed on its reference page, such as having
+received the last input event. When the target's window is still not in front, the replacement fails
+with an error of its own that names both windows' processes, the stage's keystrokes are not sent,
+and no later stage, the clipboard fallback included, is tried. The check runs inside the cascade,
+so every caller of `Capture::replace` and every harness probe gets it. The log names the two
+processes at `info` on each refocus and at `warn` on one that did not take.
+
 The cascade is implemented behind `Capture::replace` and exercised by its harness. Nothing in the
-overlay calls it yet: the working card's Accept is planned for Phase 4. Synthetic keystrokes reach
-whichever window holds keyboard focus, so a check that the target is the foreground window, with a
-refocus when it is not, is planned for Phase 2.
+overlay calls it yet: the working card's Accept is planned for Phase 4.
 
 Four harnesses under `crates/engine/examples/` measure native capture, the cost of its read, the
 insertion cascade, and the web bridge against real applications. They are run by hand and are not
