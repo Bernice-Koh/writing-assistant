@@ -324,6 +324,7 @@ fn run(
                 let result = match &current_scope {
                     Some(scope) => insert::replace_within(
                         &scope.element,
+                        foreground::target_window(uia.client(), &scope.element),
                         &span.anchor,
                         span.occurrence,
                         span.local_start,

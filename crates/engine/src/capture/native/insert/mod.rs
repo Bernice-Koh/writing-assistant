@@ -3,6 +3,13 @@
 //! left is removed and the replacement is pasted from the clipboard, then read back the same
 //! way. A stage counts only when its result is verified against the element's own reported text
 //! rather than assumed from the underlying call's exit status.
+//!
+//! Synthetic keystrokes and the paste shortcut reach whichever window holds the foreground, so
+//! each entry point takes the target's top-level window ([`foreground::target_window`]) and checks
+//! it against the foreground window before selecting and again before each stage that sends a
+//! keystroke, bringing it to the front when another window holds it ([`foreground::bring_to_front`]).
+//! A refocus that does not take ends the cascade with [`NativeCaptureError::RefocusFailed`] before
+//! that stage's first keystroke, so no later stage, the clipboard fallback included, is tried.
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -12,6 +19,7 @@ use windows::Win32::UI::Accessibility::{
 };
 
 use super::error::NativeCaptureError;
+use super::foreground::{self, Window};
 use super::read;
 
 pub mod clipboard;
@@ -35,10 +43,24 @@ const SETTLE_DELAY: Duration = Duration::from_millis(300);
 /// already active.
 const SELECTION_SETTLE_DELAY: Duration = Duration::from_millis(150);
 
+/// A refocus hands the target's thread its activation, which restores the keyboard focus to the
+/// control that last held it; this delay lets that run before the next selection or keystroke.
+const REFOCUS_SETTLE_DELAY: Duration = Duration::from_millis(150);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InsertionMethod {
     SyntheticInput,
     ClipboardPaste,
+}
+
+/// Makes `window`, the target's, the foreground window, and waits for its activation after a
+/// refocus. Called before each stage that sends a keystroke, and first before selecting, so that
+/// the selection is made in a window already active and a later activation cannot move it.
+fn in_front(window: Option<Window>) -> Result<(), NativeCaptureError> {
+    if foreground::bring_to_front(window)? {
+        sleep(REFOCUS_SETTLE_DELAY);
+    }
+    Ok(())
 }
 
 /// Replaces the first occurrence of `target` with `replacement`. `value::set_value` is
@@ -54,15 +76,21 @@ pub enum InsertionMethod {
 /// call starts in the insertion harness, directly or as [`replace_last_typed`]'s last resort, and
 /// the harness's target is a marker chosen to be unique. [`replace_within`], which serves the
 /// `Capture` trait's `replace`, addresses its span through an anchor and does not share the gap.
+///
+/// `window` is `element`'s top-level window, which is brought to the front before each stage that
+/// sends a keystroke (see the module documentation).
 pub fn replace_span(
     element: &IUIAutomationElement,
+    window: Option<Window>,
     target: &str,
     replacement: &str,
 ) -> Result<InsertionMethod, NativeCaptureError> {
+    in_front(window)?;
     select::select_text(element, target)?;
     sleep(SELECTION_SETTLE_DELAY);
     let before = current_text(element).unwrap_or_default();
 
+    in_front(window)?;
     let synthetic_result = synthetic::type_text(replacement);
     sleep(SETTLE_DELAY);
     if synthetic_result.is_ok() && replaced(element, &before, target, replacement) {
@@ -77,6 +105,7 @@ pub fn replace_span(
     // leaves behind already sits exactly where `target` used to be, so skip re-selecting and
     // paste straight there. Otherwise, nothing needed cleaning up, so re-select `target` before
     // trying the next technique rather than assuming the prior selection still holds.
+    in_front(window)?;
     if !restore_after_failed_attempt(element, &before) {
         select::select_text(element, target)?;
         sleep(SELECTION_SETTLE_DELAY);
@@ -113,22 +142,28 @@ pub fn replace_span(
 /// selection actually holds `target` before typing over it, and handing off to
 /// `replace_last_typed_by_anchor` when it doesn't, turns that silent corruption into a safe,
 /// correct recovery instead.
+///
+/// `window` is `element`'s top-level window, which is brought to the front before each stage that
+/// sends a keystroke, the selection by Shift+Left among them (see the module documentation).
 pub fn replace_last_typed(
     element: &IUIAutomationElement,
+    window: Option<Window>,
     target: &str,
     typed_char_count: usize,
     replacement: &str,
 ) -> Result<InsertionMethod, NativeCaptureError> {
     let before = current_text(element).unwrap_or_default();
 
+    in_front(window)?;
     synthetic::select_left(typed_char_count as u32)?;
     sleep(SELECTION_SETTLE_DELAY);
     let selection_matches = current_selection(element)
         .map(|selected| selected == target)
         .unwrap_or(false);
     if !selection_matches {
-        return replace_last_typed_by_anchor(element, &before, target, replacement);
+        return replace_last_typed_by_anchor(element, window, &before, target, replacement);
     }
+    in_front(window)?;
     let synthetic_result = synthetic::type_text(replacement);
     sleep(SETTLE_DELAY);
     if synthetic_result.is_ok() && changed_and_contains(element, &before, replacement) {
@@ -141,6 +176,7 @@ pub fn replace_last_typed(
     // past the intended span rather than the now-empty gap it left. Skip re-selecting in that
     // case and paste straight into the gap; otherwise, nothing needed cleaning up, so re-select
     // as before.
+    in_front(window)?;
     if !restore_after_failed_attempt(element, &before) {
         synthetic::select_left(typed_char_count as u32)?;
         sleep(SELECTION_SETTLE_DELAY);
@@ -184,12 +220,13 @@ const FALLBACK_ANCHOR_BYTES: usize = 64;
 /// anchor is available at all.
 fn replace_last_typed_by_anchor(
     element: &IUIAutomationElement,
+    window: Option<Window>,
     before: &str,
     target: &str,
     replacement: &str,
 ) -> Result<InsertionMethod, NativeCaptureError> {
     if !before.ends_with(target) {
-        return replace_span(element, target, replacement);
+        return replace_span(element, window, target, replacement);
     }
     // Capped at `target`'s own start, never past it: otherwise, if `target` alone is longer
     // than `FALLBACK_ANCHOR_BYTES`, the plain byte-count window below would land inside
@@ -215,6 +252,7 @@ fn replace_last_typed_by_anchor(
     let occurrence = before.matches(anchor).count().saturating_sub(1);
     replace_within(
         element,
+        window,
         anchor,
         occurrence,
         local_start_utf16,
@@ -230,18 +268,24 @@ fn replace_last_typed_by_anchor(
 /// anchor is available. See `select_within`'s documentation for why `select_range`'s absolute
 /// counting drifts near Word's auto-numbered list items, and why anchoring locally avoids the
 /// problem.
+///
+/// `window` is `element`'s top-level window, which is brought to the front before each stage that
+/// sends a keystroke (see the module documentation).
 pub fn replace_within(
     element: &IUIAutomationElement,
+    window: Option<Window>,
     anchor: &str,
     occurrence: usize,
     local_start: usize,
     local_length: usize,
     replacement: &str,
 ) -> Result<InsertionMethod, NativeCaptureError> {
+    in_front(window)?;
     select::select_within(element, anchor, occurrence, local_start, local_length)?;
     sleep(SELECTION_SETTLE_DELAY);
     let before = current_text(element).unwrap_or_default();
 
+    in_front(window)?;
     let synthetic_result = synthetic::type_text(replacement);
     sleep(SETTLE_DELAY);
     if synthetic_result.is_ok() && changed_and_contains(element, &before, replacement) {
@@ -253,6 +297,7 @@ pub fn replace_within(
     // `anchor` itself, so a fresh `select_within` search for `anchor` would then, correctly,
     // fail to find it. Skip re-selecting in that case and paste straight into the gap the
     // cleanup leaves behind.
+    in_front(window)?;
     if !restore_after_failed_attempt(element, &before) {
         select::select_within(element, anchor, occurrence, local_start, local_length)?;
         sleep(SELECTION_SETTLE_DELAY);

@@ -1,5 +1,5 @@
 //! Whether a focused element, or the foreground window, belongs to this application rather than
-//! to the user's writing target.
+//! to the user's writing target, and the executable name of a window's process.
 //!
 //! The assistant has windows of its own, and they take focus like anything else: without this
 //! check the capture thread adopts the app's own UI as the tracked element and the overlay
@@ -83,6 +83,30 @@ fn parent_ids() -> Result<HashMap<u32, u32>, windows::core::Error> {
         ControlFlow::Continue(())
     })?;
     Ok(parents)
+}
+
+/// The executable file name of process `pid`, such as `Notepad.exe`, for naming a window's owner
+/// in a log line or an error. `None` when the process table cannot be read or holds no such
+/// process. Read from one snapshot of the process table, so it costs a walk of the table; only a
+/// refocus before an insertion asks.
+pub fn executable_name(pid: u32) -> Option<String> {
+    let mut name = None;
+    let walked = each_process(|entry| {
+        if entry.th32ProcessID != pid {
+            return ControlFlow::Continue(());
+        }
+        let length = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        name = Some(String::from_utf16_lossy(&entry.szExeFile[..length]));
+        ControlFlow::Break(())
+    });
+    if let Err(error) = walked {
+        log::debug!("could not read the process table to name pid {pid}: {error}");
+    }
+    name
 }
 
 /// Hands every entry of one snapshot of the process table to `visit`, in the table's order, until
@@ -212,6 +236,17 @@ mod tests {
         assert!(!own.remembered(300, &mut ask));
         assert!(own.remembered(200, &mut ask));
         assert_eq!(asked, vec![200, 300, 200]);
+    }
+
+    #[test]
+    fn this_process_is_named_by_its_executable() {
+        let name = executable_name(std::process::id()).expect("this process is in the table");
+        let expected = std::env::current_exe().expect("a test knows its own executable");
+        let expected = expected
+            .file_name()
+            .expect("an executable path ends in a file name")
+            .to_string_lossy();
+        assert!(name.eq_ignore_ascii_case(&expected));
     }
 
     #[test]

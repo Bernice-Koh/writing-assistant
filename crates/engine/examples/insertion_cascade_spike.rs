@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use wa_engine::capture::native::client::Uia;
 use wa_engine::capture::native::error::NativeCaptureError;
+use wa_engine::capture::native::foreground;
 use wa_engine::capture::native::insert::{
     changed_region, clipboard, current_selection, current_text, replace_last_typed, replace_span,
     replace_within, restore_after_failed_attempt, select, synthetic, value,
@@ -79,6 +80,7 @@ fn run_live_replace_test(also_test_last_typed: bool) {
             return;
         }
     };
+    let window = foreground::target_window(uia.client(), &element);
 
     let before = match current_text(&element) {
         Ok(text) => text,
@@ -156,8 +158,15 @@ fn run_live_replace_test(also_test_last_typed: bool) {
             "  targeting its 2nd word {second_word:?} (local offset {word_start} within {typed:?}) via replace_within (mid-sentence, not at the cursor), replacing with {span_replacement:?}"
         );
         sleep(SETTLE_DELAY);
-        let span_result =
-            replace_within(&element, typed, 0, word_start, word_len, &span_replacement);
+        let span_result = replace_within(
+            &element,
+            window,
+            typed,
+            0,
+            word_start,
+            word_len,
+            &span_replacement,
+        );
         sleep(SETTLE_DELAY);
         report_replace(
             "replace-within (anchor-relative, live-detected, mid-sentence)",
@@ -176,8 +185,13 @@ fn run_live_replace_test(also_test_last_typed: bool) {
     // The cursor is still sitting right after what was just typed, so selecting backward by
     // character count (replace_last_typed) is unambiguous regardless of whether the target text
     // repeats elsewhere in the document.
-    let replace_result =
-        replace_last_typed(&element, &target, target.chars().count(), &replacement);
+    let replace_result = replace_last_typed(
+        &element,
+        window,
+        &target,
+        target.chars().count(),
+        &replacement,
+    );
     sleep(SETTLE_DELAY);
     report_replace(
         "replace-last-typed (keyboard, live-detected)",
@@ -444,6 +458,7 @@ fn run_app_tests(label: &str, index: u32) {
             return;
         }
     };
+    let window = foreground::target_window(uia.client(), &element);
 
     let value_marker = format!("WA-VALUE-{index}");
     let value_call = value::set_value(&element, &value_marker);
@@ -473,7 +488,7 @@ fn run_app_tests(label: &str, index: u32) {
     // blind-append tested above.
     sleep(SETTLE_DELAY);
     let replaced_marker = format!("WA-REPLACED-{index}");
-    let replace_result = replace_span(&element, &clipboard_marker, &replaced_marker);
+    let replace_result = replace_span(&element, window, &clipboard_marker, &replaced_marker);
     sleep(SETTLE_DELAY);
     report_replace(
         "replace-span (FindText)",
@@ -493,6 +508,7 @@ fn run_app_tests(label: &str, index: u32) {
     let replaced_marker_2 = format!("WA-REPLACED2-{index}");
     let replace_result_2 = replace_last_typed(
         &element,
+        window,
         &clipboard_marker,
         clipboard_marker.chars().count(),
         &replaced_marker_2,

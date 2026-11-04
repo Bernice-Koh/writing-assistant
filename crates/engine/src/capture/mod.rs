@@ -93,6 +93,12 @@ pub trait Capture: Send + Sync {
     /// strings are natively: a genuine convergence across both backends, not a
     /// Windows-specific artifact.
     ///
+    /// Native types the replacement as keystrokes, which reach whichever window holds the
+    /// foreground, so it brings the target's window to the front before each stage that sends one
+    /// ([`native::foreground::bring_to_front`]). When that does not take, it answers
+    /// [`CaptureError::RefocusFailed`] with no keystroke sent from that stage on and the clipboard
+    /// fallback not tried.
+    ///
     /// The working card is the caller this is shaped for: it holds the span of the flag it acts
     /// on, so the anchor-based shape is this trait's only replacement method. The card's actions
     /// are not yet built, and nothing in the app calls this today. Native also has
