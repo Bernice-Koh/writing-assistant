@@ -95,14 +95,24 @@ on the sentence that holds its match.
 The two stages publish separately, each the whole document's flags. The deterministic stage
 publishes as soon as it has run, with the grammar flags already cached for sentences whose grammar
 check completed on an earlier recheck. The grammar stage then sends LanguageTool every sentence
-whose grammar check has not completed, one at a time while the analyzer keeps polling, and
-publishes a second update that adds their grammar flags. The deterministic stage's flags therefore
-never wait on LanguageTool. A recheck that starts while the previous recheck's grammar stage is
-still running stops that stage, which publishes nothing.
+whose grammar check has not completed, one at a time while the analyzer goes on watching for
+changes, and publishes a second update that adds their grammar flags. The deterministic stage's
+flags therefore never wait on LanguageTool. A recheck that starts while the previous recheck's
+grammar stage is still running stops that stage, which publishes nothing.
 
-The analyzer finds a change by polling the document every 200 ms. An event-driven trigger is
-planned for Phase 2: the capture backend's text-changed event marks the document as changed, and a
-slow safety poll covers controls that never raise the event.
+The capture backend's change notification triggers the recheck. UI Automation's text-changed event,
+and a focus change to a new element, mark the document changed and restart the 500 ms quiet
+threshold, and read nothing, so typing costs no read until it pauses. Once the threshold passes,
+the analyzer reads the whole document once and rechecks it when the text differs from the text last
+checked; a change of formatting alone reads the same and rechecks nothing. A safety poll covers
+controls that raise no event, and the web backend, which never raises the notification: while no
+change is pending, it reads the document two seconds after the last read, and a text other than the
+one last checked starts the quiet threshold, after which the recheck reads the text again and runs
+once the text has held through the threshold. Two seconds rests on the whole read's cost, measured
+on 4 November 2026 in a release build over 30 reads per surface of a 20,200-word text (see Native
+capture): medians of 3.4 ms and 12.0 ms in two runs on a Word document, 1.6 ms on Notepad, 24.4 ms
+on a Chromium `textarea` and 16.6 ms on a `contenteditable` field, so the poll takes 1.2% of one
+core on the `textarea` and under 1% on the others.
 
 Flags are cached per sentence by a hash of the ruleset version, its paragraph's form mode and its
 text, so one text in a prose paragraph and in a fragment has an entry for each. An entry has two
@@ -346,8 +356,9 @@ base, and the Singapore supplement is a plain word list that grows without a cha
 
 ## Capture and overlay
 
-One trait, `Capture`, covers text delivery, span positioning, replacement, and whose window is in
-the foreground. The rest of the engine does not know which backend served a request.
+One trait, `Capture`, covers text delivery, span positioning, replacement, whose window is in the
+foreground, and a notification that the document changed. The rest of the engine does not know
+which backend served a request.
 
 A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
 code units, never as an absolute offset. UI Automation's character counting drifts across Word's
@@ -365,7 +376,9 @@ underline.
 
 One dedicated thread owns the UI Automation client. It follows focus across the desktop and
 ignores the tool's own windows by walking the process parent chain, since WebView2 renders the
-frontend in a child process with its own process id.
+frontend in a child process with its own process id. It registers for the text-changed event on the
+focused element's subtree, and raises the change notification on each event and on each focus
+change to a new element.
 
 The thread reads the focused element's whole text from its `TextPattern` document range, and from
 its value where the element has no `TextPattern` or the range read fails. A provider can return
@@ -387,6 +400,7 @@ part is logged once per focus, with the count and the length.
 | Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. This finding led to a plausibility check on the caret rectangle. The caret is no longer read, since the full-viewport overlay has no use for it, and the check went with it |
+| WPF `TextBox`, RichEdit 5 control | Read and checked, and never underlined: the `TextPattern` of either does not support `FindText`, so no span's anchor resolves. Recorded as unsupported with no fallback, decided 4 November 2026: the anchor contract exists because absolute offsets drift, and such a control cannot resolve an anchor. Not verified on this machine |
 | Gmail compose, GitHub comment box | Neither is verified through native capture, the backend the app starts. The web backend's content script covers both hosts, and the app does not start it. Verification through native capture: planned, Phase 2 |
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, by
@@ -409,7 +423,8 @@ of the focused editable element on `github.com` and `mail.google.com`. The backe
 positioning call as unsupported, since a content script cannot convert a DOM position to screen
 coordinates. The content script replaces at an anchor's first occurrence and its messages carry
 no occurrence index, so the backend answers a replacement past the first occurrence as
-unsupported. The app does not start it today.
+unsupported. It never raises the change notification, so the analyzer's safety poll finds its
+changes. The app does not start it today.
 
 Not yet decided: whether the web backend stays. Phase 2 verifies Gmail compose and a GitHub
 comment box through native capture. On a pass, the web backend and the extension are deleted.
@@ -454,10 +469,11 @@ where it was.
 Three loops poll every 100 ms: one for the document's rectangle and the foreground window, one for
 the flags' positions, and one for the pointer. Polling is the design here: scrolling and window
 movement raise no dependable event. The flags loop re-resolves every flag's position on a flag
-update and when the document's rectangle changed. On any other tick it re-resolves one sentinel,
-the first positioned flag, and every flag when the sentinel has moved, so a scroll is noticed
-within a tick at the cost of one search. While no flag is positioned, it re-resolves every flag
-once a second.
+update, on the capture backend's change notification, once a tick however many notifications
+arrived since the last, and when the document's rectangle changed. On any other tick it re-resolves
+one sentinel, the first positioned flag, and every flag when the sentinel has moved, so a scroll is
+noticed within a tick at the cost of one search. While no flag is positioned, it re-resolves every
+flag once a second.
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, in a dev run, which is a
 debug build, over 60 one-second samples with a Notepad document of 20,200 words focused and idle:
