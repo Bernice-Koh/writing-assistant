@@ -12,8 +12,8 @@
 //! where the slot is one of the names in the usage line `main` prints.
 //!
 //! The `refocus` slot (#157) measures the cascade's refocus: it places another window in front of
-//! the target between the request and the first keystroke, and takes a run count and a cover
-//! script after the slot (see `run_refocus_test`).
+//! the target between the request and the first keystroke, and takes a run count, a title the
+//! target window's must hold, and a cover script after the slot (see `run_refocus_test`).
 
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
@@ -30,7 +30,7 @@ use wa_engine::capture::native::insert::{
 };
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::Accessibility::{IUIAutomationCacheRequest, IUIAutomationElement};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetProcessDPIAware};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetWindowTextW, SetProcessDPIAware};
 
 const FOCUS_DELAY: Duration = Duration::from_secs(14);
 const SETTLE_DELAY: Duration = Duration::from_millis(500);
@@ -559,19 +559,28 @@ const FRONT_WAIT: Duration = Duration::from_secs(5);
 /// target not in front at its start, or the cover not in front after the script is ready, stops
 /// the loop.
 ///
-/// `cargo run -p wa-engine --example insertion_cascade_spike -- refocus <runs> <cover-script>
-/// [script arguments]`, with `RUST_LOG=info` for the cascade's refocus lines.
+/// `title` guards the document: the target window's title, which names the open document in Notepad
+/// and Word, must hold it when the runs start, at each run's start and just before each probe, or
+/// nothing is typed. It keeps the probe off any document but the one written for the check, such
+/// as another Notepad tab shown in the same document area. The title is not printed.
+///
+/// `cargo run -p wa-engine --example insertion_cascade_spike -- refocus <runs> <title>
+/// <cover-script> [script arguments]`, with `RUST_LOG=info` for the cascade's refocus lines.
 fn run_refocus_test(args: &[String]) {
-    let (Some(runs), Some(script)) = (
+    let (Some(runs), Some(title), Some(script)) = (
         args.first().and_then(|runs| runs.parse::<u32>().ok()),
         args.get(1),
+        args.get(2),
     ) else {
         eprintln!(
-            "usage: insertion_cascade_spike refocus <runs> <cover-script> [script arguments]"
+            "usage: insertion_cascade_spike refocus <runs> <title> <cover-script> [script arguments]"
         );
         std::process::exit(1);
     };
-    let script_args = &args[2..];
+    let cover = CoverScript {
+        path: script,
+        args: &args[3..],
+    };
     // SAFETY: SetProcessDPIAware takes no arguments. Without it this process reads window
     // rectangles scaled to 96 DPI, and the cover script places its window in physical pixels.
     let _ = unsafe { SetProcessDPIAware() };
@@ -603,17 +612,26 @@ fn run_refocus_test(args: &[String]) {
             return;
         }
     };
-    let Some(target) = foreground::target_window(uia.client(), &element) else {
+    let Some(window) = foreground::target_window(uia.client(), &element) else {
         println!("  the focused element has no window to refocus");
         return;
     };
-    if !wait_for_front(|front| front.hwnd == target.hwnd) {
+    if !wait_for_front(|front| front.hwnd == window.hwnd) {
         println!("  the focused element's window is not in front");
+        return;
+    }
+    let target = Target {
+        element: &element,
+        window,
+        title,
+    };
+    if !target.title_holds() {
+        println!("  the focused window's title does not hold the given title; nothing is typed");
         return;
     }
     println!(
         "  target: {}'s window",
-        foreground::process_name(target.process_id)
+        foreground::process_name(window.process_id)
     );
 
     let stamp = SystemTime::now()
@@ -622,9 +640,7 @@ fn run_refocus_test(args: &[String]) {
     let mut tally = Tally::default();
     for run in 1..=runs {
         let marker = format!("QQ{stamp:04}R{run:02}QQ");
-        let Some(outcome) =
-            refocus_run(&uia, &cache, &element, target, &marker, script, script_args)
-        else {
+        let Some(outcome) = refocus_run(&uia, &cache, &target, &cover, &marker) else {
             println!("  run {run}: stopped");
             break;
         };
@@ -635,19 +651,49 @@ fn run_refocus_test(args: &[String]) {
     println!("  {tally}");
 }
 
+/// The refocus runs' target: the focused document element, its top-level window, and the text its
+/// window's title must hold.
+struct Target<'a> {
+    element: &'a IUIAutomationElement,
+    window: Window,
+    title: &'a str,
+}
+
+impl Target<'_> {
+    /// Whether the target window's title, read with `GetWindowTextW`, holds [`Self::title`].
+    fn title_holds(&self) -> bool {
+        let mut buffer = [0_u16; 512];
+        // SAFETY: `self.window.hwnd` is a window handle; a window destroyed since answers 0.
+        // `buffer` is a valid, uniquely-owned out buffer for the duration of the call.
+        let length = unsafe { GetWindowTextW(self.window.hwnd, &mut buffer) };
+        usize::try_from(length).is_ok_and(|length| {
+            String::from_utf16_lossy(&buffer[..length.min(buffer.len())]).contains(self.title)
+        })
+    }
+}
+
+/// The cover script's path and the arguments given for it on the command line.
+struct CoverScript<'a> {
+    path: &'a str,
+    args: &'a [String],
+}
+
 /// One run of [`run_refocus_test`], or `None`, with the reason printed, when the run could not
 /// reach the probe.
 fn refocus_run(
     uia: &Uia,
     cache: &IUIAutomationCacheRequest,
-    element: &IUIAutomationElement,
-    target: Window,
+    target: &Target,
+    cover_script: &CoverScript,
     marker: &str,
-    script: &str,
-    script_args: &[String],
 ) -> Option<RunOutcome> {
-    if !wait_for_front(|front| front.hwnd == target.hwnd) {
+    let element = target.element;
+    if !wait_for_front(|front| front.hwnd == target.window.hwnd) {
         println!("  the target's window is not in front at the run's start");
+        return None;
+    }
+    if !target.title_holds() {
+        println!("  the target window's title no longer holds the given title");
         return None;
     }
     let before = current_text(element)
@@ -658,17 +704,22 @@ fn refocus_run(
         return None;
     };
     let mut rect = RECT::default();
-    // SAFETY: `target.hwnd` is the target's top-level window, just confirmed in front; `rect` is a
-    // valid, uniquely-owned out parameter for the duration of the call.
-    if let Err(error) = unsafe { GetWindowRect(target.hwnd, &raw mut rect) } {
+    // SAFETY: `target.window.hwnd` is the target's top-level window, just confirmed in front;
+    // `rect` is a valid, uniquely-owned out parameter for the duration of the call.
+    if let Err(error) = unsafe { GetWindowRect(target.window.hwnd, &raw mut rect) } {
         println!("  could not read the target window's rectangle: {error}");
         return None;
     }
 
-    let mut cover = start_cover(script, script_args, rect)?;
+    let mut cover = start_cover(cover_script, rect)?;
     let cover_pid = cover.id();
     if !wait_for_front(|front| front.process_id == cover_pid) {
         println!("  the cover did not take the foreground");
+        stop_cover(&mut cover);
+        return None;
+    }
+    if !target.title_holds() {
+        println!("  the target window's title no longer holds the given title");
         stop_cover(&mut cover);
         return None;
     }
@@ -684,7 +735,7 @@ fn refocus_run(
 
     let result = replace_within(
         element,
-        Some(target),
+        Some(target.window),
         &span.anchor,
         span.occurrence,
         0,
@@ -708,12 +759,10 @@ fn refocus_run(
         None => Landing::Unread,
         Some(after) if *after == expected => Landing::AtTheSpan,
         Some(after) if *after == before => Landing::Unchanged,
-        Some(after) => Landing::Elsewhere(changed_region(&before, after).map(|(at, region)| {
-            (
-                before[..at.min(before.len())].chars().count(),
-                region.chars().count(),
-            )
-        })),
+        Some(after) => Landing::Elsewhere(
+            changed_region(&before, after)
+                .map(|(at, region)| (after[..at].chars().count(), region.chars().count())),
+        ),
     };
     Some(RunOutcome {
         cover_in_front,
@@ -723,7 +772,7 @@ fn refocus_run(
             Err(error) => format!("failed ({error})"),
         },
         front_after: match front_after {
-            Some(front) if front.hwnd == target.hwnd => "the target",
+            Some(front) if front.hwnd == target.window.hwnd => "the target",
             Some(front) if front.process_id == cover_pid => "the cover",
             Some(_) => "another window",
             None => "no window",
@@ -783,11 +832,17 @@ fn probe_span(text: &str) -> Option<ProbeSpan> {
 
 /// Starts the cover script without a console window of its own and waits for its `ready` line,
 /// echoing each line it prints, which hold states and numbers only.
-fn start_cover(script: &str, script_args: &[String], rect: RECT) -> Option<Child> {
+fn start_cover(script: &CoverScript, rect: RECT) -> Option<Child> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut cover = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script])
-        .args(script_args)
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script.path,
+        ])
+        .args(script.args)
         .args(["-X", &rect.left.to_string(), "-Y", &rect.top.to_string()])
         .args(["-Width", &(rect.right - rect.left).to_string()])
         .args(["-Height", &(rect.bottom - rect.top).to_string()])
