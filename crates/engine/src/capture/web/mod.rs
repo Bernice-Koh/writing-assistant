@@ -142,10 +142,6 @@ impl Capture for WebCapture {
         }
     }
 
-    async fn cursor_rect(&self) -> Result<CursorRect, CaptureError> {
-        Err(CaptureError::Unsupported)
-    }
-
     /// Answers [`CaptureError::Unsupported`] for a span past its anchor's first occurrence
     /// without sending anything, since the extension resolves the first occurrence and its
     /// protocol carries no index.
@@ -278,13 +274,6 @@ mod tests {
             local_length,
             occurrence,
         }
-    }
-
-    #[tokio::test]
-    async fn cursor_rect_is_always_unsupported() {
-        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
-        let result = capture.cursor_rect().await;
-        assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 
     #[tokio::test]

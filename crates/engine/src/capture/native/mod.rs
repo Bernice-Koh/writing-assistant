@@ -1,11 +1,11 @@
-//! Wires focus subscription, text-change notification, and cursor-rect retrieval together on
-//! one dedicated UI Automation thread.
+//! Wires focus subscription, text-change notification, and the reads of text and rectangles
+//! together on one dedicated UI Automation thread.
 //!
 //! UIA's COM interface types are `!Send`/`!Sync` (windows-rs marks them so deliberately: a
 //! COM pointer is not generally safe to use from a thread other than the one that owns its
 //! apartment membership). Both event handlers therefore only ever *signal* the owning thread
 //! from whatever UIA-managed callback thread they're delivered on; every actual UIA call
-//! (re-scoping the text-change registration, fetching the caret rect) happens back on the one
+//! (re-scoping the text-change registration, reading a rectangle) happens back on the one
 //! thread that owns the client, never inside a callback. The `Capture` trait's methods (#20)
 //! extend the same principle: they too only send a signal and await a reply carrying owned
 //! data, never a COM object, across the boundary.
@@ -99,10 +99,6 @@ impl crate::capture::Capture for NativeCapture {
         self.request(Signal::GetText).await
     }
 
-    async fn cursor_rect(&self) -> Result<CursorRect, CaptureError> {
-        self.request(Signal::GetCursorRect).await
-    }
-
     async fn replace(&self, span: &Span, replacement: &str) -> Result<(), CaptureError> {
         let span = span.clone();
         let replacement = replacement.to_owned();
@@ -145,7 +141,6 @@ enum Signal {
     TextChanged,
     Stop,
     GetText(oneshot::Sender<Result<String, CaptureError>>),
-    GetCursorRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
     Replace {
         span: Span,
         replacement: String,
@@ -165,7 +160,6 @@ impl Signal {
             Signal::TextChanged => "TextChanged",
             Signal::Stop => "Stop",
             Signal::GetText(_) => "GetText",
-            Signal::GetCursorRect(_) => "GetCursorRect",
             Signal::Replace { .. } => "Replace",
             Signal::GetDocumentViewRect(_) => "GetDocumentViewRect",
             Signal::GetSpanRects { .. } => "GetSpanRects",
@@ -257,7 +251,7 @@ fn run(
                         log::debug!("failed to remove previous text-change registration: {error}");
                     }
                 }
-                let _ = log_caret_rect("focus changed", &element);
+                log::debug!("focus changed to {}", describe(&element));
                 let text_tx = tx.clone();
                 let callback: text_change::TextChangeCallback =
                     Arc::new(move |_element: &IUIAutomationElement| {
@@ -274,23 +268,12 @@ fn run(
                     }
                 }
             }
-            Signal::TextChanged => {
-                if let Some(scope) = &current_scope {
-                    let _ = log_caret_rect("text changed", &scope.element);
-                }
-            }
+            // Nothing reads the event since the caret read was removed; the `signal received`
+            // line above records it.
+            Signal::TextChanged => {}
             Signal::GetText(reply) => {
                 let result = match &current_scope {
                     Some(scope) => insert::current_text(&scope.element).map_err(CaptureError::from),
-                    None => Err(CaptureError::NoFocus),
-                };
-                let _ = reply.send(result);
-            }
-            Signal::GetCursorRect(reply) => {
-                let result = match &current_scope {
-                    Some(scope) => {
-                        log_caret_rect("GetCursorRect", &scope.element).map_err(CaptureError::from)
-                    }
                     None => Err(CaptureError::NoFocus),
                 };
                 let _ = reply.send(result);
@@ -353,25 +336,9 @@ fn run(
     }
 }
 
-fn log_caret_rect(
-    reason: &str,
-    element: &IUIAutomationElement,
-) -> Result<CursorRect, NativeCaptureError> {
-    let rect = cursor::caret_rect(element);
-    match &rect {
-        // `debug`, not `info`: the text-changed event calls this once per keystroke.
-        Ok(rect) => log::debug!("{reason}: caret rect {rect:?} on {}", describe(element)),
-        Err(error) => {
-            log::debug!("{reason}: no caret rect ({error}) on {}", describe(element));
-        }
-    }
-    rect
-}
-
-/// Identifies an element by class, control type, and owning process, so a caret-rect failure
-/// can be traced to *which* element UIA handed over rather than only that it had no caret.
-/// Deliberately omits the element's `Name`: on some controls that property carries the user's
-/// own text, which never enters a log at any level.
+/// Identifies an element by class, control type, and owning process, so a focus change can be
+/// traced to *which* element UIA handed over. Deliberately omits the element's `Name`: on some
+/// controls that property carries the user's own text, which never enters a log at any level.
 fn describe(element: &IUIAutomationElement) -> String {
     // SAFETY: `element` is live and owned by this thread; each property getter fails safely
     // (Err) rather than trapping, and every BSTR returned is dropped by windows-rs.

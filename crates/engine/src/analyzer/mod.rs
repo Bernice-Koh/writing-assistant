@@ -730,10 +730,6 @@ mod tests {
             Ok(self.text.lock().unwrap().clone())
         }
 
-        async fn cursor_rect(&self) -> Result<CursorRect, CaptureError> {
-            Err(CaptureError::Unsupported)
-        }
-
         async fn replace(&self, _span: &Span, _replacement: &str) -> Result<(), CaptureError> {
             Ok(())
         }

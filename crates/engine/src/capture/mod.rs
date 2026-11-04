@@ -1,4 +1,4 @@
-//! One contract for text delivery, cursor reporting, and replacement, with the native UI
+//! One contract for text delivery, span positioning, and replacement, with the native UI
 //! Automation backend and the insertion cascade behind it. The rest of the engine never learns
 //! which backend served a request.
 //!
@@ -18,17 +18,17 @@
 //! each editor individually, not an assumption from one covering the other, is what #31 settled.
 //! Word for the web turned out to be readable through `native` regardless: Chromium bridges its
 //! full accessibility tree to UI Automation for screen-reader support, and Word for the web's own
-//! editing surface backs that tree completely, so `native`'s ordinary `TextPattern`/caret read
-//! sees the real document there, with no Word-for-the-web-specific code needed, the same way
-//! Word's desktop surface needed none. Google Docs needs a condition Word for the web does not:
-//! by default it does not, matching `native/insert/mod.rs`'s `replace_last_typed` doc comment's
+//! editing surface backs that tree completely, so `native`'s ordinary `TextPattern` read sees the
+//! real document there, with no Word-for-the-web-specific code needed, the same way Word's
+//! desktop surface needed none. Google Docs needs a condition Word for the web does not: by
+//! default it does not, matching `native/insert/mod.rs`'s `replace_last_typed` doc comment's
 //! finding from the write side, that Google Docs exposes a "side DOM" purely for accessibility
-//! that does not back a trustworthy read, so `native` against it returns empty text and no caret
-//! rect, not a decoy but not the document either. Turning on both of Google Docs' own
-//! Tools > Accessibility toggles, "Turn on screen reader support" and then "Enable braille
-//! support", changes that: manual verification against a real document with both toggles on
-//! found `native`'s ordinary `TextPattern`/caret read landing on a real, growing character count
-//! and a caret rect that moved with each keystroke, the same signature Word for the web gives.
+//! that does not back a trustworthy read, so `native` against it returns empty text, not a decoy
+//! but not the document either. Turning on both of Google Docs' own Tools > Accessibility
+//! toggles, "Turn on screen reader support" and then "Enable braille support", changes that:
+//! manual verification against a real document with both toggles on found `native`'s ordinary
+//! `TextPattern` read landing on a real, growing character count, the same signature Word for
+//! the web gives.
 //! Screen reader support alone was not enough; only with braille support also on did a
 //! `TextPattern`-backed element appear at all. Both toggles are Google's own account-level
 //! accessibility settings, not something this project's code sets, so using Google Docs with
@@ -42,10 +42,10 @@ pub use error::CaptureError;
 
 use crate::flag::Span;
 
-/// Screen-space rectangle for placing UI relative to the cursor. The capture module's one
-/// rectangle type: [`native::cursor`] re-exports it and keeps none of its own. `Serialize` so the
-/// app's positioned flag, which carries one, can cross the Tauri IPC boundary to the overlay's own
-/// webview.
+/// A screen-space rectangle in physical pixels: the document view's, or one line of a span's. The
+/// capture module's one rectangle type: [`native::cursor`] re-exports it and keeps none of its
+/// own. `Serialize` so the app's positioned flag, which carries one, can cross the Tauri IPC
+/// boundary to the overlay's own webview.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorRect {
@@ -55,7 +55,7 @@ pub struct CursorRect {
     pub height: f64,
 }
 
-/// One contract for text delivery, cursor reporting, and replacement, so the rest of the engine
+/// One contract for text delivery, span positioning, and replacement, so the rest of the engine
 /// never learns which backend served a request. Async because every real implementation crosses
 /// a thread or network boundary: native forwards through its dedicated UIA thread, web
 /// round-trips a message.
@@ -65,15 +65,6 @@ pub trait Capture: Send + Sync {
     /// value for native ([`native::insert::current_text`]), or the captured element's text for
     /// web.
     async fn current_text(&self) -> Result<String, CaptureError>;
-
-    /// The caret's on-screen rectangle, for overlay placement. Native answers this from UI
-    /// Automation's TextPattern ([`native::cursor::caret_rect`]), including for Word's desktop
-    /// document surface. Web returns [`CaptureError::Unsupported`]: a browser content script
-    /// cannot reliably convert a DOM position to absolute screen coordinates (no way to learn
-    /// the browser chrome's height from page JavaScript). That surface needs a presentation
-    /// mechanism other than a desktop overlay window, a decision left to whoever designs that
-    /// presentation, not this trait.
-    async fn cursor_rect(&self) -> Result<CursorRect, CaptureError>;
 
     /// Replaces `span`'s text with `replacement`: the `local_length` UTF-16 code units starting
     /// `local_start` code units into the occurrence of its `anchor` that its `occurrence` names,
@@ -105,18 +96,17 @@ pub trait Capture: Send + Sync {
 
     /// The on-screen rectangle of the focused editable element, or the foreground window when
     /// the element's own rectangle is unusable, for sizing and positioning the full-viewport
-    /// overlay so every visible flagged span falls inside it, not just the caret's own
-    /// neighbourhood. Native answers this from UI Automation's `BoundingRectangle`
-    /// ([`native::cursor::document_view_rect`]). Web returns [`CaptureError::Unsupported`], the
-    /// same precedent [`Self::cursor_rect`] already sets for the same reason: a browser content
-    /// script cannot convert a DOM position to absolute screen coordinates.
+    /// overlay so every visible flagged span falls inside it. Native answers this from UI
+    /// Automation's `BoundingRectangle` ([`native::cursor::document_view_rect`]). Web returns
+    /// [`CaptureError::Unsupported`]: a browser content script cannot convert a DOM position to
+    /// absolute screen coordinates, since page JavaScript cannot learn the height of the
+    /// browser's own chrome.
     async fn document_view_rect(&self) -> Result<CursorRect, CaptureError>;
 
     /// Every on-screen bounding rectangle `span` produces, for underlining a flagged span in
     /// place: the `local_length` UTF-16 code units starting `local_start` code units into the
     /// occurrence of its `anchor` that its `occurrence` names. More than one rectangle comes back
-    /// when the span wraps a line break; [`Self::cursor_rect`]'s single rectangle is not reused
-    /// here because a flagged span, unlike a caret, routinely spans more than one visible line.
+    /// when the span wraps a line break.
     ///
     /// Addressed the same way [`Self::replace`] is, for the same reason: a [`Span`] is directly
     /// usable both to replace its own text and to resolve its on-screen position through this one

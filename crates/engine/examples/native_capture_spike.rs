@@ -1,7 +1,7 @@
-//! Manual verification harness for issue #10: exercises focus subscription, text-change
-//! notification, and cursor-rect retrieval against whatever application currently has focus.
-//! Also exercises the `Capture` trait added in #20: `current_text`/`cursor_rect` are queried
-//! once at the start and once before stopping, against whatever has focus at each point.
+//! Manual verification harness for issue #10: exercises focus subscription and text-change
+//! notification against whatever application currently has focus. Also exercises the `Capture`
+//! trait added in #20: `current_text` is queried once at the start and once before stopping,
+//! against whatever has focus at each point.
 //! Each `current_text` query also prints how many of each paragraph mark the text holds, and one
 //! line per paragraph, split and classified by the analyzer's own form-mode module: its index, its
 //! length in characters and its form mode, and, for a list item or a paragraph that begins with a
@@ -9,8 +9,8 @@
 //! delivers a list marker.
 //!
 //! Run from the repository root with `cargo run -p wa-engine --example native_capture_spike`.
-//! `RUST_LOG=debug` shows every attempt, including ones that failed (a control without
-//! TextPattern support, for instance) rather than only successes. Switch focus between
+//! `RUST_LOG=debug` shows every focus change with the class, control type and process of the
+//! element it lands on, and every text-changed event. Switch focus between
 //! a plain edit control, a Chromium-hosted text field, and a rich-text control while this runs,
 //! typing in each, and watch the log output.
 
@@ -73,10 +73,6 @@ async fn query_capture_trait(capture: &NativeCapture, when: &str) {
             print_paragraphs(&text);
         }
         Err(error) => println!("current_text() {when}: {error}"),
-    }
-    match capture.cursor_rect().await {
-        Ok(rect) => println!("cursor_rect() {when}: {rect:?}"),
-        Err(error) => println!("cursor_rect() {when}: {error}"),
     }
 }
 
