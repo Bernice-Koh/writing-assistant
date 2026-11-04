@@ -15,6 +15,7 @@ pub mod cursor;
 pub mod error;
 mod focus;
 pub mod foreground;
+mod foreground_hook;
 pub mod insert;
 mod process;
 pub mod read;
@@ -23,6 +24,7 @@ mod text_change;
 use std::sync::mpsc as ready_channel;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use tokio::sync::{mpsc as signal_channel, oneshot};
 use windows::Win32::UI::Accessibility::{
@@ -34,6 +36,7 @@ use crate::flag::Span;
 use client::Uia;
 use error::NativeCaptureError;
 use focus::FocusHandler;
+use foreground_hook::ForegroundHook;
 use process::OwnProcesses;
 
 /// A live capture session: one dedicated thread owning the UIA client, the focus-changed
@@ -159,6 +162,9 @@ enum Signal {
         span: Span,
         reply: oneshot::Sender<Result<Vec<CursorRect>, CaptureError>>,
     },
+    /// The foreground window changed at the given time, and the foreground watch's grace period
+    /// has passed with no further change.
+    ForegroundSettled(Instant),
 }
 
 impl Signal {
@@ -172,6 +178,7 @@ impl Signal {
             Signal::GetDocumentViewRect(_) => "GetDocumentViewRect",
             Signal::GetForeground(_) => "GetForeground",
             Signal::GetSpanRects { .. } => "GetSpanRects",
+            Signal::ForegroundSettled(_) => "ForegroundSettled",
         }
     }
 }
@@ -244,11 +251,34 @@ fn run(
 
     let mut current_scope: Option<TextChangeScope> = None;
     let mut own_processes = OwnProcesses::default();
+    let hook_tx = tx.clone();
+    let foreground_hook = ForegroundHook::start(move |changed_at| {
+        let _ = hook_tx.send(Signal::ForegroundSettled(changed_at));
+    })
+    .map_err(|error| {
+        log::warn!("no foreground-change hook, so focus follows focus events alone: {error}");
+    })
+    .ok();
+    let mut last_focus_signal: Option<Instant> = None;
 
     while let Some(signal) = rx.blocking_recv() {
         log::debug!("signal received: {}", signal.name());
+        if matches!(signal, Signal::FocusChanged) {
+            last_focus_signal = Some(Instant::now());
+        }
         match signal {
             Signal::Stop => break,
+            // A foreground change that no focus event followed leaves the scope on the element
+            // focused before it; re-resolving the focused element is the focus handler's own work.
+            Signal::ForegroundSettled(changed_at) => {
+                if foreground_hook::reresolve_after(changed_at, last_focus_signal) {
+                    log::info!(
+                        "the foreground window changed and no focus event followed; re-resolving \
+                         the focused element"
+                    );
+                    let _ = tx.send(Signal::FocusChanged);
+                }
+            }
             Signal::FocusChanged => {
                 let element = match uia.focused_element(&cache) {
                     Ok(element) => element,
@@ -386,6 +416,9 @@ fn run(
         if let Some(scope) = current_scope.take() {
             let _ = text_change::remove(uia.client(), &scope.element, &scope.handler);
         }
+    }
+    if let Some(hook) = foreground_hook {
+        hook.stop();
     }
 }
 
