@@ -1,7 +1,8 @@
-//! The analyzer, between capture and the overlay. It polls the document's text, waits for the
-//! typing pause, splits the text into paragraphs, classifies each paragraph's form mode, and
-//! splits each paragraph into sentences. Checking keys to the pause because a flag on a half-typed
-//! word is noise.
+//! The analyzer, between capture and the overlay. It waits for the capture backend's change
+//! notification, or for its own safety poll to find the text changed, then for the typing pause,
+//! reads the document once, splits the text into paragraphs, classifies each paragraph's form mode,
+//! and splits each paragraph into sentences. Checking keys to the pause because a flag on a
+//! half-typed word is noise.
 //!
 //! A sentence is checked under its paragraph's mode, and every check runs under the register the
 //! analyzer was started with. Nothing checks a sentence of code. Spelling, the telltale catalogue
@@ -20,8 +21,8 @@
 //! recheck. The grammar stage then sends LanguageTool every sentence whose grammar part is not
 //! complete, one at a time, and publishes a second update adding their grammar flags, among them
 //! the style flags of the checkers whose matcher is a LanguageTool rule id. It runs as a task of its
-//! own, so the poll goes on while LanguageTool answers, and the deterministic stage's flags never
-//! wait on it.
+//! own, so the analyzer goes on watching for changes while LanguageTool answers, and the
+//! deterministic stage's flags never wait on it.
 //!
 //! The sentence cache holds each sentence's two parts under a hash of the ruleset version, its
 //! paragraph's mode and its text, as their sources raised them, so one text in a prose paragraph
@@ -74,12 +75,20 @@ use crate::style::evaluator::ModeSentence;
 use crate::style::ruleset::LoadedRuleset;
 use passes::{Sources, UnitFlag};
 
-/// How often the debounce loop reads the capture backend's current text to look for a change.
-/// The 200 ms poll stands until the capture backend's text-changed event triggers the recheck.
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// How long after the last read the debounce loop reads the document again while no change is
+/// pending, so that a control that raises no text-changed event, and the web backend, which never
+/// raises the change notification, are still checked.
+///
+/// Each read is of the whole document. #160 measured it in a release build over 30 reads per
+/// surface of a 20,200-word text, at medians of 3.4 ms on a repeat run and 12.0 ms on a first run
+/// on a Word document, 1.6 ms on Notepad, 24.4 ms on a Chromium `textarea` and 16.6 ms on a
+/// Chromium `contenteditable` field, with every Word read under the 20 ms line that #153's
+/// protocol set for lengthening this interval. At two seconds the read takes 1.2% of one core on
+/// the `textarea` and under 1% on every other surface.
+const SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// How long the document must sit unchanged before a recheck fires, so a burst of keystrokes
-/// produces one recheck after typing pauses rather than one per keystroke, per AC #40(a).
+/// How long after the last change a recheck fires, so a burst of keystrokes produces one read and
+/// one recheck after typing pauses rather than one per keystroke, per AC #40(a).
 const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// How many entries each LRU cache holds at once: sentences' in the sentence cache, and
@@ -183,16 +192,73 @@ impl Stage {
     }
 }
 
+/// What found the document changed, which a recheck's log line names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trigger {
+    /// The capture backend's change notification.
+    Event,
+    /// The safety poll, which read a text other than the one last checked.
+    Poll,
+}
+
+impl Trigger {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Event => "event",
+            Self::Poll => "safety poll",
+        }
+    }
+}
+
+/// A change waiting for the quiet threshold to pass.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    trigger: Trigger,
+    /// When the quiet threshold passes, unless another change restarts it.
+    quiet_until: Instant,
+    /// For a change the safety poll found, the hash of the text it read. No event restarts the
+    /// threshold on such a control, so the text has held through the threshold only when the read
+    /// after it hashes the same.
+    polled_hash: Option<u64>,
+}
+
+impl Pending {
+    fn starting_now(trigger: Trigger, polled_hash: Option<u64>) -> Self {
+        Self {
+            trigger,
+            quiet_until: Instant::now() + QUIET_THRESHOLD,
+            polled_hash,
+        }
+    }
+}
+
+/// One read of the document, timed by the wall clock.
+struct Read {
+    text: String,
+    took: Duration,
+}
+
+impl Read {
+    /// The read's length and time for a log line, which never holds the text.
+    fn describe(&self) -> String {
+        format!(
+            "{} characters in {:.2} ms",
+            self.text.chars().count(),
+            self.took.as_secs_f64() * 1000.0
+        )
+    }
+}
+
 impl Analyzer {
-    /// Starts polling `capture` in the background. `grammar` is `None` when the LanguageTool
-    /// subprocess could not be started at all; a `Some` that later degrades fails every check,
-    /// which leaves every sentence's grammar part incomplete. `ruleset` is the ruleset loaded at
-    /// startup: every flag the analyzer publishes carries its version whatever its origin, `None`
-    /// when no version is loaded, and LanguageTool's matches route through its checkers.
-    /// `catalogue` is the telltale catalogue compiled at startup from the settings' toggles: every
-    /// flag the analyzer publishes carries its hash whatever its origin, beside the ruleset
-    /// version. `register` is the register every sentence is checked under, the settings' default
-    /// register until capture supplies the surface's (#58).
+    /// Starts watching `capture` for changes in the background. `grammar` is `None` when the
+    /// LanguageTool subprocess could not be started at all; a `Some` that later degrades fails
+    /// every check, which leaves every sentence's grammar part incomplete. `ruleset` is the
+    /// ruleset loaded at startup: every flag the analyzer publishes carries its version whatever
+    /// its origin, `None` when no version is loaded, and LanguageTool's matches route through its
+    /// checkers. `catalogue` is the telltale catalogue compiled at startup from the settings'
+    /// toggles: every flag the analyzer publishes carries its hash whatever its origin, beside the
+    /// ruleset version. `register` is the register every sentence is checked under, the settings'
+    /// default register until capture supplies the surface's (#58).
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
@@ -272,50 +338,123 @@ impl Analyzer {
     }
 }
 
+/// Waits on the capture backend's change notification and on the safety poll, and rechecks the
+/// document once per pause in its changes.
+///
+/// A notification marks the document changed and restarts the quiet threshold, and reads nothing,
+/// so a burst of typing costs no read until it pauses. Once the threshold passes with a change
+/// pending, the loop reads the document once and rechecks it when its hash differs from the text
+/// last checked; a read that hashes the same, as after a change of formatting alone, rechecks
+/// nothing. A focus change arrives as a notification, so a new document takes the same path.
+///
+/// The safety poll reads only while no change is pending, [`SAFETY_POLL_INTERVAL`] after the last
+/// read. A text other than the one last checked marks the document changed and starts the
+/// threshold, and the recheck follows with a read of its own once the text has held through the
+/// threshold; a text still changing starts the threshold again. A control that raises no event is
+/// therefore checked at most once per pause, and never in the middle of a burst. A new analyzer has
+/// checked nothing, so the poll reads at once.
 async fn debounce_loop(inner: Arc<Inner>) {
-    let mut interval = tokio::time::interval(POLL_INTERVAL);
-    let mut last_seen_hash: Option<u64> = None;
-    let mut quiet_since: Option<Instant> = None;
-    let mut already_rechecked_this_quiet_period = false;
+    let mut changes = inner.capture.changes();
+    let mut notifications_open = true;
+    let mut pending: Option<Pending> = None;
+    let mut last_checked: Option<u64> = None;
+    let mut next_poll = Instant::now();
     let mut grammar_stage: Option<JoinHandle<()>> = None;
 
     loop {
-        interval.tick().await;
-        let text = match inner.capture.current_text().await {
-            Ok(text) => text,
-            Err(error) => {
-                log::debug!("no document text to analyze: {error}");
-                continue;
+        let wake_at = pending.map_or(next_poll, |change| change.quiet_until);
+        tokio::select! {
+            changed = changes.changed(), if notifications_open => {
+                if changed.is_err() {
+                    log::debug!(
+                        "the capture backend's change notification closed, so the safety poll \
+                         alone finds a change from now on"
+                    );
+                    notifications_open = false;
+                    continue;
+                }
+                pending = Some(Pending::starting_now(Trigger::Event, None));
             }
-        };
-
-        let hash = hash_text(&text);
-        if Some(hash) != last_seen_hash {
-            last_seen_hash = Some(hash);
-            quiet_since = Some(Instant::now());
-            already_rechecked_this_quiet_period = false;
-            continue;
+            () = tokio::time::sleep_until(wake_at) => {
+                next_poll = Instant::now() + SAFETY_POLL_INTERVAL;
+                let Some(read) = read_document(&inner).await else {
+                    pending = None;
+                    continue;
+                };
+                let hash = hash_text(&read.text);
+                match pending.take() {
+                    None if last_checked == Some(hash) => {
+                        log::debug!(
+                            "the safety poll read the text last checked, {}",
+                            read.describe()
+                        );
+                    }
+                    None => {
+                        log::debug!(
+                            "the safety poll read a text other than the one last checked, {}, so \
+                             the quiet threshold starts",
+                            read.describe()
+                        );
+                        pending = Some(Pending::starting_now(Trigger::Poll, Some(hash)));
+                    }
+                    Some(change) if change.polled_hash.is_some_and(|polled| polled != hash) => {
+                        log::debug!(
+                            "the text the safety poll found changed was still changing at the \
+                             quiet threshold, {}, so the threshold starts again",
+                            read.describe()
+                        );
+                        pending = Some(Pending::starting_now(Trigger::Poll, Some(hash)));
+                    }
+                    Some(change) if last_checked == Some(hash) => {
+                        log::debug!(
+                            "the read after the {}'s quiet threshold holds the text last checked, \
+                             {}, so nothing is rechecked",
+                            change.trigger.name(),
+                            read.describe()
+                        );
+                    }
+                    Some(change) => {
+                        last_checked = Some(hash);
+                        // The previous recheck's checks were of text the document no longer holds.
+                        if let Some(stale) = grammar_stage.take() {
+                            stale.abort();
+                        }
+                        grammar_stage = recheck(&inner, read, change.trigger);
+                    }
+                }
+            }
         }
-
-        let Some(since) = quiet_since else { continue };
-        if already_rechecked_this_quiet_period || since.elapsed() < QUIET_THRESHOLD {
-            continue;
-        }
-        already_rechecked_this_quiet_period = true;
-        // The previous recheck's checks were of text the document no longer holds.
-        if let Some(stale) = grammar_stage.take() {
-            stale.abort();
-        }
-        grammar_stage = recheck(&inner, text);
     }
 }
 
-/// Runs the deterministic stage over `text` and publishes the first update, then spawns the
+/// The document's text from the capture backend, timed, or `None` when it has none to give, as
+/// with no focused document.
+async fn read_document(inner: &Inner) -> Option<Read> {
+    let started = std::time::Instant::now();
+    match inner.capture.current_text().await {
+        Ok(text) => Some(Read {
+            text,
+            took: started.elapsed(),
+        }),
+        Err(error) => {
+            log::debug!("no document text to analyze: {error}");
+            None
+        }
+    }
+}
+
+/// Runs the deterministic stage over `read`'s text and publishes the first update, then spawns the
 /// grammar stage over the sentences whose grammar part is incomplete, returning its task. No
-/// stage is spawned with no grammar source or no such sentence.
-fn recheck(inner: &Arc<Inner>, text: String) -> Option<JoinHandle<()>> {
+/// stage is spawned with no grammar source or no such sentence. `trigger` is what found the change,
+/// for the log.
+fn recheck(inner: &Arc<Inner>, read: Read, trigger: Trigger) -> Option<JoinHandle<()>> {
     let number = start_recheck(inner);
-    let recheck = deterministic_stage(inner, number, text);
+    log::debug!(
+        "recheck {number} on the {} after the quiet threshold, over a read of {}",
+        trigger.name(),
+        read.describe()
+    );
+    let recheck = deterministic_stage(inner, number, read.text);
     publish(
         inner,
         number,
@@ -708,9 +847,12 @@ mod tests {
         Catalogue::load(&Config::default())
     }
 
+    /// A capture backend holding one text, which counts its reads and raises the change
+    /// notification when a test says so.
     pub(super) struct FakeCapture {
         text: StdMutex<String>,
         changes: watch::Sender<u64>,
+        reads: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeCapture {
@@ -718,17 +860,38 @@ mod tests {
             Self {
                 text: StdMutex::new(text.to_string()),
                 changes: watch::channel(0).0,
+                reads: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
+        /// Replaces the text and raises the change notification, as a control that raises the
+        /// text-changed event does, and as the native backend does on a focus change.
         pub(super) fn set_text(&self, text: &str) {
+            self.set_text_without_event(text);
+            self.raise_event();
+        }
+
+        /// Replaces the text with no notification, as a control that raises no text-changed event.
+        pub(super) fn set_text_without_event(&self, text: &str) {
             *self.text.lock().unwrap() = text.to_string();
+        }
+
+        /// Raises the change notification with the text unchanged, as a change of formatting
+        /// alone does.
+        pub(super) fn raise_event(&self) {
+            self.changes.send_modify(|count| *count += 1);
+        }
+
+        /// How many times the text has been read.
+        pub(super) fn reads(&self) -> usize {
+            self.reads.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
     #[async_trait::async_trait]
     impl Capture for FakeCapture {
         async fn current_text(&self) -> Result<String, CaptureError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.text.lock().unwrap().clone())
         }
 
@@ -753,15 +916,26 @@ mod tests {
         }
     }
 
-    /// Advances the paused clock in `POLL_INTERVAL` steps rather than one combined-duration
-    /// jump. A single large `tokio::time::advance` call was found not to reliably let a spawned
-    /// task observe every intermediate `tokio::time::interval` tick within it, and the debounce
-    /// loop relies on seeing each one. Stepping is also how the loop's 200 ms poll runs outside a
-    /// test, one tick at a time.
+    /// The paused clock's step in [`step`].
+    const STEP: Duration = Duration::from_millis(200);
+
+    /// Advances the paused clock in [`STEP`]s rather than one combined-duration jump. A single
+    /// large `tokio::time::advance` call was found not to reliably let a spawned task observe every
+    /// intermediate timer within it, and the debounce loop sets a new deadline at each change and
+    /// each read. Each step sleeps rather than calling `advance`, which does not wait for the tasks
+    /// whose timers it passes: the paused clock then advances timer by timer once every task is
+    /// idle, so the loop wakes at each of its deadlines, as outside a test, and a change a test
+    /// makes reaches the loop at the time the test made it.
     pub(super) async fn step(steps: u32) {
         for _ in 0..steps {
-            tokio::time::advance(POLL_INTERVAL).await;
+            tokio::time::sleep(STEP).await;
         }
+    }
+
+    /// The fewest [`STEP`]s that span `duration`.
+    fn steps_in(duration: Duration) -> u32 {
+        let steps = duration.as_millis().div_ceil(STEP.as_millis());
+        u32::try_from(steps).expect("a test's durations are a few seconds")
     }
 
     /// The exact text a flag's span addresses, sliced back out of its own anchor, so a test can
@@ -827,6 +1001,193 @@ mod tests {
             flags.iter().any(|flag| flagged_text(flag) == "mispelling"),
             "expected a recheck to have found the misspelling by now: {flags:#?}"
         );
+    }
+
+    /// An analyzer with no grammar source over `fake`, stepped past its first recheck: the safety
+    /// poll reads the initial text at once, and the recheck reads it again after the quiet
+    /// threshold.
+    async fn checked_analyzer(fake: &Arc<FakeCapture>) -> Analyzer {
+        let analyzer = analyzer_on(fake);
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 1);
+        assert_eq!(fake.reads(), 2);
+        analyzer
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_events_is_read_once_and_rechecked_once_after_the_quiet_threshold() {
+        let fake = Arc::new(FakeCapture::new("A fine start."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        // One character a step, each with an event, for longer than the safety poll's interval.
+        let typed = " Then a mispeling";
+        assert!(STEP * u32::try_from(typed.len()).unwrap() > SAFETY_POLL_INTERVAL);
+        let mut text = String::from("A fine start.");
+        for character in typed.chars() {
+            text.push(character);
+            fake.set_text(&text);
+            step(1).await;
+            assert_eq!(fake.reads(), 2, "nothing is read while the typing goes on");
+        }
+        assert_eq!(analyzer.updates().len(), 1);
+
+        step(3).await;
+        assert_eq!(fake.reads(), 3, "the pause is read once");
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "and rechecked once: {updates:#?}");
+        assert_eq!(
+            flagged_by(&updates[1], &FlagOrigin::Spelling),
+            ["mispeling"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn typing_that_never_pauses_for_the_quiet_threshold_is_never_rechecked() {
+        let fake = Arc::new(FakeCapture::new("A fine start."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        // An edit every 400 ms for twelve seconds, six of the safety poll's intervals.
+        let mut text = String::from("A fine start.");
+        for _ in 0..30 {
+            text.push_str(" an eror");
+            fake.set_text(&text);
+            step(2).await;
+        }
+        assert_eq!(fake.reads(), 2);
+        assert_eq!(analyzer.updates().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_with_no_event_is_found_by_the_safety_poll() {
+        let fake = Arc::new(FakeCapture::new("A fine start."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        fake.set_text_without_event("A fine start. Then a mispeling.");
+        let mut stepped = 0;
+        while fake.reads() == 2 {
+            assert!(
+                stepped < steps_in(SAFETY_POLL_INTERVAL),
+                "the poll reads within its interval"
+            );
+            step(1).await;
+            stepped += 1;
+        }
+        assert_eq!(fake.reads(), 3);
+        assert_eq!(
+            analyzer.updates().len(),
+            1,
+            "the poll's read waits for the quiet threshold"
+        );
+
+        step(steps_in(QUIET_THRESHOLD)).await;
+        assert_eq!(fake.reads(), 4, "the recheck reads the text again");
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 2, "{updates:#?}");
+        assert_eq!(
+            flagged_by(&updates[1], &FlagOrigin::Spelling),
+            ["mispeling"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_control_with_no_event_is_not_rechecked_while_its_text_keeps_changing() {
+        let fake = Arc::new(FakeCapture::new("A fine start."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        // An edit every 200 ms for eight seconds, four of the safety poll's intervals, with no
+        // event.
+        let mut text = String::from("A fine start.");
+        for _ in 0..40 {
+            text.push_str(" an eror");
+            fake.set_text_without_event(&text);
+            step(1).await;
+            assert_eq!(
+                analyzer.updates().len(),
+                1,
+                "no recheck in the middle of the burst"
+            );
+        }
+        assert!(fake.reads() > 2, "the poll found the change");
+
+        step(steps_in(SAFETY_POLL_INTERVAL)).await;
+        let updates = analyzer.updates();
+        assert_eq!(
+            updates.len(),
+            2,
+            "one recheck once the text holds: {updates:#?}"
+        );
+        assert_eq!(flagged_by(&updates[1], &FlagOrigin::Spelling).len(), 40);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_safety_poll_reads_an_unchanged_document_at_its_interval_and_rechecks_nothing() {
+        let fake = Arc::new(FakeCapture::new("A fine start. Then a mispeling."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        step(5 * steps_in(SAFETY_POLL_INTERVAL)).await;
+        assert_eq!(fake.reads(), 2 + 5);
+        assert_eq!(analyzer.updates().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_event_whose_read_holds_the_text_last_checked_rechecks_nothing() {
+        let fake = Arc::new(FakeCapture::new("A fine start."));
+        let analyzer = checked_analyzer(&fake).await;
+
+        // A change of formatting alone raises the event and leaves the text as it was.
+        fake.raise_event();
+        step(4).await;
+        assert_eq!(fake.reads(), 3, "the pause is read");
+        assert_eq!(analyzer.updates().len(), 1, "and nothing is rechecked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_focus_change_checks_the_new_document_and_drops_the_previous_documents_flags() {
+        let fake = Arc::new(FakeCapture::new("An eror here."));
+        let analyzer = checked_analyzer(&fake).await;
+        let flags = published_flags(&analyzer);
+        assert_eq!(flagged_by(&flags, &FlagOrigin::Spelling), ["eror"]);
+
+        // The native backend raises the notification when focus scopes a new element.
+        fake.set_text("Another document with a mispeling.");
+        step(4).await;
+        assert_eq!(fake.reads(), 3);
+        let flags = published_flags(&analyzer);
+        assert_eq!(
+            flagged_by(&flags, &FlagOrigin::Spelling),
+            ["mispeling"],
+            "{flags:#?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_while_the_grammar_stage_is_in_flight_abandons_its_remaining_sentences() {
+        let stale = ["He go to school.", "She go home."];
+        let current = "We go home.";
+        let fake = Arc::new(FakeCapture::new(&stale.join(" ")));
+        let grammar = FakeGrammar::flagging(&["go"]);
+        grammar.hold();
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(grammar.sent(), [stale[0]]);
+
+        fake.set_text(current);
+        step(4).await;
+        grammar.release();
+        step(3).await;
+        assert_eq!(
+            grammar.sent(),
+            [stale[0], current],
+            "the abandoned stage sent nothing more"
+        );
+        let updates = analyzer.updates();
+        assert_eq!(updates.len(), 3, "{updates:#?}");
+        let grammar_anchors: Vec<&str> = updates[2]
+            .iter()
+            .filter(|flag| flag.origin == FlagOrigin::Grammar)
+            .map(|flag| flag.span.anchor.as_str())
+            .collect();
+        assert_eq!(grammar_anchors, [current], "{updates:#?}");
     }
 
     #[tokio::test(start_paused = true)]
