@@ -55,6 +55,17 @@ pub struct CursorRect {
     pub height: f64,
 }
 
+/// Whose window is in the foreground, as [`Capture::foreground`] answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Foreground {
+    /// A window of the process that owns the document the backend has in scope.
+    Document,
+    /// A window of this app, or of one of its WebView2 processes.
+    ThisApp,
+    /// Any other window, or none.
+    Other,
+}
+
 /// One contract for text delivery, span positioning, and replacement, so the rest of the engine
 /// never learns which backend served a request. Async because every real implementation crosses
 /// a thread or network boundary: native forwards through its dedicated UIA thread, web
@@ -97,11 +108,21 @@ pub trait Capture: Send + Sync {
     /// The on-screen rectangle of the focused editable element, or the foreground window when
     /// the element's own rectangle is unusable, for sizing and positioning the full-viewport
     /// overlay so every visible flagged span falls inside it. Native answers this from UI
-    /// Automation's `BoundingRectangle` ([`native::cursor::document_view_rect`]). Web returns
+    /// Automation's `BoundingRectangle` ([`native::cursor::document_view_rect`]), and answers
+    /// [`CaptureError::Unsupported`] rather than fall back to a foreground window of this app's
+    /// own, which would place the overlay over the app instead of the document. Web returns
     /// [`CaptureError::Unsupported`]: a browser content script cannot convert a DOM position to
     /// absolute screen coordinates, since page JavaScript cannot learn the height of the
     /// browser's own chrome.
     async fn document_view_rect(&self) -> Result<CursorRect, CaptureError>;
+
+    /// Whose window is in the foreground: the scoped document's process's, this app's, or
+    /// another's, so the overlay can hide while the document is behind another window. Native
+    /// compares the foreground window's process with the scoped element's
+    /// ([`native::foreground::classify`]); a document whose window belongs to a process other
+    /// than its element's answers [`Foreground::Other`] while in front. Web returns
+    /// [`CaptureError::Unsupported`], for the same reason as [`Self::document_view_rect`].
+    async fn foreground(&self) -> Result<Foreground, CaptureError>;
 
     /// Every on-screen bounding rectangle `span` produces, for underlining a flagged span in
     /// place: the `local_length` UTF-16 code units starting `local_start` code units into the

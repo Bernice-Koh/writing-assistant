@@ -2,15 +2,17 @@
 //! text range's, split into the unsafe calls and pure conversions any test can exercise without a
 //! live accessibility tree.
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
 };
 use windows::Win32::UI::Accessibility::{IUIAutomationElement, IUIAutomationTextRange};
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 use super::error::NativeCaptureError;
+use super::foreground;
+use crate::capture::Foreground;
 
 /// The `Capture` trait's shared type, not a native-specific one: reconciled here rather than
 /// kept as a duplicate now that #19 gives the whole capture module one `CursorRect` to agree
@@ -25,15 +27,39 @@ pub use crate::capture::CursorRect;
 /// (no width or height) for elements that do not carry a meaningful bounds of their own, which is
 /// what the fallback exists for.
 ///
-/// `element` is whichever element holds the capture thread's text-change scope, and the thread
-/// keeps that scope while one of the app's own windows has focus. The fallback returns the
-/// foreground window, which is `element`'s window only while the target has focus.
+/// `element` is whichever element holds the capture thread's text-change scope, and
+/// `document_process` the id of the process that owns it. The thread keeps that scope while one
+/// of the app's own windows has focus, and the foreground window is then the app's, so the
+/// fallback asks `belongs_to_this_app` about the foreground window's process and refuses a window
+/// of this app's (`fallback_rect`) rather than place the overlay over it.
 pub fn document_view_rect(
     element: &IUIAutomationElement,
+    document_process: u32,
+    belongs_to_this_app: impl FnOnce(u32) -> bool,
 ) -> Result<CursorRect, NativeCaptureError> {
-    match element_bounding_rect(element) {
-        Some(rect) => Ok(rect),
-        None => foreground_window_rect(),
+    if let Some(rect) = element_bounding_rect(element) {
+        return Ok(rect);
+    }
+    let window = foreground::window().ok_or(NativeCaptureError::NoForegroundWindow)?;
+    let owner = foreground::classify(
+        Some(window.process_id),
+        document_process,
+        belongs_to_this_app,
+    );
+    fallback_rect(owner, || window_rect(window.hwnd))
+}
+
+/// The document view's fallback: the foreground window's rectangle, read by `read_window` only
+/// when that window is not one of this app's. A window of this app's in front answers
+/// [`NativeCaptureError::ForegroundIsThisApp`], so the overlay keeps the rectangle it last placed
+/// itself at instead of moving onto the app's own window.
+fn fallback_rect(
+    owner: Foreground,
+    read_window: impl FnOnce() -> Result<CursorRect, NativeCaptureError>,
+) -> Result<CursorRect, NativeCaptureError> {
+    match owner {
+        Foreground::ThisApp => Err(NativeCaptureError::ForegroundIsThisApp),
+        Foreground::Document | Foreground::Other => read_window(),
     }
 }
 
@@ -48,20 +74,12 @@ fn element_bounding_rect(element: &IUIAutomationElement) -> Option<CursorRect> {
     (converted.width > 0.0 && converted.height > 0.0).then_some(converted)
 }
 
-/// The foreground window's own rectangle, via plain Win32 rather than a UI Automation tree walk
-/// up from the scoped element to its nearest window ancestor. The foreground window is that
-/// element's window only while the target has focus: the capture thread keeps its scope while one
-/// of the app's own windows is in the foreground, and this then returns that window's rectangle.
-fn foreground_window_rect() -> Result<CursorRect, NativeCaptureError> {
-    // SAFETY: GetForegroundWindow takes no arguments; it can return a null handle when no window
-    // currently has focus at all, checked below before the handle is used for anything.
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.is_invalid() {
-        return Err(NativeCaptureError::NoForegroundWindow);
-    }
+/// `hwnd`'s own rectangle, via plain Win32 rather than a UI Automation tree walk.
+fn window_rect(hwnd: HWND) -> Result<CursorRect, NativeCaptureError> {
     let mut rect = RECT::default();
-    // SAFETY: `hwnd` was just confirmed non-null; `rect` is a valid, uniquely-owned out
-    // parameter for the duration of this call.
+    // SAFETY: `hwnd` is a window handle just read from GetForegroundWindow; a window destroyed
+    // since fails safely (Err). `rect` is a valid, uniquely-owned out parameter for the duration
+    // of this call.
     unsafe { GetWindowRect(hwnd, &raw mut rect) }?;
     Ok(rect_from_win32(rect))
 }
@@ -242,6 +260,40 @@ mod tests {
                 width: 400.0,
                 height: 150.0,
             }
+        );
+    }
+
+    const WINDOW: CursorRect = CursorRect {
+        x: 100.0,
+        y: 200.0,
+        width: 800.0,
+        height: 600.0,
+    };
+
+    #[test]
+    fn the_fallback_refuses_a_window_of_this_app_without_reading_it() {
+        let result = fallback_rect(Foreground::ThisApp, || {
+            panic!("the app's own window is not read as the document view")
+        });
+        assert!(matches!(
+            result,
+            Err(NativeCaptureError::ForegroundIsThisApp)
+        ));
+    }
+
+    #[test]
+    fn the_fallback_answers_the_documents_window() {
+        assert_eq!(
+            fallback_rect(Foreground::Document, || Ok(WINDOW)).expect("falls back"),
+            WINDOW
+        );
+    }
+
+    #[test]
+    fn the_fallback_answers_a_window_of_another_process() {
+        assert_eq!(
+            fallback_rect(Foreground::Other, || Ok(WINDOW)).expect("falls back"),
+            WINDOW
         );
     }
 }

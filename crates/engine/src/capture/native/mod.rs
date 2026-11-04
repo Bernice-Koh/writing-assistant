@@ -14,6 +14,7 @@ pub mod client;
 pub mod cursor;
 pub mod error;
 mod focus;
+pub mod foreground;
 pub mod insert;
 mod process;
 mod text_change;
@@ -27,11 +28,12 @@ use windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationEventHandler, IUIAutomationFocusChangedEventHandler,
 };
 
-use crate::capture::{CaptureError, CursorRect};
+use crate::capture::{CaptureError, CursorRect, Foreground};
 use crate::flag::Span;
 use client::Uia;
 use error::NativeCaptureError;
 use focus::FocusHandler;
+use process::OwnProcesses;
 
 /// A live capture session: one dedicated thread owning the UIA client, the focus-changed
 /// registration, and whichever element the text-change registration currently targets.
@@ -114,6 +116,10 @@ impl crate::capture::Capture for NativeCapture {
         self.request(Signal::GetDocumentViewRect).await
     }
 
+    async fn foreground(&self) -> Result<Foreground, CaptureError> {
+        self.request(Signal::GetForeground).await
+    }
+
     async fn span_rect(&self, span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
         let span = span.clone();
         self.request(|reply| Signal::GetSpanRects { span, reply })
@@ -147,6 +153,7 @@ enum Signal {
         reply: oneshot::Sender<Result<(), CaptureError>>,
     },
     GetDocumentViewRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
+    GetForeground(oneshot::Sender<Result<Foreground, CaptureError>>),
     GetSpanRects {
         span: Span,
         reply: oneshot::Sender<Result<Vec<CursorRect>, CaptureError>>,
@@ -162,6 +169,7 @@ impl Signal {
             Signal::GetText(_) => "GetText",
             Signal::Replace { .. } => "Replace",
             Signal::GetDocumentViewRect(_) => "GetDocumentViewRect",
+            Signal::GetForeground(_) => "GetForeground",
             Signal::GetSpanRects { .. } => "GetSpanRects",
         }
     }
@@ -173,6 +181,9 @@ impl Signal {
 struct TextChangeScope {
     element: IUIAutomationElement,
     handler: IUIAutomationEventHandler,
+    /// The id of the process that owns `element`, against which the foreground window's is
+    /// classified.
+    process_id: u32,
 }
 
 fn run(
@@ -211,6 +222,7 @@ fn run(
     let _ = tx.send(Signal::FocusChanged);
 
     let mut current_scope: Option<TextChangeScope> = None;
+    let mut own_processes = OwnProcesses::default();
 
     while let Some(signal) = rx.blocking_recv() {
         log::debug!("signal received: {}", signal.name());
@@ -261,7 +273,11 @@ fn run(
                 // thread.
                 match unsafe { text_change::register(uia.client(), &cache, &element, callback) } {
                     Ok(handler) => {
-                        current_scope = Some(TextChangeScope { element, handler });
+                        current_scope = Some(TextChangeScope {
+                            element,
+                            handler,
+                            process_id: pid,
+                        });
                     }
                     Err(error) => {
                         log::debug!("failed to register text-change handler: {error}");
@@ -301,8 +317,22 @@ fn run(
             Signal::GetDocumentViewRect(reply) => {
                 let result = match &current_scope {
                     Some(scope) => {
-                        cursor::document_view_rect(&scope.element).map_err(CaptureError::from)
+                        cursor::document_view_rect(&scope.element, scope.process_id, |process| {
+                            own_processes.contains(process)
+                        })
+                        .map_err(CaptureError::from)
                     }
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::GetForeground(reply) => {
+                let result = match &current_scope {
+                    Some(scope) => Ok(foreground::classify(
+                        foreground::window().map(|window| window.process_id),
+                        scope.process_id,
+                        |process| own_processes.contains(process),
+                    )),
                     None => Err(CaptureError::NoFocus),
                 };
                 let _ = reply.send(result);

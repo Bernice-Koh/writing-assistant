@@ -25,15 +25,19 @@ pub enum NativeCaptureError {
     TextNotFound,
     #[error("no foreground window to fall back to")]
     NoForegroundWindow,
+    #[error("the foreground window is this app's own, so it is no fallback for the document view")]
+    ForegroundIsThisApp,
 }
 
 /// Maps this backend's own, specific failure modes onto the `Capture` trait's shared
 /// vocabulary at the trait boundary, per #19: a caller of the trait never matches on
 /// `NativeCaptureError` directly. An element with no `TextPattern` or `ValuePattern`, or a
 /// read-only one, becomes `Unsupported`: from the trait's perspective it cannot answer the
-/// request right now. `NoForegroundWindow` joins the same group for `document_view_rect`'s own
-/// fallback: no window to report a rectangle for is the same practical "cannot answer right now"
-/// outcome.
+/// request right now. `NoForegroundWindow` and `ForegroundIsThisApp` join the same group for
+/// `document_view_rect`'s own fallback: no window to report a rectangle for, or only one of this
+/// app's own, is the same practical "cannot answer right now" outcome, and the overlay's handling
+/// of an `Err` from its document-view poll, holding the overlay where it last placed it, is what
+/// both need.
 impl From<NativeCaptureError> for crate::capture::CaptureError {
     fn from(error: NativeCaptureError) -> Self {
         use crate::capture::CaptureError;
@@ -44,7 +48,8 @@ impl From<NativeCaptureError> for crate::capture::CaptureError {
             NativeCaptureError::NoTextPattern
             | NativeCaptureError::NoValuePattern
             | NativeCaptureError::ReadOnly
-            | NativeCaptureError::NoForegroundWindow => CaptureError::Unsupported,
+            | NativeCaptureError::NoForegroundWindow
+            | NativeCaptureError::ForegroundIsThisApp => CaptureError::Unsupported,
             NativeCaptureError::Com(_)
             | NativeCaptureError::ThreadSpawn(_)
             | NativeCaptureError::ThreadNotReady

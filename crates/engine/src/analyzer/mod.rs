@@ -698,7 +698,7 @@ mod tests {
     use std::mem::discriminant;
     use std::sync::Mutex as StdMutex;
 
-    use crate::capture::{CaptureError, CursorRect};
+    use crate::capture::{CaptureError, CursorRect, Foreground};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
     use crate::store::Config;
     use crate::test_support::{test_spell_checker, Answer, FakeGrammar};
@@ -735,6 +735,10 @@ mod tests {
         }
 
         async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+            Err(CaptureError::Unsupported)
+        }
+
+        async fn foreground(&self) -> Result<Foreground, CaptureError> {
             Err(CaptureError::Unsupported)
         }
 
