@@ -9,12 +9,12 @@ use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{Capture, CursorRect};
 use wa_engine::flag::Flag;
 
-use super::{poll_interval, PositionedFlag, SharedFlags};
+use super::{lock, poll_interval, scale_factor, PositionedFlag, SharedOverlay};
 
-/// Spawns a background task that resolves each of `analyzer`'s current flags' on-screen positions
-/// through `capture`, updates `shared` for [`track_hover`](super::track_hover)'s hit-testing, and
-/// emits the same flags, relativised to the document view's current origin, as a `flags-updated`
-/// event for the overlay's own webview to render.
+/// Spawns a background task that resolves the on-screen positions of `analyzer`'s current flags
+/// through `capture`, stores them in `shared` for `track_hover`'s hit-testing, and emits them,
+/// relativised to the overlay window, as a `flags-updated` event for the overlay's own webview to
+/// render.
 ///
 /// Triggered two ways: reactively, the moment `analyzer`'s own `subscribe` channel reports a new
 /// flag set, and periodically, on the same `POLL_INTERVAL` cadence
@@ -33,7 +33,7 @@ pub fn track_flags(
     app: AppHandle,
     capture: Arc<dyn Capture>,
     analyzer: Arc<Analyzer>,
-    shared: SharedFlags,
+    shared: SharedOverlay,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut updates = analyzer.subscribe();
@@ -52,10 +52,8 @@ pub fn track_flags(
             }
             let flags = updates.borrow_and_update().clone();
             let positioned = resolve_positions(&capture, flags).await;
-            *shared
-                .lock()
-                .expect("a poisoned lock here means another thread already panicked") = positioned;
-            let relative = relative_flags(&app, &capture, &shared).await;
+            lock(&shared).flags = positioned;
+            let relative = relative_flags(&app, &shared);
             if let Err(error) = app.emit("flags-updated", &relative) {
                 log::warn!("failed to emit flags-updated: {error}");
             }
@@ -66,9 +64,10 @@ pub fn track_flags(
 /// Resolves each of `flags`' on-screen rectangles through `capture`, in absolute screen
 /// coordinates, each at the occurrence of its anchor that its span's index names. A flag whose
 /// span cannot currently be resolved on screen (`span_rect` errors, or returns no rectangles) is
-/// dropped rather than rendered with no known position. The usual cause is a document edited
-/// since the analyzer checked it, which no longer holds the anchor, or no longer holds it as many
-/// times as the index counts.
+/// dropped rather than rendered with no known position. The usual causes are a span scrolled out
+/// of view, which UI Automation answers with no rectangles, and a document edited since the
+/// analyzer checked it, which no longer holds the anchor, or no longer holds it as many times as
+/// the index counts.
 async fn resolve_positions(capture: &Arc<dyn Capture>, flags: Vec<Flag>) -> Vec<PositionedFlag> {
     let mut positioned = Vec::with_capacity(flags.len());
     for flag in flags {
@@ -83,14 +82,12 @@ async fn resolve_positions(capture: &Arc<dyn Capture>, flags: Vec<Flag>) -> Vec<
     positioned
 }
 
-/// `shared`'s cached, absolute physical positions, expressed relative to the document view's
-/// current on-screen origin and divided down into CSS pixels: the coordinate space the overlay
-/// window's own webview renders in, since the window itself sits exactly at that origin
-/// (`track_document_view` puts it there). Used both by [`track_flags`]'s own emit and by the
-/// `get_current_flags` Tauri command, so a freshly mounted frontend and a live update agree on
-/// the same coordinate space. Empty when there is currently no document view to relativise
-/// against, since in that case `track_document_view` has nowhere to have put the window either,
-/// and a position relative to an unknown origin cannot be usefully rendered.
+/// `shared`'s positioned flags, expressed relative to the document-view rectangle the overlay
+/// window was last placed at and divided down into CSS pixels: the coordinate space the window's
+/// own webview renders in, since the window sits exactly at that rectangle's origin. Used both by
+/// [`track_flags`]'s own emit and by the `get_current_flags` Tauri command, so a freshly mounted
+/// frontend and a live update agree on the same coordinate space. Empty while the window has not
+/// been placed yet, since a position relative to an unknown origin cannot be usefully rendered.
 ///
 /// The division by the overlay window's scale factor is what makes this a function rather than a
 /// subtraction the frontend could do for itself. UI Automation reports physical screen pixels; a
@@ -100,45 +97,18 @@ async fn resolve_positions(capture: &Arc<dyn Capture>, flags: Vec<Flag>) -> Vec<
 /// manual verification found against both Notepad and Word, with the overlay window itself
 /// correctly placed, since `track_document_view` positions that in physical pixels through
 /// `PhysicalPosition`.
-pub async fn relative_flags(
-    app: &AppHandle,
-    capture: &Arc<dyn Capture>,
-    shared: &SharedFlags,
-) -> Vec<PositionedFlag> {
-    let origin = match capture.document_view_rect().await {
-        Ok(rect) => rect,
-        Err(error) => {
-            log::debug!("no document view to position flags against: {error}");
-            return Vec::new();
-        }
+pub fn relative_flags(app: &AppHandle, shared: &SharedOverlay) -> Vec<PositionedFlag> {
+    let (view, absolute) = {
+        let state = lock(shared);
+        (state.view, state.flags.clone())
     };
-    let absolute = shared
-        .lock()
-        .expect("a poisoned lock here means another thread already panicked")
-        .clone();
-    to_relative(&absolute, origin, overlay_scale_factor(app))
-}
-
-/// Physical pixels per CSS pixel on whichever display the overlay window currently sits on, read
-/// per call rather than once at startup so a document dragged to a display at a different scale
-/// converts by that display's own factor. Falls back to 1.0, leaving coordinates in physical
-/// pixels, when the window is gone or reports nothing usable: wrong on a scaled display, and the
-/// only value that is right on an unscaled one.
-fn overlay_scale_factor(app: &AppHandle) -> f64 {
-    let Some(window) = app.get_webview_window("overlay") else {
-        return 1.0;
+    let Some(origin) = view else {
+        return Vec::new();
     };
-    match window.scale_factor() {
-        Ok(scale) if scale > 0.0 => scale,
-        Ok(scale) => {
-            log::warn!("the overlay window reported a scale factor of {scale}; falling back to 1");
-            1.0
-        }
-        Err(error) => {
-            log::warn!("could not read the overlay window's scale factor: {error}");
-            1.0
-        }
-    }
+    let scale = app
+        .get_webview_window("overlay")
+        .map_or(1.0, |window| scale_factor(&window));
+    to_relative(&absolute, origin, scale)
 }
 
 fn to_relative(flags: &[PositionedFlag], origin: CursorRect, scale: f64) -> Vec<PositionedFlag> {
@@ -176,9 +146,8 @@ fn offset(rect: CursorRect, dx: f64, dy: f64) -> CursorRect {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::rect;
+    use super::super::test_support::{positioned, rect};
     use super::*;
-    use wa_engine::flag::{FlagOrigin, Span};
 
     #[test]
     fn offset_shifts_a_rect_by_the_given_delta() {
@@ -188,38 +157,17 @@ mod tests {
         );
     }
 
-    fn test_flag(id: &str) -> Flag {
-        Flag {
-            id: id.to_owned(),
-            origin: FlagOrigin::Spelling,
-            span: Span {
-                anchor: "word".to_owned(),
-                local_start: 0,
-                local_length: 4,
-                occurrence: 0,
-            },
-            message: "test".to_owned(),
-            suggestions: Vec::new(),
-            source_detail: "test".to_owned(),
-            ruleset_version: None,
-            catalogue_hash: None,
-        }
-    }
-
     #[test]
     fn to_relative_subtracts_the_origin_from_every_rect_of_every_flag() {
         let flags = vec![
-            PositionedFlag {
-                flag: test_flag("a"),
-                rects: vec![rect(150.0, 250.0, 40.0, 20.0)],
-            },
-            PositionedFlag {
-                flag: test_flag("b"),
-                rects: vec![
+            positioned("a", vec![rect(150.0, 250.0, 40.0, 20.0)]),
+            positioned(
+                "b",
+                vec![
                     rect(160.0, 400.0, 20.0, 20.0),
                     rect(100.0, 420.0, 10.0, 20.0),
                 ],
-            },
+            ),
         ];
         let relative = to_relative(&flags, rect(100.0, 200.0, 900.0, 700.0), 1.0);
         assert_eq!(relative[0].rects, vec![rect(50.0, 50.0, 40.0, 20.0)]);
@@ -235,10 +183,7 @@ mod tests {
         // display: a span 240 physical pixels right of the document view's origin belongs 120
         // CSS pixels into the overlay's webview, and rendering it at 240 is what put every
         // underline at twice its true distance from the caret.
-        let flags = vec![PositionedFlag {
-            flag: test_flag("a"),
-            rects: vec![rect(239.0, 233.0, 336.0, 34.0)],
-        }];
+        let flags = vec![positioned("a", vec![rect(239.0, 233.0, 336.0, 34.0)])];
         let relative = to_relative(&flags, rect(-1.0, 133.0, 3074.0, 1628.0), 2.0);
         assert_eq!(relative[0].rects, vec![rect(120.0, 50.0, 168.0, 17.0)]);
     }

@@ -1,28 +1,29 @@
 //! Creates and drives the full-viewport overlay window: the always-on-top, transparent,
 //! non-activating surface that mirrors the focused document's own on-screen area, underlines every
-//! flagged span in place, and shows a card on hover. `create`'s window mechanics were proven in #9;
-//! `track_document_view` is what replaces its placeholder position and fixed size with the native
-//! backend's live document-view data, per #23 and #42. `track_flags` and `track_hover` are #42's
-//! own additions: resolving each flag's on-screen position and toggling the window's click-through
-//! state so the underlines stay interactive without blocking every other click to the document
-//! underneath.
-//!
-//! `track_flags` and `track_hover` have a module each, `flags` and `hover`.
+//! flagged span in place, and shows a card on hover. `create`'s window mechanics were proven in
+//! #9; `track_document_view` replaces its placeholder position and fixed size with the native
+//! backend's live document-view data, per #23 and #42, and hides the window while the document is
+//! behind another window. #42's other two loops have a module each: `flags` resolves each flag's
+//! on-screen position, and `hover` toggles the window's click-through state so the underlines
+//! stay interactive without blocking every other click to the document underneath.
 
 mod flags;
 mod hover;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindow, PBT_APMRESUMEAUTOMATIC, SW_HIDE, SW_SHOW, WM_POWERBROADCAST,
 };
 
-use wa_engine::capture::{Capture, CursorRect};
+use wa_engine::capture::{Capture, CursorRect, Foreground};
 use wa_engine::flag::Flag;
 
 pub use flags::{relative_flags, track_flags};
@@ -146,45 +147,132 @@ unsafe extern "system" fn resume_subclass_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Spawns a background task that resizes and repositions the overlay window to `capture`'s live
-/// document-view rectangle: the whole visible area of whatever document is focused, not just a
-/// small box near the caret, so every flagged span the analyzer surfaces has somewhere on the
-/// overlay to be underlined, per #42's full-viewport decision.
+/// One flag together with every on-screen rectangle its span currently resolves to. `Clone` so a
+/// snapshot can be taken out from under [`SharedOverlay`]'s lock before it is relativised in
+/// [`relative_flags`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionedFlag {
+    pub flag: Flag,
+    pub rects: Vec<CursorRect>,
+}
+
+/// What the overlay's loops and its command share, in absolute physical screen coordinates: the
+/// positioned flags, which `track_flags` writes, and the document-view rectangle the window was
+/// last placed at, which `track_document_view` writes. `track_hover` hit-tests a `GetCursorPos`
+/// result, itself absolute and physical, against the flags. Kept absolute and physical rather than
+/// pre-relativised into the overlay window's own CSS pixel space, so hit-testing compares physical
+/// against physical, and only the boundary that renders ([`relative_flags`]) converts.
+#[derive(Debug, Default)]
+pub struct OverlayState {
+    flags: Vec<PositionedFlag>,
+    view: Option<CursorRect>,
+}
+
+pub type SharedOverlay = Arc<Mutex<OverlayState>>;
+
+fn lock(shared: &SharedOverlay) -> MutexGuard<'_, OverlayState> {
+    shared
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked")
+}
+
+/// Spawns a background task that places the overlay window over `capture`'s live document-view
+/// rectangle, the whole visible area of whatever document is focused, so every flagged span the
+/// analyzer surfaces has somewhere on the overlay to be underlined, per #42's full-viewport
+/// decision. The window moves only when the rectangle changed, and stays where it was last placed
+/// while the capture cannot answer, as when one of this app's own windows is in front.
+///
+/// Each tick also asks `capture` whose window is in the foreground, and hides the overlay while
+/// it is neither the document's nor this app's, so underlines are never drawn over a window in
+/// front of the document. It shows again when the document's window is back in front.
 ///
 /// `CursorRect`'s coordinates come from UI Automation as physical screen pixels, so this uses
 /// `PhysicalPosition`/`PhysicalSize` rather than their logical counterparts deliberately: Tauri's
 /// position and size types differ by the display's DPI scale factor, and using the wrong one
 /// misplaces or missizes the overlay on any scaled display. Confirmed in manual verification on a
-/// 200%-scaled display for the caret-following window this replaces (#23); the same reasoning
+/// 200%-scaled display for the caret-following window this replaced (#23); the same reasoning
 /// applies unchanged to a whole document-view rectangle.
-pub fn track_document_view(app: AppHandle, capture: Arc<dyn Capture>) {
+pub fn track_document_view(app: AppHandle, capture: Arc<dyn Capture>, shared: SharedOverlay) {
     tauri::async_runtime::spawn(async move {
         let mut interval = poll_interval();
+        let mut shown = true;
         loop {
             interval.tick().await;
-            let rect = match capture.document_view_rect().await {
-                Ok(rect) => rect,
-                Err(error) => {
-                    log::debug!("no document view to track: {error}");
-                    continue;
-                }
-            };
             let Some(window) = app.get_webview_window("overlay") else {
                 continue;
             };
-            let (position, size) = to_physical(rect);
-            if let Err(error) = window.set_position(position) {
-                log::warn!("failed to reposition the overlay: {error}");
+            let read = match capture.document_view_rect().await {
+                Ok(rect) => Some(rect),
+                Err(error) => {
+                    log::debug!("no document view to track: {error}");
+                    None
+                }
+            };
+            let placed = lock(&shared).view;
+            if let Some(rect) = placement(read, placed) {
+                let (position, size) = to_physical(rect);
+                if let Err(error) = window.set_position(position) {
+                    log::warn!("failed to reposition the overlay: {error}");
+                }
+                if let Err(error) = window.set_size(size) {
+                    log::warn!("failed to resize the overlay: {error}");
+                }
+                lock(&shared).view = Some(rect);
             }
-            if let Err(error) = window.set_size(size) {
-                log::warn!("failed to resize the overlay: {error}");
+
+            let foreground = match capture.foreground().await {
+                Ok(foreground) => Some(foreground),
+                Err(error) => {
+                    log::debug!("no foreground window to classify: {error}");
+                    None
+                }
+            };
+            let Some(show) = visibility(foreground) else {
+                continue;
+            };
+            if show == shown {
+                continue;
+            }
+            let result = if show {
+                log::debug!("the document's window is in front again; showing the overlay");
+                window.show()
+            } else {
+                log::debug!("another window is in front of the document; hiding the overlay");
+                window.hide()
+            };
+            match result {
+                Ok(()) => shown = show,
+                Err(error) => log::warn!("failed to show or hide the overlay: {error}"),
             }
         }
     });
 }
 
+/// Where the overlay window moves on this tick, given the document-view rectangle `read` from
+/// the capture, `None` when it could not answer, and the rectangle the window was last `placed`
+/// at: a rectangle that differs from the last placement, and otherwise nowhere. A tick whose read
+/// failed leaves the window where it was, which keeps the overlay off this app's own window when
+/// that is in front.
+fn placement(read: Option<CursorRect>, placed: Option<CursorRect>) -> Option<CursorRect> {
+    read.filter(|rect| Some(*rect) != placed)
+}
+
+/// Whether the overlay should be shown, given whose window is in the foreground, `None` when the
+/// capture could not say: shown for the document's, hidden for another process's, and left as it
+/// is for this app's own or an unknown answer. Left as it is for this app's own window, so that
+/// bringing the app's main window forward neither hides the underlines over the document nor
+/// shows them over a document that another window covers.
+fn visibility(foreground: Option<Foreground>) -> Option<bool> {
+    match foreground? {
+        Foreground::Document => Some(true),
+        Foreground::Other => Some(false),
+        Foreground::ThisApp => None,
+    }
+}
+
 /// Converts a document-view rectangle straight into the overlay's own position and size: unlike
-/// the fixed-size caret-following box this replaces, there is no work area to clamp against here,
+/// the fixed-size caret-following box this replaced, there is no work area to clamp against here,
 /// since `rect` already describes real, currently-on-screen bounds (an already-visible window or
 /// element), not a synthesized position near a point that could overrun a display edge.
 fn to_physical(rect: CursorRect) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
@@ -197,28 +285,29 @@ fn to_physical(rect: CursorRect) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
     )
 }
 
-/// One flag together with every on-screen rectangle its span currently resolves to. `Clone` so a
-/// snapshot can be taken out from under [`SharedFlags`]'s lock before the (`await`-ing) work of
-/// relativising it in [`relative_flags`].
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PositionedFlag {
-    pub flag: Flag,
-    pub rects: Vec<CursorRect>,
+/// Physical pixels per CSS pixel on whichever display `window` currently sits on, read per call
+/// rather than once at startup so a document dragged to a display at a different scale converts
+/// by that display's own factor. Falls back to 1.0, leaving coordinates in physical pixels, when
+/// the window reports nothing usable: wrong on a scaled display, and the only value that is right
+/// on an unscaled one.
+fn scale_factor(window: &WebviewWindow) -> f64 {
+    match window.scale_factor() {
+        Ok(scale) if scale > 0.0 => scale,
+        Ok(scale) => {
+            log::warn!("the overlay window reported a scale factor of {scale}; falling back to 1");
+            1.0
+        }
+        Err(error) => {
+            log::warn!("could not read the overlay window's scale factor: {error}");
+            1.0
+        }
+    }
 }
-
-/// The latest positioned flags, in absolute physical screen coordinates, shared between
-/// [`track_flags`] (writer) and [`track_hover`] (reader, hit-testing against a `GetCursorPos`
-/// result, itself absolute and physical). Kept absolute and physical rather than pre-relativised
-/// and converted into the overlay window's own CSS pixel space, so the two tasks never need to
-/// agree on which document-view snapshot to relativise against, and so hit-testing keeps
-/// comparing physical against physical; only the boundary that actually renders
-/// ([`relative_flags`]) needs to know either.
-pub type SharedFlags = Arc<Mutex<Vec<PositionedFlag>>>;
 
 #[cfg(test)]
 mod test_support {
     use super::*;
+    use wa_engine::flag::{FlagOrigin, Span};
 
     pub(super) fn rect(x: f64, y: f64, width: f64, height: f64) -> CursorRect {
         CursorRect {
@@ -226,6 +315,31 @@ mod test_support {
             y,
             width,
             height,
+        }
+    }
+
+    pub(super) fn test_flag(id: &str) -> Flag {
+        Flag {
+            id: id.to_owned(),
+            origin: FlagOrigin::Spelling,
+            span: Span {
+                anchor: "word".to_owned(),
+                local_start: 0,
+                local_length: 4,
+                occurrence: 0,
+            },
+            message: "test".to_owned(),
+            suggestions: Vec::new(),
+            source_detail: "test".to_owned(),
+            ruleset_version: None,
+            catalogue_hash: None,
+        }
+    }
+
+    pub(super) fn positioned(id: &str, rects: Vec<CursorRect>) -> PositionedFlag {
+        PositionedFlag {
+            flag: test_flag(id),
+            rects,
         }
     }
 }
@@ -261,5 +375,52 @@ mod tests {
     fn to_physical_clamps_a_degenerate_size_to_zero_rather_than_underflowing() {
         let (_, size) = to_physical(rect(0.0, 0.0, -5.0, -5.0));
         assert_eq!(size, PhysicalSize::new(0, 0));
+    }
+
+    #[test]
+    fn the_first_placement_moves_the_window_to_the_read() {
+        let view = rect(0.0, 133.0, 3072.0, 1628.0);
+        assert_eq!(placement(Some(view), None), Some(view));
+    }
+
+    #[test]
+    fn an_unchanged_read_does_not_move_the_window() {
+        let view = rect(0.0, 133.0, 3072.0, 1628.0);
+        assert_eq!(placement(Some(view), Some(view)), None);
+    }
+
+    #[test]
+    fn a_changed_read_moves_the_window() {
+        let placed = rect(0.0, 133.0, 3072.0, 1628.0);
+        let moved = rect(40.0, 173.0, 3000.0, 1500.0);
+        assert_eq!(placement(Some(moved), Some(placed)), Some(moved));
+    }
+
+    #[test]
+    fn a_failed_read_with_the_apps_own_window_in_front_keeps_the_last_placement() {
+        // The capture answers an error rather than the rectangle of the app's own window, and the
+        // window stays where it was last placed.
+        let placed = rect(0.0, 133.0, 3072.0, 1628.0);
+        assert_eq!(placement(None, Some(placed)), None);
+    }
+
+    #[test]
+    fn the_overlay_shows_with_the_documents_window_in_front() {
+        assert_eq!(visibility(Some(Foreground::Document)), Some(true));
+    }
+
+    #[test]
+    fn the_overlay_hides_with_another_window_in_front() {
+        assert_eq!(visibility(Some(Foreground::Other)), Some(false));
+    }
+
+    #[test]
+    fn the_overlay_is_left_as_it_is_with_the_apps_own_window_in_front() {
+        assert_eq!(visibility(Some(Foreground::ThisApp)), None);
+    }
+
+    #[test]
+    fn the_overlay_is_left_as_it_is_when_the_foreground_is_unknown() {
+        assert_eq!(visibility(None), None);
     }
 }

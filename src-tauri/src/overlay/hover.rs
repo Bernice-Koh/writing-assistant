@@ -7,7 +7,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use wa_engine::capture::CursorRect;
 
-use super::{poll_interval, SharedFlags};
+use super::{lock, poll_interval, SharedOverlay};
 
 /// Spawns a background task that polls the real cursor position and hit-tests it against
 /// `shared`'s cached flag rectangles, toggling the overlay window's click-through state so the
@@ -16,7 +16,7 @@ use super::{poll_interval, SharedFlags};
 /// this toggles rather than leaving the window permanently click-through, per #42's decision.
 /// Emits `flag-hovered` (carrying the flag id) on entering an underline's rect and
 /// `flag-unhovered` on leaving it, so the frontend knows which card, if any, to show.
-pub fn track_hover(app: AppHandle, shared: SharedFlags) {
+pub fn track_hover(app: AppHandle, shared: SharedOverlay) {
     tauri::async_runtime::spawn(async move {
         let mut interval = poll_interval();
         let mut hovered: Option<String> = None;
@@ -28,9 +28,8 @@ pub fn track_hover(app: AppHandle, shared: SharedFlags) {
             if unsafe { GetCursorPos(&raw mut point) }.is_err() {
                 continue;
             }
-            let hit = shared
-                .lock()
-                .expect("a poisoned lock here means another thread already panicked")
+            let hit = lock(&shared)
+                .flags
                 .iter()
                 .find(|positioned| {
                     positioned
