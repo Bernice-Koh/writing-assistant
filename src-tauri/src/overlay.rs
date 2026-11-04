@@ -218,7 +218,7 @@ pub type SharedFlags = Arc<Mutex<Vec<PositionedFlag>>>;
 /// overlay's own webview to render.
 ///
 /// Triggered two ways: reactively, the moment `analyzer`'s own `subscribe` channel reports a new
-/// flag set, and periodically, on the same [`POLL_INTERVAL`] cadence [`track_document_view`]
+/// flag set, and periodically, on the same `POLL_INTERVAL` cadence [`track_document_view`]
 /// already polls on. The periodic leg exists because a flag's *position* can go stale for reasons
 /// that have nothing to do with the flag set itself changing: the focused document scrolling, the
 /// window resizing, or focus having moved to a different document entirely, whose text no longer
@@ -228,7 +228,7 @@ pub type SharedFlags = Arc<Mutex<Vec<PositionedFlag>>>;
 /// their positions until the analyzer's own debounced recheck eventually caught up, seconds later.
 /// Re-resolving on every poll tick, not only on a flag-set change, means a stale or momentarily
 /// unresolvable position self-heals within one `POLL_INTERVAL` instead of lingering, since
-/// [`resolve_positions`] already drops any flag whose anchor cannot currently be found.
+/// `resolve_positions` already drops any flag whose anchor cannot currently be found.
 pub fn track_flags(
     app: AppHandle,
     capture: Arc<dyn Capture>,
