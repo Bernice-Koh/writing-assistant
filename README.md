@@ -114,6 +114,14 @@ capture): medians of 3.4 ms and 12.0 ms in two runs on a Word document, 1.6 ms o
 on a Chromium `textarea` and 16.6 ms on a `contenteditable` field, so the poll takes 1.2% of one
 core on the `textarea` and under 1% on the others.
 
+Measured on 5 November 2026 on this machine in a release build, with ten bursts of 20 characters
+typed 100 ms apart, each followed by a two-second pause, into each of a Notepad and a Word document
+of 20,200 words: both raised the text-changed event once per keystroke, no burst held a read, and
+every pause held one read and one recheck, a median of 524 ms after the last keystroke in Notepad
+and 525 ms in Word. On the same text in Notepad with 135 misspelt words, the first flags came a
+median of 4.3 s after focus over three starts, 3.5 to 3.8 s of it the deterministic stage, which
+took 56 ms on the text with no misspelling.
+
 Flags are cached per sentence by a hash of the ruleset version, its paragraph's form mode and its
 text, so one text in a prose paragraph and in a fragment has an entry for each. An entry has two
 parts: the sentence pass's, and the grammar stage's, marked complete once LanguageTool has answered
