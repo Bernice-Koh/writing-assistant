@@ -4,8 +4,8 @@
 //! #9; `track_document_view` replaces its placeholder position and fixed size with the native
 //! backend's live document-view data, per #23 and #42, and hides the window while the document is
 //! behind another window. #42's other two loops have a module each: `flags` resolves each flag's
-//! on-screen position, and `hover` toggles the window's click-through state so the underlines
-//! stay interactive without blocking every other click to the document underneath.
+//! on-screen position, and `hover` toggles the window's click-through state so the underlines and
+//! the card stay interactive without blocking every other click to the document underneath.
 
 mod flags;
 mod hover;
@@ -27,7 +27,7 @@ use wa_engine::capture::{Capture, CursorRect, Foreground};
 use wa_engine::flag::Flag;
 
 pub use flags::{relative_flags, track_flags};
-pub use hover::track_hover;
+pub use hover::{record_card, track_hover, CssRect};
 
 // Arbitrary and deliberately not (0, 0), so it's visually distinguishable from a stray
 // full-screen window during manual verification. Only ever on screen for the moment between
@@ -157,16 +157,26 @@ pub struct PositionedFlag {
     pub rects: Vec<CursorRect>,
 }
 
-/// What the overlay's loops and its command share, in absolute physical screen coordinates: the
-/// positioned flags, which `track_flags` writes, and the document-view rectangle the window was
-/// last placed at, which `track_document_view` writes. `track_hover` hit-tests a `GetCursorPos`
-/// result, itself absolute and physical, against the flags. Kept absolute and physical rather than
-/// pre-relativised into the overlay window's own CSS pixel space, so hit-testing compares physical
-/// against physical, and only the boundary that renders ([`relative_flags`]) converts.
+/// The card the frontend rendered for a hovered flag, by that flag's id, in absolute physical
+/// screen coordinates.
+#[derive(Debug, Clone, PartialEq)]
+struct ShownCard {
+    flag_id: String,
+    rect: CursorRect,
+}
+
+/// What the overlay's three loops and its two commands share, in absolute physical screen
+/// coordinates: the positioned flags, which `track_flags` writes; the document-view rectangle the
+/// window was last placed at, which `track_document_view` writes; and the shown card's rectangle,
+/// which the `set_card_rect` command writes. `track_hover` hit-tests a `GetCursorPos` result,
+/// itself absolute and physical, against the flags and the card. Kept absolute and physical rather
+/// than pre-relativised into the overlay window's own CSS pixel space, so hit-testing compares
+/// physical against physical, and only the boundary that renders ([`relative_flags`]) converts.
 #[derive(Debug, Default)]
 pub struct OverlayState {
     flags: Vec<PositionedFlag>,
     view: Option<CursorRect>,
+    card: Option<ShownCard>,
 }
 
 pub type SharedOverlay = Arc<Mutex<OverlayState>>;

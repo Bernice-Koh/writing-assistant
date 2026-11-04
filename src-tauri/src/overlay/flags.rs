@@ -111,7 +111,11 @@ pub fn relative_flags(app: &AppHandle, shared: &SharedOverlay) -> Vec<Positioned
     to_relative(&absolute, origin, scale)
 }
 
-fn to_relative(flags: &[PositionedFlag], origin: CursorRect, scale: f64) -> Vec<PositionedFlag> {
+pub(super) fn to_relative(
+    flags: &[PositionedFlag],
+    origin: CursorRect,
+    scale: f64,
+) -> Vec<PositionedFlag> {
     flags
         .iter()
         .map(|positioned| PositionedFlag {

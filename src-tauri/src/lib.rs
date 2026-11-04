@@ -15,7 +15,7 @@ use wa_engine::store::{self, config, Config, Store, StoreError};
 use wa_engine::style::ai_tell::{self, Catalogue};
 use wa_engine::style::ruleset::LoadedRuleset;
 
-use overlay::{OverlayState, PositionedFlag, SharedOverlay};
+use overlay::{CssRect, OverlayState, PositionedFlag, SharedOverlay};
 
 /// The current, positioned flag set for the active document, relative to the overlay window's
 /// own origin: the same shape [`overlay::track_flags`] emits as `flags-updated`, read here for a
@@ -28,6 +28,21 @@ fn get_current_flags(
     overlay::relative_flags(&app, shared.inner())
 }
 
+/// Records the rectangle of the card the overlay's frontend rendered for the hovered flag
+/// `flag_id`, in CSS pixels relative to the window, so the hover loop keeps the hover while the
+/// pointer is on the card. A command rather than an event, since a command receives the window
+/// that called it, whose position and scale factor the conversion to screen coordinates needs,
+/// and its arguments arrive deserialised into their types.
+#[tauri::command]
+fn set_card_rect(
+    window: tauri::WebviewWindow,
+    shared: tauri::State<'_, SharedOverlay>,
+    flag_id: String,
+    rect: CssRect,
+) {
+    overlay::record_card(&window, shared.inner(), flag_id, rect);
+}
+
 /// Builds and runs the Tauri application.
 pub fn run() {
     // `info` rather than `env_logger`'s own `error` default, so a normal run shows the capture
@@ -36,7 +51,7 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_current_flags])
+        .invoke_handler(tauri::generate_handler![get_current_flags, set_card_rect])
         .setup(|app| {
             overlay::create(app.handle())?;
             let backend: Arc<dyn Capture> = Arc::new(capture::native::NativeCapture::start()?);
