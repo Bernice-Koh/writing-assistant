@@ -15,22 +15,32 @@ use wa_engine::store::{self, config, Config, Store, StoreError};
 use wa_engine::style::ai_tell::{self, Catalogue};
 use wa_engine::style::ruleset::LoadedRuleset;
 
-use overlay::{PositionedFlag, SharedFlags};
+use overlay::{CssRect, OverlayState, PositionedFlag, SharedOverlay};
 
 /// The current, positioned flag set for the active document, relative to the overlay window's
 /// own origin: the same shape [`overlay::track_flags`] emits as `flags-updated`, read here for a
 /// freshly mounted frontend's initial state.
-// `Result`, not a bare `Vec`, because Tauri requires it of every async command whose inputs
-// borrow (`State` does): see the `AsyncCommandMustReturnResult` bound on `#[tauri::command]`.
-// `Err` is never actually constructed; `relative_flags` already reports "nothing to show yet"
-// as an empty `Vec`, not a failure, since that is a normal state, not an exceptional one.
 #[tauri::command]
-async fn get_current_flags(
+fn get_current_flags(
     app: tauri::AppHandle,
-    capture: tauri::State<'_, Arc<dyn Capture>>,
-    shared: tauri::State<'_, SharedFlags>,
-) -> Result<Vec<PositionedFlag>, ()> {
-    Ok(overlay::relative_flags(&app, capture.inner(), shared.inner()).await)
+    shared: tauri::State<'_, SharedOverlay>,
+) -> Vec<PositionedFlag> {
+    overlay::relative_flags(&app, shared.inner())
+}
+
+/// Records the rectangle of the card the overlay's frontend rendered for the hovered flag
+/// `flag_id`, in CSS pixels relative to the window, so the hover loop keeps the hover while the
+/// pointer is on the card. A command rather than an event, since a command receives the window
+/// that called it, whose position and scale factor the conversion to screen coordinates needs,
+/// and its arguments arrive deserialised into their types.
+#[tauri::command]
+fn set_card_rect(
+    window: tauri::WebviewWindow,
+    shared: tauri::State<'_, SharedOverlay>,
+    flag_id: String,
+    rect: CssRect,
+) {
+    overlay::record_card(&window, shared.inner(), flag_id, rect);
 }
 
 /// Builds and runs the Tauri application.
@@ -41,24 +51,31 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_current_flags])
+        .invoke_handler(tauri::generate_handler![get_current_flags, set_card_rect])
         .setup(|app| {
             overlay::create(app.handle())?;
             let backend: Arc<dyn Capture> = Arc::new(capture::native::NativeCapture::start()?);
-            // Managed as well as tracked: `get_current_flags` reads the backend from managed
-            // state, and the working card's commands, not yet built, need the same backend. The
-            // trait object is what keeps a command from naming a surface.
+            // Managed as well as tracked: the working card's commands, not yet built, need the
+            // same backend. The trait object is what keeps a command from naming a surface.
             app.manage(Arc::clone(&backend));
-            overlay::track_document_view(app.handle().clone(), Arc::clone(&backend));
 
-            let shared_flags: SharedFlags = Arc::new(Mutex::new(Vec::new()));
-            app.manage(Arc::clone(&shared_flags));
+            let shared_overlay: SharedOverlay = Arc::new(Mutex::new(OverlayState::default()));
+            app.manage(Arc::clone(&shared_overlay));
+            overlay::track_document_view(
+                app.handle().clone(),
+                Arc::clone(&backend),
+                Arc::clone(&shared_overlay),
+            );
 
             // Spawned rather than run inline: `LanguageToolSupervisor::start` can take up to its
             // own startup timeout before giving up on a subprocess that never becomes reachable,
             // and the overlay and main windows should show immediately rather than waiting on it.
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(start_checking_pipeline(app_handle, backend, shared_flags));
+            tauri::async_runtime::spawn(start_checking_pipeline(
+                app_handle,
+                backend,
+                shared_overlay,
+            ));
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -73,7 +90,7 @@ pub fn run() {
 async fn start_checking_pipeline(
     app: tauri::AppHandle,
     capture: Arc<dyn Capture>,
-    shared_flags: SharedFlags,
+    shared_overlay: SharedOverlay,
 ) {
     // Read once, with no watcher: an edit made while the app runs takes effect at the next start.
     // Managed beside the capture backend for the reader that arrives with the register map. The
@@ -131,9 +148,9 @@ async fn start_checking_pipeline(
         app.clone(),
         Arc::clone(&capture),
         analyzer,
-        Arc::clone(&shared_flags),
+        Arc::clone(&shared_overlay),
     );
-    overlay::track_hover(app, shared_flags);
+    overlay::track_hover(app, shared_overlay);
 }
 
 /// The settings under the data root, or the defaults when they cannot be loaded, since a fault in

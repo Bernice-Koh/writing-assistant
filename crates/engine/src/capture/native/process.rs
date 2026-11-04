@@ -1,5 +1,5 @@
-//! Whether a focused element belongs to this application rather than to the user's writing
-//! target.
+//! Whether a focused element, or the foreground window, belongs to this application rather than
+//! to the user's writing target.
 //!
 //! The assistant has windows of its own, and they take focus like anything else: without this
 //! check the capture thread adopts the app's own UI as the tracked element and the overlay
@@ -37,11 +37,43 @@ pub fn belongs_to_this_app(pid: u32) -> bool {
     }
 }
 
+/// [`belongs_to_this_app`] with its last answer kept, for the foreground poll. The poll asks about
+/// the foreground window's process on every tick, and while one window stays in front that is the
+/// same process each time, so the process table is read once per change of foreground process
+/// rather than ten times a second. One answer is kept, for one process id, and the next id asked
+/// about replaces it: an answer lasts only while its process keeps a window in front, which rules
+/// out the reuse of its id by another process.
+#[derive(Debug, Default)]
+pub struct OwnProcesses {
+    last: Option<(u32, bool)>,
+}
+
+impl OwnProcesses {
+    /// Whether `pid` is this process or one of its descendants.
+    pub fn contains(&mut self, pid: u32) -> bool {
+        self.remembered(pid, belongs_to_this_app)
+    }
+
+    /// `ask`'s answer for `pid`, asked only when `pid` is not the process last asked about. Split
+    /// from [`Self::contains`] so the keeping is testable without a live process table.
+    fn remembered(&mut self, pid: u32, ask: impl FnOnce(u32) -> bool) -> bool {
+        match self.last {
+            Some((last, answer)) if last == pid => answer,
+            _ => {
+                let answer = ask(pid);
+                self.last = Some((pid, answer));
+                answer
+            }
+        }
+    }
+}
+
 /// Every running process id mapped to its parent's, from one snapshot of the process table.
 ///
 /// Rebuilt per call rather than cached: a process id is only unique while its process lives, so
 /// a cached answer can outlive the process it described and misclassify whatever reuses the id.
-/// Only focus changes reach this, and those arrive at human speed.
+/// Only focus changes and changes of foreground process ([`OwnProcesses`]) reach this, and those
+/// arrive at human speed.
 fn parent_ids() -> Result<HashMap<u32, u32>, windows::core::Error> {
     // SAFETY: the snapshot handle is owned here and closed by its `Drop`; `Process32FirstW` and
     // `Process32NextW` are handed an entry whose `dwSize` is set as they require, and are only
@@ -140,6 +172,33 @@ mod tests {
     fn chain_to_the_idle_process_terminates() {
         let parents = table(&[(200, 4), (4, 0)]);
         assert!(!is_descendant(&parents, 200, 100));
+    }
+
+    #[test]
+    fn the_same_process_asked_about_twice_reads_the_table_once() {
+        let mut own = OwnProcesses::default();
+        let mut asked = 0;
+        let mut ask = |pid: u32| {
+            asked += 1;
+            pid == 200
+        };
+        assert!(own.remembered(200, &mut ask));
+        assert!(own.remembered(200, &mut ask));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn another_process_replaces_the_kept_answer() {
+        let mut own = OwnProcesses::default();
+        let mut asked = Vec::new();
+        let mut ask = |pid: u32| {
+            asked.push(pid);
+            pid == 200
+        };
+        assert!(own.remembered(200, &mut ask));
+        assert!(!own.remembered(300, &mut ask));
+        assert!(own.remembered(200, &mut ask));
+        assert_eq!(asked, vec![200, 300, 200]);
     }
 
     #[test]

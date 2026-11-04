@@ -23,7 +23,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::capture::{Capture, CaptureError, CursorRect};
+use crate::capture::{Capture, CaptureError, CursorRect, Foreground};
 use crate::flag::Span;
 use error::WebCaptureError;
 use message::{ClientMessage, ServerMessage};
@@ -142,10 +142,6 @@ impl Capture for WebCapture {
         }
     }
 
-    async fn cursor_rect(&self) -> Result<CursorRect, CaptureError> {
-        Err(CaptureError::Unsupported)
-    }
-
     /// Answers [`CaptureError::Unsupported`] for a span past its anchor's first occurrence
     /// without sending anything, since the extension resolves the first occurrence and its
     /// protocol carries no index.
@@ -167,6 +163,10 @@ impl Capture for WebCapture {
     }
 
     async fn document_view_rect(&self) -> Result<CursorRect, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
+
+    async fn foreground(&self) -> Result<Foreground, CaptureError> {
         Err(CaptureError::Unsupported)
     }
 
@@ -281,16 +281,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_rect_is_always_unsupported() {
+    async fn document_view_rect_is_always_unsupported() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
-        let result = capture.cursor_rect().await;
+        let result = capture.document_view_rect().await;
         assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 
     #[tokio::test]
-    async fn document_view_rect_is_always_unsupported() {
+    async fn foreground_is_always_unsupported() {
         let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
-        let result = capture.document_view_rect().await;
+        let result = capture.foreground().await;
         assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 

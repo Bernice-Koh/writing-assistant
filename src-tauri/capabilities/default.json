@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Core permissions granted to the main and overlay windows.",
   "windows": ["main", "overlay"],
-  "permissions": ["core:default", "core:event:default", "allow-get-current-flags"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-get-current-flags",
+    "allow-set-card-rect"
+  ]
 }
