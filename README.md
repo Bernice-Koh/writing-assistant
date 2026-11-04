@@ -363,15 +363,27 @@ underline.
 
 ### Native capture
 
-One dedicated thread owns the UI Automation client. It follows focus across the desktop and reads
-the focused element's text from its value where it has one, and from its `TextPattern` document
-range otherwise. It ignores the tool's own windows by walking the process parent chain, since
-WebView2 renders the frontend in a child process with its own process id.
+One dedicated thread owns the UI Automation client. It follows focus across the desktop and
+ignores the tool's own windows by walking the process parent chain, since WebView2 renders the
+frontend in a child process with its own process id.
+
+The thread reads the focused element's whole text from its `TextPattern` document range, and from
+its value where the element has no `TextPattern` or the range read fails. A provider can return
+less than the whole range from one call, so the range is read in parts: after each part the range's
+start moves by paragraphs past the part's paragraph marks, and the next part begins with the text
+the previous part held after the last of them, which is kept once. A next part that begins
+elsewhere, as after a Word section break, which Word counts as a paragraph without a paragraph
+mark, is placed where its start stands in the previous part. The move is by paragraphs because a
+move by characters took about 12 microseconds a character in Word and skipped text across
+auto-numbered list items, whose numbers `GetText` delivers as text. A read that took more than one
+part is logged once per focus, with the count and the length.
 
 | Surface | Finding |
 |---|---|
-| Microsoft Word, desktop | Read through `TextPattern` like any rich-text control, with no Word-specific code. An Office.js backend was scoped and dropped once this was verified |
+| Microsoft Word, desktop | Read through `TextPattern` like any rich-text control. Its document range returns at most 65,000 characters a call, so the read continues past that in parts. Word ends a table cell or row with U+0007 instead of a carriage return, and the read counts it as a paragraph mark. An Office.js backend was scoped and dropped once the `TextPattern` read was verified |
 | Word for the web | Read through native capture. Chromium bridges the page's accessibility tree to UI Automation, and Word for the web backs that tree with the real document |
+| Chromium `textarea`, the GitHub comment box's control | Its value holds at most 10,000 characters, and its `TextPattern` document range returned the whole text, which is why the range is read before the value. Measured on a page written for the check |
+| Chromium `contenteditable` field, Gmail compose's control | No value. Read whole through its `TextPattern` document range. Measured on a page written for the check |
 | Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. A plausibility check on the caret rectangle rejects it |
@@ -379,9 +391,12 @@ WebView2 renders the frontend in a child process with its own process id.
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, by
 `crates/engine/examples/read_cost.rs` over 30 reads per surface of one text of 20,200 words: the
-read of a Word document took a median of 1.2 ms and returned only its first 65,000 of 110,572
+read of a Word document took a median of 1.2 ms and returned only its first 65,000 of 110,571
 characters, Notepad returned the whole text in a median of 0.85 ms and a Chromium `contenteditable`
 field in 4.9 ms, and a Chromium `textarea`'s value returned its first 10,000 characters in 0.23 ms.
+Measured again on 4 November 2026 with the read in parts, over 30 reads each, the whole read of the
+Word document, in two parts, took a median of 12.0 ms in a first run and 3.4 ms in a repeat, and
+the whole read of the `textarea` through its `TextPattern` took 24.4 ms.
 
 Planned for Phase 2: surface identity on the trait, the process name with an optional page URL,
 mapped to a register through a map in settings.
