@@ -10,18 +10,27 @@
 //! trusting a multi-app run's later phases to still be pointed at the right window. Run from the
 //! repository root with `cargo run -p wa-engine --example insertion_cascade_spike -- <slot>`,
 //! where the slot is one of the names in the usage line `main` prints.
+//!
+//! The `refocus` slot (#157) measures the cascade's refocus: it places another window in front of
+//! the target between the request and the first keystroke, and takes a run count and a cover
+//! script after the slot (see `run_refocus_test`).
 
+use std::io::{BufRead, BufReader};
+use std::os::windows::process::CommandExt;
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wa_engine::capture::native::client::Uia;
 use wa_engine::capture::native::error::NativeCaptureError;
-use wa_engine::capture::native::foreground;
+use wa_engine::capture::native::foreground::{self, Window};
 use wa_engine::capture::native::insert::{
     changed_region, clipboard, current_selection, current_text, replace_last_typed, replace_span,
     replace_within, restore_after_failed_attempt, select, synthetic, value,
 };
-use windows::Win32::UI::Accessibility::IUIAutomationElement;
+use windows::Win32::Foundation::RECT;
+use windows::Win32::UI::Accessibility::{IUIAutomationCacheRequest, IUIAutomationElement};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetProcessDPIAware};
 
 const FOCUS_DELAY: Duration = Duration::from_secs(14);
 const SETTLE_DELAY: Duration = Duration::from_millis(500);
@@ -38,9 +47,10 @@ fn main() {
         Some("replace-within-live") => run_live_replace_test(false),
         Some("diagnose-selection") => run_selection_diagnostic(),
         Some("restore-drill") => run_restore_drill(),
+        Some("refocus") => run_refocus_test(&args[2..]),
         _ => {
             eprintln!(
-                "usage: insertion_cascade_spike <notepad|edge|word|replace-live|replace-within-live|diagnose-selection|restore-drill>"
+                "usage: insertion_cascade_spike <notepad|edge|word|replace-live|replace-within-live|diagnose-selection|restore-drill|refocus>"
             );
             std::process::exit(1);
         }
@@ -521,6 +531,394 @@ fn run_app_tests(label: &str, index: u32) {
         &clipboard_marker,
         &replaced_marker_2,
     );
+}
+
+/// How far into a paragraph the refocus probe's anchor reaches, in bytes: long enough to be found
+/// at one place, short enough to stay inside one paragraph of the generated text.
+const PROBE_ANCHOR_BYTES: usize = 48;
+const PROBE_MIN_ANCHOR_BYTES: usize = 24;
+
+/// The longest wait for the target's window or the cover's to be in front.
+const FRONT_WAIT: Duration = Duration::from_secs(5);
+
+/// The refocus before an insertion (#157), against a real application. After the countdown the
+/// focused element is the target; each of `runs` runs then starts `cover_script` in PowerShell,
+/// which places a window of its own over the target and makes it the foreground window, waits for
+/// that window to be in front by reading the foreground window, and calls the cascade's
+/// `replace_within` on the first word of the paragraph after the document's middle. The refocus
+/// runs inside the cascade, not here. Each run reports whether the cover was in front at the call,
+/// the cascade's result, whether the refocus took, which window was in front after it, where the
+/// replacement landed by reading the target's text back, and whether the cover's own text changed,
+/// which a keystroke reaching the cover would do. It prints lengths, offsets and outcomes, never
+/// text of either window.
+///
+/// The script is started with the arguments given after its path, then `-X`, `-Y`, `-Width` and
+/// `-Height` with the target window's rectangle in physical pixels and `-HarnessPid` with this
+/// process's id, and prints a line starting with `ready` once its window holds the foreground.
+/// The script is stopped at the end of each run, which closes its window. A run that finds the
+/// target not in front at its start, or the cover not in front after the script is ready, stops
+/// the loop.
+///
+/// `cargo run -p wa-engine --example insertion_cascade_spike -- refocus <runs> <cover-script>
+/// [script arguments]`, with `RUST_LOG=info` for the cascade's refocus lines.
+fn run_refocus_test(args: &[String]) {
+    let (Some(runs), Some(script)) = (
+        args.first().and_then(|runs| runs.parse::<u32>().ok()),
+        args.get(1),
+    ) else {
+        eprintln!(
+            "usage: insertion_cascade_spike refocus <runs> <cover-script> [script arguments]"
+        );
+        std::process::exit(1);
+    };
+    let script_args = &args[2..];
+    // SAFETY: SetProcessDPIAware takes no arguments. Without it this process reads window
+    // rectangles scaled to 96 DPI, and the cover script places its window in physical pixels.
+    let _ = unsafe { SetProcessDPIAware() };
+
+    println!(
+        "\nFocus the target document; {runs} refocus runs start in {}s.",
+        FOCUS_DELAY.as_secs()
+    );
+    sleep(FOCUS_DELAY);
+
+    let uia = match Uia::new() {
+        Ok(uia) => uia,
+        Err(error) => {
+            println!("  could not create UIA client: {error}");
+            return;
+        }
+    };
+    let cache = match uia.base_cache_request() {
+        Ok(cache) => cache,
+        Err(error) => {
+            println!("  could not build cache request: {error}");
+            return;
+        }
+    };
+    let element = match uia.focused_element(&cache) {
+        Ok(element) => element,
+        Err(error) => {
+            println!("  no focused element: {error}");
+            return;
+        }
+    };
+    let Some(target) = foreground::target_window(uia.client(), &element) else {
+        println!("  the focused element has no window to refocus");
+        return;
+    };
+    if !wait_for_front(|front| front.hwnd == target.hwnd) {
+        println!("  the focused element's window is not in front");
+        return;
+    }
+    println!(
+        "  target: {}'s window",
+        foreground::process_name(target.process_id)
+    );
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() % 10_000);
+    let mut tally = Tally::default();
+    for run in 1..=runs {
+        let marker = format!("QQ{stamp:04}R{run:02}QQ");
+        let Some(outcome) =
+            refocus_run(&uia, &cache, &element, target, &marker, script, script_args)
+        else {
+            println!("  run {run}: stopped");
+            break;
+        };
+        println!("  run {run}: {outcome}");
+        tally.add(&outcome);
+        sleep(SETTLE_DELAY);
+    }
+    println!("  {tally}");
+}
+
+/// One run of [`run_refocus_test`], or `None`, with the reason printed, when the run could not
+/// reach the probe.
+fn refocus_run(
+    uia: &Uia,
+    cache: &IUIAutomationCacheRequest,
+    element: &IUIAutomationElement,
+    target: Window,
+    marker: &str,
+    script: &str,
+    script_args: &[String],
+) -> Option<RunOutcome> {
+    if !wait_for_front(|front| front.hwnd == target.hwnd) {
+        println!("  the target's window is not in front at the run's start");
+        return None;
+    }
+    let before = current_text(element)
+        .map_err(|error| println!("  could not read the target: {error}"))
+        .ok()?;
+    let Some(span) = probe_span(&before) else {
+        println!("  no paragraph after the document's middle to anchor on");
+        return None;
+    };
+    let mut rect = RECT::default();
+    // SAFETY: `target.hwnd` is the target's top-level window, just confirmed in front; `rect` is a
+    // valid, uniquely-owned out parameter for the duration of the call.
+    if let Err(error) = unsafe { GetWindowRect(target.hwnd, &raw mut rect) } {
+        println!("  could not read the target window's rectangle: {error}");
+        return None;
+    }
+
+    let mut cover = start_cover(script, script_args, rect)?;
+    let cover_pid = cover.id();
+    if !wait_for_front(|front| front.process_id == cover_pid) {
+        println!("  the cover did not take the foreground");
+        stop_cover(&mut cover);
+        return None;
+    }
+    let cover_element = uia.focused_element(cache).ok().filter(|focused| {
+        // SAFETY: `focused` is the live element just returned; the property read fails safely.
+        let owner = unsafe { focused.CurrentProcessId() };
+        owner.is_ok_and(|owner| owner.cast_unsigned() == cover_pid)
+    });
+    let cover_before = cover_element
+        .as_ref()
+        .and_then(|cover| current_text(cover).ok());
+    let cover_in_front = foreground::window().is_some_and(|front| front.process_id == cover_pid);
+
+    let result = replace_within(
+        element,
+        Some(target),
+        &span.anchor,
+        span.occurrence,
+        0,
+        span.local_length,
+        marker,
+    );
+    sleep(SETTLE_DELAY);
+    let front_after = foreground::window();
+    let after = current_text(element).ok();
+    let cover_after = cover_element
+        .as_ref()
+        .and_then(|cover| current_text(cover).ok());
+    stop_cover(&mut cover);
+
+    let expected = format!(
+        "{}{marker}{}",
+        &before[..span.start],
+        &before[span.start + span.length..]
+    );
+    let landing = match &after {
+        None => Landing::Unread,
+        Some(after) if *after == expected => Landing::AtTheSpan,
+        Some(after) if *after == before => Landing::Unchanged,
+        Some(after) => Landing::Elsewhere(changed_region(&before, after).map(|(at, region)| {
+            (
+                before[..at.min(before.len())].chars().count(),
+                region.chars().count(),
+            )
+        })),
+    };
+    Some(RunOutcome {
+        cover_in_front,
+        refocus_failed: matches!(result, Err(NativeCaptureError::RefocusFailed { .. })),
+        result: match result {
+            Ok(method) => format!("ok via {method:?}"),
+            Err(error) => format!("failed ({error})"),
+        },
+        front_after: match front_after {
+            Some(front) if front.hwnd == target.hwnd => "the target",
+            Some(front) if front.process_id == cover_pid => "the cover",
+            Some(_) => "another window",
+            None => "no window",
+        },
+        span_at: before[..span.start].chars().count(),
+        landing,
+        cover_changed: match (cover_before, cover_after) {
+            (Some(before), Some(after)) => Some(before != after),
+            _ => None,
+        },
+    })
+}
+
+/// The refocus probe's span: the first word of the first paragraph after the document's middle,
+/// addressed by an anchor at the paragraph's start at the occurrence index the analyzer's counting
+/// rule gives it.
+struct ProbeSpan {
+    anchor: String,
+    occurrence: usize,
+    /// The span's byte offset in the text it was chosen from.
+    start: usize,
+    /// The span's length in bytes.
+    length: usize,
+    /// The span's length in UTF-16 code units.
+    local_length: usize,
+}
+
+fn probe_span(text: &str) -> Option<ProbeSpan> {
+    let mut from = (text.len() / 2..=text.len()).find(|&at| text.is_char_boundary(at))?;
+    loop {
+        let paragraph_break = from + text[from..].find(['\r', '\n'])?;
+        let start =
+            paragraph_break + text[paragraph_break..].find(|c: char| c != '\r' && c != '\n')?;
+        let paragraph = &text[start..];
+        let paragraph_end = paragraph.find(['\r', '\n']).unwrap_or(paragraph.len());
+        let anchor_end = (0..=paragraph_end.min(PROBE_ANCHOR_BYTES))
+            .rev()
+            .find(|&at| paragraph.is_char_boundary(at))?;
+        let anchor = &paragraph[..anchor_end];
+        let word_end = anchor.find(' ').unwrap_or(anchor.len());
+        let occurrence = text.match_indices(anchor).position(|(at, _)| at == start);
+        if let (true, Some(occurrence)) = (
+            anchor.len() >= PROBE_MIN_ANCHOR_BYTES && word_end >= 2 && word_end < anchor.len(),
+            occurrence,
+        ) {
+            return Some(ProbeSpan {
+                anchor: anchor.to_owned(),
+                occurrence,
+                start,
+                length: word_end,
+                local_length: anchor[..word_end].encode_utf16().count(),
+            });
+        }
+        from = start;
+    }
+}
+
+/// Starts the cover script without a console window of its own and waits for its `ready` line,
+/// echoing each line it prints, which hold states and numbers only.
+fn start_cover(script: &str, script_args: &[String], rect: RECT) -> Option<Child> {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cover = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script])
+        .args(script_args)
+        .args(["-X", &rect.left.to_string(), "-Y", &rect.top.to_string()])
+        .args(["-Width", &(rect.right - rect.left).to_string()])
+        .args(["-Height", &(rect.bottom - rect.top).to_string()])
+        .args(["-HarnessPid", &std::process::id().to_string()])
+        .stdout(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| println!("  could not start the cover script: {error}"))
+        .ok()?;
+    let stdout = cover.stdout.take()?;
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        println!("    cover: {line}");
+        if line.starts_with("ready") {
+            return Some(cover);
+        }
+    }
+    println!("  the cover script ended before it was ready");
+    stop_cover(&mut cover);
+    None
+}
+
+/// Ends the cover script's process, which closes its window.
+fn stop_cover(cover: &mut Child) {
+    let _ = cover.kill();
+    let _ = cover.wait();
+}
+
+/// Whether the foreground window meets `wanted` within [`FRONT_WAIT`], read every 50 ms.
+fn wait_for_front(wanted: impl Fn(Window) -> bool) -> bool {
+    let deadline = Instant::now() + FRONT_WAIT;
+    loop {
+        if foreground::window().is_some_and(&wanted) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(50));
+    }
+}
+
+/// Where a run's replacement landed, from the target's text read back after it.
+enum Landing {
+    /// The text read back is the text before with the span, and only the span, replaced.
+    AtTheSpan,
+    /// The text read back is the text before.
+    Unchanged,
+    /// The text changed otherwise: the changed region's offset and length in characters.
+    Elsewhere(Option<(usize, usize)>),
+    /// The text could not be read back.
+    Unread,
+}
+
+struct RunOutcome {
+    cover_in_front: bool,
+    refocus_failed: bool,
+    result: String,
+    front_after: &'static str,
+    /// The span's offset in characters.
+    span_at: usize,
+    landing: Landing,
+    /// Whether the cover's text changed, or `None` when it could not be read.
+    cover_changed: Option<bool>,
+}
+
+impl std::fmt::Display for RunOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let landing = match self.landing {
+            Landing::AtTheSpan => format!("at the span, character {}", self.span_at),
+            Landing::Unchanged => "nowhere, the target's text is unchanged".to_owned(),
+            Landing::Elsewhere(Some((at, length))) => format!(
+                "elsewhere: {length} characters changed at character {at}, the span at {}",
+                self.span_at
+            ),
+            Landing::Elsewhere(None) => "elsewhere".to_owned(),
+            Landing::Unread => "unknown, the target could not be read back".to_owned(),
+        };
+        let cover = match self.cover_changed {
+            Some(true) => "changed",
+            Some(false) => "unchanged",
+            None => "unread",
+        };
+        write!(
+            f,
+            "cover in front at the call: {}; result: {}; in front after: {}; replacement landed {landing}; cover's text {cover}",
+            self.cover_in_front, self.result, self.front_after
+        )
+    }
+}
+
+/// The runs' counts: a refocus ran when the cover was in front at the call, took when the cascade
+/// did not answer `RefocusFailed`, and verified when the replacement landed at the span.
+#[derive(Default)]
+struct Tally {
+    runs: u32,
+    ran: u32,
+    took: u32,
+    verified: u32,
+    cover_changed: u32,
+    cover_unread: u32,
+}
+
+impl Tally {
+    fn add(&mut self, outcome: &RunOutcome) {
+        self.runs += 1;
+        if outcome.cover_in_front {
+            self.ran += 1;
+            if !outcome.refocus_failed {
+                self.took += 1;
+            }
+        }
+        if matches!(outcome.landing, Landing::AtTheSpan) {
+            self.verified += 1;
+        }
+        match outcome.cover_changed {
+            Some(true) => self.cover_changed += 1,
+            Some(false) => {}
+            None => self.cover_unread += 1,
+        }
+    }
+}
+
+impl std::fmt::Display for Tally {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "n = {}: refocus ran {}, took {}; replacement at the span {}; cover's text changed {}, unread {}",
+            self.runs, self.ran, self.took, self.verified, self.cover_changed, self.cover_unread
+        )
+    }
 }
 
 fn report_replace(
