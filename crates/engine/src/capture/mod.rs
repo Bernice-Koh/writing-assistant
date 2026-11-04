@@ -78,6 +78,17 @@ pub trait Capture: Send + Sync {
     /// text for web.
     async fn current_text(&self) -> Result<String, CaptureError>;
 
+    /// A notification that the document changed: a counter the backend raises on each change,
+    /// read through the receiver's `changed` or `has_changed`. A watch channel keeps only the
+    /// latest value, so a burst of changes between two reads of the receiver is one notification.
+    /// Each call returns a receiver of its own with the current value marked seen, so the analyzer
+    /// and the overlay each see every notification once.
+    ///
+    /// Native raises it on UI Automation's text-changed event and when a focus change scopes a new
+    /// element, since a new document is a change. Web never raises it: the analyzer's safety poll
+    /// is what finds a change there, as for any control that raises no text-changed event.
+    fn changes(&self) -> tokio::sync::watch::Receiver<u64>;
+
     /// Replaces `span`'s text with `replacement`: the `local_length` UTF-16 code units starting
     /// `local_start` code units into the occurrence of its `anchor` that its `occurrence` names,
     /// by the rule on [`Span::occurrence`]. Taking the whole span, rather than its parts, means no

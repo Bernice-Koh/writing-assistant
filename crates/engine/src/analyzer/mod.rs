@@ -710,12 +710,14 @@ mod tests {
 
     pub(super) struct FakeCapture {
         text: StdMutex<String>,
+        changes: watch::Sender<u64>,
     }
 
     impl FakeCapture {
         pub(super) fn new(text: &str) -> Self {
             Self {
                 text: StdMutex::new(text.to_string()),
+                changes: watch::channel(0).0,
             }
         }
 
@@ -728,6 +730,10 @@ mod tests {
     impl Capture for FakeCapture {
         async fn current_text(&self) -> Result<String, CaptureError> {
             Ok(self.text.lock().unwrap().clone())
+        }
+
+        fn changes(&self) -> watch::Receiver<u64> {
+            self.changes.subscribe()
         }
 
         async fn replace(&self, _span: &Span, _replacement: &str) -> Result<(), CaptureError> {
