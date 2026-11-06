@@ -15,8 +15,13 @@
 //! - `checking_enabled`: whether checking runs. Its control and its reader arrive with the
 //!   settings shell.
 //! - `default_register`: the register of a surface the map has no entry for.
-//! - `register_map`: surface key to register, empty by default. A key is an opaque string until
-//!   the capture layer's surface identity gives it a meaning in Phase 2.
+//! - `register_map`: surface key to register, empty by default. A key is the executable name of
+//!   the focused document's process, such as `WINWORD.EXE`, or that name, a space and a page's
+//!   host, such as `msedge.exe github.com`, which gives the pages on that host a register of their
+//!   own. The process name matches ignoring ASCII case, since Windows treats executable names as
+//!   case-insensitive, so `winword.exe` matches Word's process; the host matches as a URL parser
+//!   normalises it. A key keeps the spelling it was written with. The analyzer resolves the
+//!   register at each recheck by [`Config::register_for`].
 //! - `telltale_toggles`: telltale pattern id to on or off. The file written on first start lists
 //!   every catalogue pattern. A pattern the map omits takes its default, off for `curly-quotes`
 //!   and on for every other pattern, and an id the catalogue does not hold is dropped on load.
@@ -32,6 +37,7 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use super::error::StoreError;
+use crate::capture::Surface;
 use crate::style::ai_tell;
 
 const CONFIG_FILE_NAME: &str = "config.json";
@@ -65,12 +71,40 @@ pub struct Config {
 }
 
 impl Config {
-    /// The register of the surface `surface_key` names: its entry in the register map, or the
-    /// default register when the map has none.
-    pub fn register_for(&self, surface_key: &str) -> &str {
-        self.register_map
-            .get(surface_key)
+    /// The register a check on `surface` runs under: the register map's entry for the surface's
+    /// process name, a space and its page URL's host, then its entry for the process name alone,
+    /// then the default register. A surface with no page URL, or with a URL that has no host, such
+    /// as a `file:` URL of a local path, is read by its process name alone.
+    ///
+    /// A key's process name matches ignoring ASCII case, and its host matches once the URL parser
+    /// has normalised it as it normalises the page URL's, so the map is scanned rather than looked
+    /// up by exact key: it holds a handful of entries and is read once per recheck. Of two keys that
+    /// match one surface in the same form, the first in the map's order wins.
+    pub fn register_for(&self, surface: &Surface) -> &str {
+        let process = surface.process_name.as_str();
+        surface
+            .page_host()
+            .and_then(|host| {
+                self.registers().find_map(|(key, register)| {
+                    let (key_process, key_host) = key.split_once(' ')?;
+                    let host_matches =
+                        normalised_host(key_host).is_some_and(|normalised| normalised == host);
+                    (key_process.eq_ignore_ascii_case(process) && host_matches).then_some(register)
+                })
+            })
+            .or_else(|| {
+                self.registers().find_map(|(key, register)| {
+                    (!key.contains(' ') && key.eq_ignore_ascii_case(process)).then_some(register)
+                })
+            })
             .unwrap_or(&self.default_register)
+    }
+
+    /// The register map's entries, in the map's order.
+    fn registers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.register_map
+            .iter()
+            .map(|(key, register)| (key.as_str(), register.as_str()))
     }
 
     /// Whether the telltale pattern `pattern_id` is on: its toggle, or the pattern's default when
@@ -128,6 +162,12 @@ fn default_telltale_toggles() -> BTreeMap<String, bool> {
 
 fn telltale_enabled_by_default(pattern_id: &str) -> bool {
     !TELLTALES_OFF_BY_DEFAULT.contains(&pattern_id)
+}
+
+/// `host`, a register map key's host, as the URL parser normalises a web page's host, so that it
+/// compares with [`Surface::page_host`]; `None` when it is not a host.
+fn normalised_host(host: &str) -> Option<String> {
+    url::Host::parse(host).ok().map(|parsed| parsed.to_string())
 }
 
 /// Loads the config from under `data_root`, writing and returning the default if no config file
@@ -370,13 +410,118 @@ mod tests {
         assert_eq!(keys, known);
     }
 
+    /// The settings with a register map of `entries` and the default register `"default"`.
+    fn mapping(entries: &[(&str, &str)]) -> Config {
+        Config {
+            register_map: entries
+                .iter()
+                .map(|(key, register)| ((*key).to_owned(), (*register).to_owned()))
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    fn surface(process_name: &str, page_url: Option<&str>) -> Surface {
+        Surface {
+            process_name: process_name.to_owned(),
+            page_url: page_url.map(str::to_owned),
+            document_key: None,
+        }
+    }
+
     #[test]
-    fn a_mapped_surface_key_returns_its_register_and_any_other_returns_the_default() {
+    fn a_register_map_key_of_a_process_name_maps_every_document_in_that_process() {
         let dir = root_holding(r#"{ "register_map": { "WINWORD.EXE": "formal" } }"#);
         let config = load(&dir).unwrap();
-        assert_eq!(config.register_for("WINWORD.EXE"), "formal");
-        assert_eq!(config.register_for("chrome.exe"), "default");
+        assert_eq!(config.register_for(&surface("WINWORD.EXE", None)), "formal");
         std::fs::remove_dir_all(&dir).ok();
+
+        let config = mapping(&[("msedge.exe", "chat")]);
+        assert_eq!(
+            config.register_for(&surface("msedge.exe", Some("https://example.com/notes"))),
+            "chat"
+        );
+    }
+
+    #[test]
+    fn a_key_of_the_process_name_and_the_host_wins_over_the_process_names_key() {
+        let config = mapping(&[
+            ("msedge.exe", "chat"),
+            ("msedge.exe mail.example.com", "email"),
+        ]);
+        assert_eq!(
+            config.register_for(&surface(
+                "msedge.exe",
+                Some("https://mail.example.com/compose?to=a#draft")
+            )),
+            "email"
+        );
+        // Another host, and the same host in another process, fall to the process name's key.
+        assert_eq!(
+            config.register_for(&surface("msedge.exe", Some("https://example.com/"))),
+            "chat"
+        );
+        assert_eq!(
+            config.register_for(&surface("chrome.exe", Some("https://mail.example.com/"))),
+            "default"
+        );
+    }
+
+    #[test]
+    fn a_surface_no_key_matches_takes_the_default_register() {
+        let config = Config {
+            default_register: "plain".to_owned(),
+            ..mapping(&[
+                ("WINWORD.EXE", "formal"),
+                ("msedge.exe example.com", "email"),
+            ])
+        };
+        assert_eq!(config.register_for(&surface("Notepad.exe", None)), "plain");
+        assert_eq!(
+            config.register_for(&surface("Notepad.exe", Some("https://example.com/"))),
+            "plain"
+        );
+    }
+
+    #[test]
+    fn a_keys_process_name_matches_in_another_case_and_its_host_as_the_parser_normalises_it() {
+        let config = mapping(&[
+            ("winword.exe", "formal"),
+            ("MSEDGE.EXE", "chat"),
+            ("MsEdge.exe Mail.Example.COM", "email"),
+        ]);
+        assert_eq!(config.register_for(&surface("WINWORD.EXE", None)), "formal");
+        assert_eq!(
+            config.register_for(&surface(
+                "msedge.exe",
+                Some("https://mail.example.com/inbox")
+            )),
+            "email"
+        );
+        assert_eq!(
+            config.register_for(&surface("msedge.exe", Some("https://example.com/"))),
+            "chat"
+        );
+        // The keys keep the spelling they were written with.
+        assert!(config.register_map.contains_key("winword.exe"));
+        assert!(config
+            .register_map
+            .contains_key("MsEdge.exe Mail.Example.COM"));
+    }
+
+    #[test]
+    fn a_page_url_with_no_host_goes_straight_to_the_process_name() {
+        let page = "file:///C:/pages/check.html";
+        let config = mapping(&[("msedge.exe", "chat"), ("msedge.exe ", "email")]);
+        assert_eq!(
+            config.register_for(&surface("msedge.exe", Some(page))),
+            "chat"
+        );
+        let unmapped = mapping(&[("msedge.exe ", "email")]);
+        assert_eq!(
+            unmapped.register_for(&surface("msedge.exe", Some(page))),
+            "default"
+        );
     }
 
     #[test]

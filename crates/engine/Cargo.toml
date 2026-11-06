@@ -43,6 +43,7 @@ lru = "0.12"
 directories = "6"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.10"
+url = "2"
 
 [dev-dependencies]
 env_logger.workspace = true

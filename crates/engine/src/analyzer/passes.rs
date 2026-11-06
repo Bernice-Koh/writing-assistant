@@ -155,18 +155,25 @@ fn unit_pass(sources: &Sources<'_>, unit: Unit, sentences: &[ModeSentence<'_>]) 
     telltales.chain(style).collect()
 }
 
-/// The analyzer's paragraph pass for `paragraph`, whose sentences are `sentences`: from the
-/// paragraph cache where it holds an entry for the paragraph, and otherwise evaluated by
-/// [`paragraph_pass`] and cached. A paragraph of code has no flags and takes no entry.
+/// The analyzer's paragraph pass under `register` for `paragraph`, whose sentences are
+/// `sentences`: from the paragraph cache where it holds an entry for the paragraph under the
+/// register, and otherwise evaluated by [`paragraph_pass`] and cached. A paragraph of code has no
+/// flags and takes no entry.
 pub(super) fn cached_paragraph_pass(
     inner: &Inner,
+    register: &str,
     paragraph: &Paragraph<'_>,
     sentences: &[Sentence<'_>],
 ) -> Vec<UnitFlag> {
     if paragraph.mode == FormMode::Code {
         return Vec::new();
     }
-    let key = cache_key(inner.ruleset.version(), paragraph.mode, paragraph.text);
+    let key = cache_key(
+        inner.ruleset.version(),
+        register,
+        paragraph.mode,
+        paragraph.text,
+    );
     let cached = inner
         .paragraph_cache
         .lock()
@@ -182,7 +189,7 @@ pub(super) fn cached_paragraph_pass(
         .paragraph_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let flags = paragraph_pass(&inner.sources(), paragraph, sentences);
+    let flags = paragraph_pass(&inner.sources(register), paragraph, sentences);
     inner
         .paragraph_cache
         .lock()
@@ -191,10 +198,11 @@ pub(super) fn cached_paragraph_pass(
     flags
 }
 
-/// The analyzer's document pass over `sentences`, every sentence of the document with its
-/// paragraph's mode, evaluated afresh by [`document_pass`].
+/// The analyzer's document pass under `register` over `sentences`, every sentence of the document
+/// with its paragraph's mode, evaluated afresh by [`document_pass`].
 pub(super) fn counted_document_pass(
     inner: &Inner,
+    register: &str,
     sentences: &[ModeSentence<'_>],
 ) -> Vec<UnitFlag> {
     #[cfg(test)]
@@ -202,7 +210,7 @@ pub(super) fn counted_document_pass(
         .document_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    document_pass(&inner.sources(), sentences)
+    document_pass(&inner.sources(register), sentences)
 }
 
 #[cfg(test)]
@@ -212,18 +220,19 @@ mod tests {
 
     use super::super::tests::{
         cached_parts, default_catalogue, flagged_text, pinned_flags, published_flags, step,
-        FakeCapture, PINNED_DOCUMENT,
+        surface_of, FakeCapture, PINNED_DOCUMENT,
     };
     use super::super::{Analyzer, SentenceParts};
     use super::*;
-    use crate::capture::Capture;
+    use crate::capture::{Capture, Surface};
     use crate::flag::{ClauseId, FlagOrigin, RulesetVersion};
     use crate::languagetool::GrammarSource;
     use crate::screen::{Finding, Screen};
+    use crate::store::Config;
     use crate::style::ai_tell::Catalogue;
     use crate::style::checker::{Band, CheckableMode, Checker, Matcher, PhraseEntry, Rule};
     use crate::style::ruleset::LoadedRuleset;
-    use crate::test_support::{test_spell_checker, FakeGrammar};
+    use crate::test_support::{capture_logs, test_spell_checker, FakeGrammar};
 
     /// The text of the clause every fixture checker serves, written for these tests.
     const CLAUSE: &str = "Hedge rarely.";
@@ -276,14 +285,29 @@ mod tests {
         )
     }
 
-    /// An analyzer of `fake` under `register`, with `grammar` as its grammar source, `ruleset`,
-    /// and `catalogue`.
+    /// An analyzer of `fake` under settings whose default register is `default_register` and
+    /// whose register map is empty, so that every surface is checked under it, with `grammar` as
+    /// its grammar source, `ruleset`, and `catalogue`.
     fn started(
         fake: &Arc<FakeCapture>,
         grammar: Option<&Arc<FakeGrammar>>,
         ruleset: LoadedRuleset,
         catalogue: Catalogue,
-        register: &str,
+        default_register: &str,
+    ) -> Analyzer {
+        let settings = Config {
+            default_register: default_register.to_owned(),
+            ..Config::default()
+        };
+        started_with_settings(fake, grammar, ruleset, catalogue, settings)
+    }
+
+    fn started_with_settings(
+        fake: &Arc<FakeCapture>,
+        grammar: Option<&Arc<FakeGrammar>>,
+        ruleset: LoadedRuleset,
+        catalogue: Catalogue,
+        settings: Config,
     ) -> Analyzer {
         Analyzer::start(
             Arc::clone(fake) as Arc<dyn Capture>,
@@ -291,7 +315,7 @@ mod tests {
             grammar.map(|grammar| Arc::clone(grammar) as Arc<dyn GrammarSource>),
             Arc::new(ruleset),
             Arc::new(catalogue),
-            register.to_owned(),
+            Arc::new(settings),
         )
     }
 
@@ -432,7 +456,7 @@ mod tests {
             style_flags(&published_flags(&analyzer)),
             owned(&[("2:style:1:0:7", "Perhaps")])
         );
-        let key = cache_key(Some(RulesetVersion(1)), FormMode::Prose, hedged);
+        let key = cache_key(Some(RulesetVersion(1)), "default", FormMode::Prose, hedged);
         let cached = analyzer
             .inner
             .paragraph_cache
@@ -577,7 +601,12 @@ mod tests {
                 (style_id(1, 2, rains, "rains"), "rains".to_owned()),
             ]
         );
-        let key = cache_key(Some(RulesetVersion(1)), FormMode::Prose, misspelled);
+        let key = cache_key(
+            Some(RulesetVersion(1)),
+            "default",
+            FormMode::Prose,
+            misspelled,
+        );
         let cached = analyzer
             .inner
             .paragraph_cache
@@ -662,8 +691,8 @@ mod tests {
                 checkers.push(scoped);
             }
         }
-        // The settings' default register, which every sentence is checked under until capture
-        // supplies the surface's.
+        // The settings' default register, which a surface the register map has no key for is
+        // checked under.
         let analyzer = started(
             &fake,
             None,
@@ -681,6 +710,214 @@ mod tests {
                 ("0:style:5:0:7", "Perhaps"),
             ])
         );
+    }
+
+    /// Three checkers that forbid "perhaps" in `register` alone, with ids 1 to 3 by unit: a
+    /// sentence, a paragraph and the document.
+    fn scoped_to(register: &str) -> Vec<Checker> {
+        [Unit::Sentence, Unit::Paragraph, Unit::Document]
+            .map(|unit| {
+                let mut scoped = checker(phrase("perhaps"), unit, Band::Forbidden);
+                scoped.rule.register_scope = Some(BTreeSet::from([register.to_owned()]));
+                scoped
+            })
+            .to_vec()
+    }
+
+    /// The style flags [`scoped_to`]'s three checkers raise in their register on a first sentence
+    /// that opens with "Perhaps".
+    fn perhaps_flagged() -> Vec<(String, String)> {
+        owned(&[
+            ("0:style:1:0:7", "Perhaps"),
+            ("0:style:2:0:7", "Perhaps"),
+            ("0:style:3:0:7", "Perhaps"),
+        ])
+    }
+
+    /// Settings that map Word, and Edge's pages on `mail.example.com`, to `email`, and Edge's
+    /// other pages to `chat`, with `default` as the default register.
+    fn surface_settings() -> Config {
+        let mut settings = Config::default();
+        for (key, register) in [
+            ("WINWORD.EXE", "email"),
+            ("msedge.exe", "chat"),
+            ("msedge.exe mail.example.com", "email"),
+        ] {
+            settings
+                .register_map
+                .insert(key.to_owned(), register.to_owned());
+        }
+        settings
+    }
+
+    /// An analyzer of `fake` with [`scoped_to`]`("email")`'s checkers under [`surface_settings`].
+    fn email_scoped(fake: &Arc<FakeCapture>) -> Analyzer {
+        started_with_settings(
+            fake,
+            None,
+            ruleset_at(1, scoped_to("email")),
+            default_catalogue(),
+            surface_settings(),
+        )
+    }
+
+    fn page(url: &str) -> Surface {
+        Surface {
+            page_url: Some(url.to_owned()),
+            document_key: Some(url.to_owned()),
+            ..surface_of("msedge.exe")
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_register_follows_the_surface_at_the_next_recheck_and_no_entry_crosses_registers() {
+        let fake = Arc::new(FakeCapture::new("Perhaps it rains."));
+        let analyzer = email_scoped(&fake);
+        step(6).await;
+        assert!(style_flags(&published_flags(&analyzer)).is_empty());
+        assert_eq!(fake.surface_reads(), 1, "one surface read per recheck");
+
+        // Focus moves to Word, which the map gives `email`, onto a document whose first sentence
+        // and paragraph the cache holds under the default register.
+        fake.focus(
+            Some(surface_of("WINWORD.EXE")),
+            "Perhaps it rains.\nThe ferry waits.",
+        );
+        step(6).await;
+        assert_eq!(style_flags(&published_flags(&analyzer)), perhaps_flagged());
+        assert_eq!(analyzer.deterministic_check_count(), 3);
+        assert_eq!(analyzer.paragraph_check_count(), 3);
+        assert_eq!(fake.surface_reads(), 2);
+
+        // And back, served from the default register's entries.
+        fake.focus(Some(surface_of("fake.exe")), "Perhaps it rains.");
+        step(6).await;
+        assert!(style_flags(&published_flags(&analyzer)).is_empty());
+        assert_eq!(analyzer.deterministic_check_count(), 3);
+        assert_eq!(analyzer.paragraph_check_count(), 3);
+        assert_eq!(analyzer.updates().len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_text_on_two_surfaces_of_different_registers_is_rechecked_under_each() {
+        let text = "Perhaps it rains.";
+        let fake = Arc::new(FakeCapture::new(text));
+        let analyzer = email_scoped(&fake);
+        step(6).await;
+        assert!(style_flags(&published_flags(&analyzer)).is_empty());
+
+        fake.focus(Some(surface_of("WINWORD.EXE")), text);
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 2);
+        assert_eq!(style_flags(&published_flags(&analyzer)), perhaps_flagged());
+        assert_eq!(analyzer.deterministic_check_count(), 2);
+
+        // A change of formatting alone, on the same surface, rechecks nothing.
+        fake.raise_event();
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 2);
+        assert_eq!(fake.surface_reads(), 3);
+
+        fake.focus(Some(surface_of("fake.exe")), text);
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 3);
+        assert!(style_flags(&published_flags(&analyzer)).is_empty());
+        assert_eq!(analyzer.deterministic_check_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_page_on_a_mapped_host_takes_its_hosts_register_over_its_processs() {
+        let fake = Arc::new(FakeCapture::on(
+            Some(page("https://mail.example.com/compose?to=team#draft")),
+            "Perhaps it rains.",
+        ));
+        let analyzer = email_scoped(&fake);
+        step(6).await;
+        assert_eq!(style_flags(&published_flags(&analyzer)), perhaps_flagged());
+
+        // Another host in the same process, and a local file, take the process's register.
+        for url in ["https://example.com/notes", "file:///C:/pages/notes.html"] {
+            fake.focus(Some(page(url)), "Perhaps it snows.");
+            step(6).await;
+            assert!(style_flags(&published_flags(&analyzer)).is_empty(), "{url}");
+            fake.focus(Some(page("https://mail.example.com/")), "Perhaps it rains.");
+            step(6).await;
+            assert_eq!(
+                style_flags(&published_flags(&analyzer)),
+                perhaps_flagged(),
+                "{url}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_surface_the_backend_cannot_name_is_checked_under_the_default_register() {
+        // The web backend answers the surface as unsupported.
+        let fake = Arc::new(FakeCapture::on(None, "Perhaps it rains."));
+        let settings = Config {
+            default_register: "email".to_owned(),
+            ..surface_settings()
+        };
+        let analyzer = started_with_settings(
+            &fake,
+            None,
+            ruleset_at(1, scoped_to("email")),
+            default_catalogue(),
+            settings,
+        );
+        step(6).await;
+        assert_eq!(fake.surface_reads(), 1);
+        assert_eq!(style_flags(&published_flags(&analyzer)), perhaps_flagged());
+    }
+
+    #[test]
+    fn the_recheck_log_names_the_register_the_process_and_the_host_and_no_more_of_url_or_text() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let url = "https://mail.example.com/pathpart/compose?to=querypart#fragmentpart";
+        let ((), lines) = capture_logs(|| {
+            runtime.block_on(async {
+                let fake = Arc::new(FakeCapture::on(Some(page(url)), "Perhaps it rains."));
+                let _analyzer = email_scoped(&fake);
+                step(6).await;
+                fake.focus(None, "Perhaps it snows.");
+                step(6).await;
+            });
+        });
+
+        let rechecks: Vec<&String> = lines
+            .iter()
+            .map(|(_, line)| line)
+            .filter(|line| line.starts_with("recheck ") && line.contains("under the register"))
+            .collect();
+        assert_eq!(rechecks.len(), 2, "{lines:#?}");
+        for named in [
+            "register \"email\"",
+            "\"msedge.exe\"",
+            "\"mail.example.com\"",
+        ] {
+            assert!(rechecks[0].contains(named), "{named} in {}", rechecks[0]);
+        }
+        for named in ["register \"default\"", "does not support"] {
+            assert!(rechecks[1].contains(named), "{named} in {}", rechecks[1]);
+        }
+        for (_, line) in &lines {
+            for hidden in [
+                "https",
+                "pathpart",
+                "compose",
+                "querypart",
+                "fragmentpart",
+                "Perhaps",
+                "rains",
+                "snows",
+            ] {
+                assert!(!line.contains(hidden), "{hidden} in {line}");
+            }
+        }
     }
 
     /// Copies every entry of `from`'s sentence cache and paragraph cache into `to`'s, under the

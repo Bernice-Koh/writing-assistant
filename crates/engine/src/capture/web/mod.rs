@@ -23,7 +23,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::capture::{Capture, CaptureError, CursorRect, Foreground};
+use crate::capture::{Capture, CaptureError, CursorRect, Foreground, Surface};
 use crate::flag::Span;
 use error::WebCaptureError;
 use message::{ClientMessage, ServerMessage};
@@ -181,6 +181,10 @@ impl Capture for WebCapture {
     async fn span_rect(&self, _span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
         Err(CaptureError::Unsupported)
     }
+
+    async fn surface(&self) -> Result<Surface, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
 }
 
 fn unexpected_reply(message: &ClientMessage) -> CaptureError {
@@ -311,6 +315,14 @@ mod tests {
             let result = capture.span_rect(&span("anchor", 0, 1, occurrence)).await;
             assert!(matches!(result, Err(CaptureError::Unsupported)));
         }
+    }
+
+    #[tokio::test]
+    async fn the_surface_is_always_unsupported_and_asks_the_extension_nothing() {
+        // No extension is connected, so a request would fail as a communication error.
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let result = capture.surface().await;
+        assert!(matches!(result, Err(CaptureError::Unsupported)));
     }
 
     #[tokio::test]

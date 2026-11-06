@@ -4,8 +4,9 @@
 //! and splits each paragraph into sentences. Checking keys to the pause because a flag on a
 //! half-typed word is noise.
 //!
-//! A sentence is checked under its paragraph's mode, and every check runs under the register the
-//! analyzer was started with. Nothing checks a sentence of code. Spelling, the telltale catalogue
+//! A sentence is checked under its paragraph's mode, and every check of a recheck runs under one
+//! register: the one the settings map the capture backend's surface to, read at the recheck, or the
+//! default register when the backend cannot name the surface. Nothing checks a sentence of code. Spelling, the telltale catalogue
 //! and the ruleset's checkers check a sentence of a fragment or of prose, a pattern or a checker
 //! only where it declares the sentence's mode, and LanguageTool checks a sentence of prose alone, so
 //! a fragment's grammar part is complete and empty from the start.
@@ -24,12 +25,13 @@
 //! own, so the analyzer goes on watching for changes while LanguageTool answers, and the
 //! deterministic stage's flags never wait on it.
 //!
-//! The sentence cache holds each sentence's two parts under a hash of the ruleset version, its
-//! paragraph's mode and its text, as their sources raised them, so one text in a prose paragraph
-//! and in a fragment has an entry for each. The paragraph cache holds the paragraph pass's flags
-//! for a paragraph under a hash of the ruleset version, its mode and its text, so an unchanged
-//! paragraph is served wherever it has moved. With the version in both keys, an entry made under
-//! one ruleset version is never served under another. Suppression by severity is applied each time
+//! The sentence cache holds each sentence's two parts under a hash of the ruleset version, the
+//! register, its paragraph's mode and its text, as their sources raised them, so one text in a
+//! prose paragraph and in a fragment has an entry for each, as has one text checked under two
+//! registers. The paragraph cache holds the paragraph pass's flags for a paragraph under a hash of
+//! the ruleset version, the register, its mode and its text, so an unchanged paragraph is served
+//! wherever it has moved. With the version and the register in both keys, an entry made under one
+//! ruleset version or one register is never served under another. Suppression by severity is applied each time
 //! the document's flags are assembled for a publish, over each sentence's parts in hand and the
 //! paragraph and document passes' flags anchored on it, so a soft flag that a grammar flag overlaps
 //! is in the first update and gone from the second. A grammar check that fails, times out, or meets
@@ -69,6 +71,7 @@ use crate::capture::Capture;
 use crate::flag::{Flag, RulesetVersion};
 use crate::languagetool::GrammarSource;
 use crate::spelling::SpellChecker;
+use crate::store::Config;
 use crate::style::ai_tell::Catalogue;
 use crate::style::checker::FormMode;
 use crate::style::evaluator::ModeSentence;
@@ -109,7 +112,9 @@ struct Inner {
     grammar: Option<Arc<dyn GrammarSource>>,
     ruleset: Arc<LoadedRuleset>,
     catalogue: Arc<Catalogue>,
-    register: String,
+    /// The settings loaded at startup, whose register map and default register each recheck
+    /// resolves its register from.
+    settings: Arc<Config>,
     /// The whole document's flags as the latest update published them, empty until the first. The
     /// channel holds the analyzer's one copy of them, which a subscriber reads through `borrow`.
     flags_tx: watch::Sender<Vec<Flag>>,
@@ -157,6 +162,8 @@ struct SentenceParts {
 /// The document one recheck checks, owned so that its grammar stage's task can carry it.
 struct Recheck {
     number: u64,
+    /// The register every check of the recheck runs under.
+    register: String,
     text: String,
     sentences: Vec<DocumentSentence>,
     /// Each sentence's parts in hand, in the order of `sentences`.
@@ -232,6 +239,14 @@ impl Pending {
     }
 }
 
+/// The register a recheck runs under, with what it was resolved from, for the recheck's log line.
+struct Register {
+    name: String,
+    /// The surface's process name and its page URL's host alone, or the error that left the
+    /// surface unnamed.
+    source: String,
+}
+
 /// One read of the document, timed by the wall clock.
 struct Read {
     text: String,
@@ -257,15 +272,16 @@ impl Analyzer {
     /// its origin, `None` when no version is loaded, and LanguageTool's matches route through its
     /// checkers. `catalogue` is the telltale catalogue compiled at startup from the settings'
     /// toggles: every flag the analyzer publishes carries its hash whatever its origin, beside the
-    /// ruleset version. `register` is the register every sentence is checked under, the settings'
-    /// default register until capture supplies the surface's (#58).
+    /// ruleset version. `settings` are the settings loaded at startup: each recheck reads the
+    /// capture backend's surface and checks under the register [`Config::register_for`] maps it
+    /// to, or under the default register when the backend cannot name the surface.
     pub fn start(
         capture: Arc<dyn Capture>,
         spelling: SpellChecker,
         grammar: Option<Arc<dyn GrammarSource>>,
         ruleset: Arc<LoadedRuleset>,
         catalogue: Arc<Catalogue>,
-        register: String,
+        settings: Arc<Config>,
     ) -> Self {
         let (flags_tx, _) = watch::channel(Vec::new());
         let inner = Arc::new(Inner {
@@ -274,7 +290,7 @@ impl Analyzer {
             grammar,
             ruleset,
             catalogue,
-            register,
+            settings,
             flags_tx,
             cache: Mutex::new(LruCache::new(cache_capacity())),
             paragraph_cache: Mutex::new(LruCache::new(cache_capacity())),
@@ -347,6 +363,11 @@ impl Analyzer {
 /// last checked; a read that hashes the same, as after a change of formatting alone, rechecks
 /// nothing. A focus change arrives as a notification, so a new document takes the same path.
 ///
+/// The read after the threshold is joined by one read of the surface, which resolves the register
+/// the recheck runs under. A text that hashes the same as the text last checked is rechecked when
+/// that register differs from the one it was last checked under, as when focus moves between two
+/// documents of one text on surfaces the settings map to different registers.
+///
 /// The safety poll reads only while no change is pending, [`SAFETY_POLL_INTERVAL`] after the last
 /// read. A text other than the one last checked marks the document changed and starts the
 /// threshold, and the recheck follows with a read of its own once the text has held through the
@@ -358,6 +379,7 @@ async fn debounce_loop(inner: Arc<Inner>) {
     let mut notifications_open = true;
     let mut pending: Option<Pending> = None;
     let mut last_checked: Option<u64> = None;
+    let mut last_register: Option<String> = None;
     let mut next_poll = Instant::now();
     let mut grammar_stage: Option<JoinHandle<()>> = None;
 
@@ -405,21 +427,28 @@ async fn debounce_loop(inner: Arc<Inner>) {
                         );
                         pending = Some(Pending::starting_now(Trigger::Poll, Some(hash)));
                     }
-                    Some(change) if last_checked == Some(hash) => {
-                        log::debug!(
-                            "the read after the {}'s quiet threshold holds the text last checked, \
-                             {}, so nothing is rechecked",
-                            change.trigger.name(),
-                            read.describe()
-                        );
-                    }
                     Some(change) => {
+                        let register = resolve_register(&inner).await;
+                        if last_checked == Some(hash)
+                            && last_register.as_deref() == Some(register.name.as_str())
+                        {
+                            log::debug!(
+                                "the read after the {}'s quiet threshold holds the text last \
+                                 checked, {}, under the register it was checked under, so nothing \
+                                 is rechecked",
+                                change.trigger.name(),
+                                read.describe()
+                            );
+                            continue;
+                        }
                         last_checked = Some(hash);
-                        // The previous recheck's checks were of text the document no longer holds.
+                        last_register = Some(register.name.clone());
+                        // The previous recheck's checks were of text the document no longer holds,
+                        // or under a register it is no longer checked under.
                         if let Some(stale) = grammar_stage.take() {
                             stale.abort();
                         }
-                        grammar_stage = recheck(&inner, read, change.trigger);
+                        grammar_stage = recheck(&inner, read, change.trigger, register);
                     }
                 }
             }
@@ -443,18 +472,41 @@ async fn read_document(inner: &Inner) -> Option<Read> {
     }
 }
 
-/// Runs the deterministic stage over `read`'s text and publishes the first update, then spawns the
-/// grammar stage over the sentences whose grammar part is incomplete, returning its task. No
-/// stage is spawned with no grammar source or no such sentence. `trigger` is what found the change,
-/// for the log.
-fn recheck(inner: &Arc<Inner>, read: Read, trigger: Trigger) -> Option<JoinHandle<()>> {
+/// The register the settings map the capture backend's surface to, from one read of the surface,
+/// or the default register when the backend cannot name the surface.
+async fn resolve_register(inner: &Inner) -> Register {
+    match inner.capture.surface().await {
+        Ok(surface) => Register {
+            name: inner.settings.register_for(&surface).to_owned(),
+            source: format!("resolved from {}", surface.describe()),
+        },
+        Err(error) => Register {
+            name: inner.settings.default_register.clone(),
+            source: format!("as the default, since the surface could not be read: {error}"),
+        },
+    }
+}
+
+/// Runs the deterministic stage over `read`'s text under `register` and publishes the first
+/// update, then spawns the grammar stage over the sentences whose grammar part is incomplete,
+/// returning its task. No stage is spawned with no grammar source or no such sentence. `trigger` is
+/// what found the change, for the log.
+fn recheck(
+    inner: &Arc<Inner>,
+    read: Read,
+    trigger: Trigger,
+    register: Register,
+) -> Option<JoinHandle<()>> {
     let number = start_recheck(inner);
     log::debug!(
-        "recheck {number} on the {} after the quiet threshold, over a read of {}",
+        "recheck {number} on the {} after the quiet threshold, over a read of {}, under the \
+         register {:?} {}",
         trigger.name(),
-        read.describe()
+        read.describe(),
+        register.name,
+        register.source
     );
-    let recheck = deterministic_stage(inner, number, read.text);
+    let recheck = deterministic_stage(inner, number, read.text, register.name);
     publish(
         inner,
         number,
@@ -514,13 +566,13 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
 }
 
 /// Splits `text` into its paragraphs and each paragraph into its sentences, and runs the three
-/// passes. Each sentence's parts come from the sentence cache where it holds an entry, and
-/// otherwise from a fresh check under its paragraph's mode, cached as [`deterministic_parts`]
-/// leaves them. Each paragraph's flags come from [`passes::cached_paragraph_pass`], and the
-/// document's from [`passes::counted_document_pass`]. An unchanged sentence or paragraph whose
-/// entry aged out under the LRU's capacity is checked afresh, the correct fallback rather than
-/// showing no flags.
-fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
+/// passes under `register`. Each sentence's parts come from the sentence cache where it holds an
+/// entry, and otherwise from a fresh check under its paragraph's mode, cached as
+/// [`deterministic_parts`] leaves them. Each paragraph's flags come from
+/// [`passes::cached_paragraph_pass`], and the document's from [`passes::counted_document_pass`].
+/// An unchanged sentence or paragraph whose entry aged out under the LRU's capacity is checked
+/// afresh, the correct fallback rather than showing no flags.
+fn deterministic_stage(inner: &Inner, number: u64, text: String, register: String) -> Recheck {
     let version = inner.ruleset.version();
     let mut sentences = Vec::new();
     let mut parts = Vec::new();
@@ -529,7 +581,7 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
         let first_sentence = sentences.len();
         let paragraph_sentences = sentences::split(paragraph.text);
         for sentence in &paragraph_sentences {
-            let key = cache_key(version, paragraph.mode, sentence.text);
+            let key = cache_key(version, &register, paragraph.mode, sentence.text);
             let cached = inner
                 .cache
                 .lock()
@@ -537,7 +589,7 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
                 .get(&key)
                 .cloned();
             let sentence_parts = cached.unwrap_or_else(|| {
-                let checked = deterministic_parts(inner, sentence.text, paragraph.mode);
+                let checked = deterministic_parts(inner, &register, sentence.text, paragraph.mode);
                 inner
                     .cache
                     .lock()
@@ -555,19 +607,21 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
             unit_flags.push(Vec::new());
         }
         for UnitFlag { sentence, flag } in
-            passes::cached_paragraph_pass(inner, &paragraph, &paragraph_sentences)
+            passes::cached_paragraph_pass(inner, &register, &paragraph, &paragraph_sentences)
         {
             unit_flags[first_sentence + sentence].push(flag);
         }
     }
     let mut recheck = Recheck {
         number,
+        register,
         text,
         sentences,
         parts,
         unit_flags,
     };
-    let document_flags = passes::counted_document_pass(inner, &recheck.mode_sentences());
+    let document_flags =
+        passes::counted_document_pass(inner, &recheck.register, &recheck.mode_sentences());
     for UnitFlag { sentence, flag } in document_flags {
         recheck.unit_flags[sentence].push(flag);
     }
@@ -583,35 +637,40 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String) -> Recheck {
 }
 
 /// The parts of `sentence`, a sentence of a paragraph of `mode`, as the deterministic stage leaves
-/// them. No source checks code, so both parts are complete and empty. The sentence pass checks a
-/// fragment and prose. A fragment's grammar part is complete and empty, since grammar does not run
-/// on fragments, and prose's is left incomplete for the grammar stage.
-fn deterministic_parts(inner: &Inner, sentence: &str, mode: FormMode) -> SentenceParts {
+/// them under `register`. No source checks code, so both parts are complete and empty. The
+/// sentence pass checks a fragment and prose. A fragment's grammar part is complete and empty,
+/// since grammar does not run on fragments, and prose's is left incomplete for the grammar stage.
+fn deterministic_parts(
+    inner: &Inner,
+    register: &str,
+    sentence: &str,
+    mode: FormMode,
+) -> SentenceParts {
     match mode {
         FormMode::Code => SentenceParts {
             deterministic: Vec::new(),
             grammar: Some(Vec::new()),
         },
         FormMode::Fragment => SentenceParts {
-            deterministic: deterministic_flags(inner, sentence, mode),
+            deterministic: deterministic_flags(inner, register, sentence, mode),
             grammar: Some(Vec::new()),
         },
         FormMode::Prose => SentenceParts {
-            deterministic: deterministic_flags(inner, sentence, mode),
+            deterministic: deterministic_flags(inner, register, sentence, mode),
             grammar: None,
         },
     }
 }
 
-/// The analyzer's sentence pass over `sentence`, a sentence of a paragraph of `mode`, by
-/// [`passes::sentence_pass`].
-fn deterministic_flags(inner: &Inner, sentence: &str, mode: FormMode) -> Vec<Flag> {
+/// The analyzer's sentence pass over `sentence`, a sentence of a paragraph of `mode`, under
+/// `register`, by [`passes::sentence_pass`].
+fn deterministic_flags(inner: &Inner, register: &str, sentence: &str, mode: FormMode) -> Vec<Flag> {
     #[cfg(test)]
     inner
         .deterministic_checks
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    passes::sentence_pass(&inner.sources(), sentence, mode)
+    passes::sentence_pass(&inner.sources(register), sentence, mode)
 }
 
 /// Sends `grammar` each sentence of `recheck` whose grammar part is incomplete, which is each
@@ -630,7 +689,9 @@ async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut r
             None => {
                 let sentence = recheck.sentence(index);
                 let mode = recheck.sentences[index].mode;
-                let grammar_flags = check_grammar(&inner, grammar.as_ref(), sentence, mode).await;
+                let grammar_flags =
+                    check_grammar(&inner, grammar.as_ref(), &recheck.register, sentence, mode)
+                        .await;
                 if let Some(flags) = &grammar_flags {
                     let complete = SentenceParts {
                         deterministic: recheck.parts[index].deterministic.clone(),
@@ -659,16 +720,18 @@ async fn grammar_stage(inner: Arc<Inner>, grammar: Arc<dyn GrammarSource>, mut r
     }
 }
 
-/// `sentence`'s grammar flags from `grammar`, checked under `mode`, its paragraph's, or `None`
-/// when the check failed, which leaves the sentence's grammar part incomplete.
+/// `sentence`'s grammar flags from `grammar`, checked under `mode`, its paragraph's, and
+/// `register`, or `None` when the check failed, which leaves the sentence's grammar part
+/// incomplete.
 async fn check_grammar(
     inner: &Inner,
     grammar: &dyn GrammarSource,
+    register: &str,
     sentence: &str,
     mode: FormMode,
 ) -> Option<Vec<Flag>> {
     let checked = grammar
-        .check(sentence, &inner.ruleset, mode, &inner.register)
+        .check(sentence, &inner.ruleset, mode, register)
         .await;
     match checked {
         Ok(grammar_flags) => Some(grammar_flags),
@@ -684,15 +747,15 @@ async fn check_grammar(
 }
 
 impl Inner {
-    /// The analyzer's own handles as the passes read them. Typed text rewrites nothing, so spelling
-    /// has no source text.
-    fn sources(&self) -> Sources<'_> {
+    /// The analyzer's own handles as the passes read them under `register`, the recheck's. Typed
+    /// text rewrites nothing, so spelling has no source text.
+    fn sources<'s>(&'s self, register: &'s str) -> Sources<'s> {
         Sources {
             spelling: &self.spelling,
             spelling_source: None,
             catalogue: &self.catalogue,
             ruleset: &self.ruleset,
-            register: &self.register,
+            register,
         }
     }
 }
@@ -816,12 +879,14 @@ fn hash_text(text: &str) -> u64 {
 }
 
 /// The key of `text`, a sentence or a paragraph of `mode`, in the sentence cache or the paragraph
-/// cache, checked under the ruleset of `version`: the hash of the three together. One text is
-/// checked by different sources in a paragraph of each mode, and an entry made under one ruleset
-/// version holds flags of that version's checkers, so it is never served under another.
-fn cache_key(version: Option<RulesetVersion>, mode: FormMode, text: &str) -> u64 {
+/// cache, checked under the ruleset of `version` and `register`: the hash of the four together. One
+/// text is checked by different sources in a paragraph of each mode, an entry made under one
+/// ruleset version holds flags of that version's checkers, and one made under one register holds
+/// the flags of the checkers and the patterns that run in it, so neither is served under another.
+fn cache_key(version: Option<RulesetVersion>, register: &str, mode: FormMode, text: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     version.hash(&mut hasher);
+    register.hash(&mut hasher);
     mode.hash(&mut hasher);
     text.hash(&mut hasher);
     hasher.finish()
@@ -837,9 +902,8 @@ mod tests {
     use std::mem::discriminant;
     use std::sync::Mutex as StdMutex;
 
-    use crate::capture::{CaptureError, CursorRect, Foreground};
+    use crate::capture::{CaptureError, CursorRect, Foreground, Surface};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
-    use crate::store::Config;
     use crate::test_support::{test_spell_checker, Answer, FakeGrammar};
 
     /// The catalogue compiled from the toggles the settings file is first written with.
@@ -847,21 +911,57 @@ mod tests {
         Catalogue::load(&Config::default())
     }
 
-    /// A capture backend holding one text, which counts its reads and raises the change
-    /// notification when a test says so.
+    /// A surface of the process `process_name` with no page URL and no document key.
+    pub(super) fn surface_of(process_name: &str) -> Surface {
+        Surface {
+            process_name: process_name.to_owned(),
+            page_url: None,
+            document_key: None,
+        }
+    }
+
+    /// A capture backend holding one text and one surface, which counts its reads of each and
+    /// raises the change notification when a test says so.
     pub(super) struct FakeCapture {
         text: StdMutex<String>,
+        /// The surface it answers, or `None` to answer [`CaptureError::Unsupported`], as the web
+        /// backend does.
+        surface: StdMutex<Option<Surface>>,
         changes: watch::Sender<u64>,
         reads: std::sync::atomic::AtomicUsize,
+        surface_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeCapture {
+        /// Holding `text`, on a surface of a process the default settings map no register to.
         pub(super) fn new(text: &str) -> Self {
             Self {
                 text: StdMutex::new(text.to_string()),
+                surface: StdMutex::new(Some(surface_of("fake.exe"))),
                 changes: watch::channel(0).0,
                 reads: std::sync::atomic::AtomicUsize::new(0),
+                surface_reads: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        /// Holding `text` on `surface`, `None` for one the backend cannot name.
+        pub(super) fn on(surface: Option<Surface>, text: &str) -> Self {
+            let fake = Self::new(text);
+            *fake.surface.lock().unwrap() = surface;
+            fake
+        }
+
+        /// Moves focus to a document holding `text` on `surface`, `None` for one the backend
+        /// cannot name, and raises the change notification, as the native backend does when focus
+        /// scopes a new element.
+        pub(super) fn focus(&self, surface: Option<Surface>, text: &str) {
+            *self.surface.lock().unwrap() = surface;
+            self.set_text(text);
+        }
+
+        /// How many times the surface has been read.
+        pub(super) fn surface_reads(&self) -> usize {
+            self.surface_reads.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         /// Replaces the text and raises the change notification, as a control that raises the
@@ -913,6 +1013,16 @@ mod tests {
 
         async fn span_rect(&self, _span: &Span) -> Result<Vec<CursorRect>, CaptureError> {
             Err(CaptureError::Unsupported)
+        }
+
+        async fn surface(&self) -> Result<Surface, CaptureError> {
+            self.surface_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.surface
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(CaptureError::Unsupported)
         }
     }
 
@@ -974,7 +1084,7 @@ mod tests {
             None,
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
 
         // Let the loop see the initial text and start its quiet timer; no recheck yet.
@@ -1205,7 +1315,7 @@ mod tests {
             None,
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
 
         step(6).await;
@@ -1231,7 +1341,7 @@ mod tests {
             None,
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
 
         step(6).await;
@@ -1298,7 +1408,7 @@ mod tests {
             None,
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
 
         step(6).await;
@@ -1321,7 +1431,7 @@ mod tests {
             None,
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         )
     }
 
@@ -1332,7 +1442,7 @@ mod tests {
             Some(Arc::clone(grammar) as Arc<dyn GrammarSource>),
             Arc::new(LoadedRuleset::empty()),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         )
     }
 
@@ -1709,7 +1819,7 @@ mod tests {
             Some(Arc::clone(&grammar) as Arc<dyn GrammarSource>),
             Arc::new(ruleset),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
         step(6).await;
 
@@ -1855,7 +1965,7 @@ mod tests {
             Some(Arc::clone(&grammar) as Arc<dyn GrammarSource>),
             Arc::new(LoadedRuleset::empty_at(RulesetVersion(7))),
             Arc::new(default_catalogue()),
-            "default".to_owned(),
+            Arc::new(Config::default()),
         );
         step(6).await;
         let updates = analyzer.updates();
@@ -1879,13 +1989,18 @@ mod tests {
     }
 
     /// The sentence cache's entry for `sentence` in a paragraph of `mode`, under the analyzer's
-    /// ruleset version, if it holds one.
+    /// ruleset version and the settings' default register, if it holds one.
     pub(super) fn cached_parts(
         analyzer: &Analyzer,
         mode: FormMode,
         sentence: &str,
     ) -> Option<SentenceParts> {
-        let key = cache_key(analyzer.inner.ruleset.version(), mode, sentence);
+        let key = cache_key(
+            analyzer.inner.ruleset.version(),
+            &analyzer.inner.settings.default_register,
+            mode,
+            sentence,
+        );
         analyzer.inner.cache.lock().unwrap().peek(&key).cloned()
     }
 

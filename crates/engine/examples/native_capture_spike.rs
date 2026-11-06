@@ -13,12 +13,24 @@
 //! element it lands on, and every text-changed event. Switch focus between
 //! a plain edit control, a Chromium-hosted text field, and a rich-text control while this runs,
 //! typing in each, and watch the log output.
+//!
+//! With `-- --surface <reads>`, it measures the surface read of #155 instead, against whatever has
+//! focus: that many reads a second apart, each through `Capture::surface` and timed, printing the
+//! process name, whether a page URL was surfaced, the URL's scheme and host alone, and whether the
+//! document key is present and its length. Each read then walks the focused element's Document
+//! ancestors on a UI Automation client of its own and prints, nearest first, each one's class,
+//! framework id and name length, and for each candidate property, `ValuePattern`'s value and
+//! `LegacyIAccessiblePattern`'s, the scheme and host of the page URL it carries or why it carries
+//! none, with the property the backend's read took the URL through. No URL past its host, and no
+//! text of the document, is printed.
 
 use std::io::IsTerminal;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wa_engine::analyzer::form_mode;
+use wa_engine::capture::native::client::Uia;
+use wa_engine::capture::native::surface::{self, UrlProperty};
 use wa_engine::capture::native::NativeCapture;
 use wa_engine::capture::Capture;
 
@@ -26,8 +38,21 @@ use wa_engine::capture::Capture;
 /// runtime when there's no attached terminal to press Enter on (see `IsTerminal` check below).
 const MAX_RUNTIME: Duration = Duration::from_secs(600);
 
+/// How long the surface mode waits after starting for the backend to scope the element that
+/// already has focus, and between two reads.
+const SURFACE_READ_INTERVAL: Duration = Duration::from_secs(1);
+
 fn main() {
     env_logger::init();
+
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, reads] = arguments.as_slice() {
+        if flag == "--surface" {
+            let reads = reads.parse().expect("--surface takes a number of reads");
+            read_surfaces(reads);
+            return;
+        }
+    }
 
     let capture = NativeCapture::start().expect("failed to start native UIA capture");
     println!("Native UIA capture running. Focus different apps and type to see events logged.");
@@ -61,6 +86,115 @@ fn main() {
     runtime.block_on(query_capture_trait(&capture, "before stopping"));
     drop(capture);
     println!("Stopped.");
+}
+
+/// Reads the focused element's surface `reads` times, a second apart, as the module comment
+/// describes.
+fn read_surfaces(reads: usize) {
+    let capture = NativeCapture::start().expect("failed to start native UIA capture");
+    let uia = Uia::new().expect("failed to start a UI Automation client");
+    let cache = uia
+        .base_cache_request()
+        .expect("failed to create a cache request");
+    let runtime = tokio::runtime::Runtime::new().expect("failed to start a Tokio runtime");
+    std::thread::sleep(SURFACE_READ_INTERVAL);
+
+    for read in 1..=reads {
+        let started = Instant::now();
+        let answered = runtime.block_on(capture.surface());
+        let took = started.elapsed();
+        let process_name = match &answered {
+            Ok(surface) => {
+                println!(
+                    "read {read}: Capture::surface in {:.2} ms: process {:?}, page URL {}, \
+                     document key {}",
+                    took.as_secs_f64() * 1000.0,
+                    surface.process_name,
+                    surface
+                        .page_url
+                        .as_deref()
+                        .map_or_else(|| "not surfaced".to_owned(), scheme_and_host),
+                    surface.document_key.as_ref().map_or_else(
+                        || "absent".to_owned(),
+                        |key| format!("present, {} characters", key.chars().count())
+                    ),
+                );
+                surface.process_name.clone()
+            }
+            Err(error) => {
+                println!("read {read}: Capture::surface failed: {error}");
+                String::new()
+            }
+        };
+        print_document_ancestors(&uia, &cache, process_name);
+        std::thread::sleep(SURFACE_READ_INTERVAL);
+    }
+    drop(capture);
+}
+
+/// The focused element's Document ancestors and their candidate properties, nearest first, by a
+/// walk on `uia`, a client of the harness's own, and the property the backend's read takes the page
+/// URL through.
+fn print_document_ancestors(
+    uia: &Uia,
+    cache: &windows::Win32::UI::Accessibility::IUIAutomationCacheRequest,
+    process_name: String,
+) {
+    let element = match uia.focused_element(cache) {
+        Ok(element) => element,
+        Err(error) => {
+            println!("  no focused element: {error}");
+            return;
+        }
+    };
+    match surface::document_elements(uia.client(), &element) {
+        Ok(documents) if documents.is_empty() => {
+            println!("  no element of the Document control type among the element's ancestors");
+        }
+        Ok(documents) => {
+            for (index, document) in documents.iter().enumerate() {
+                let properties: Vec<String> = UrlProperty::ALL
+                    .into_iter()
+                    .map(|property| {
+                        let carried = match surface::page_url_through(&document.element, property) {
+                            Ok(Some(url)) => scheme_and_host(&url),
+                            Ok(None) => "not a page URL".to_owned(),
+                            Err(error) => format!("unreadable ({error})"),
+                        };
+                        format!("{property:?} {carried}")
+                    })
+                    .collect();
+                println!(
+                    "  document {index}: class {:?}, framework {:?}, name {} characters; {}",
+                    document.class_name,
+                    document.framework_id,
+                    document.name.chars().count(),
+                    properties.join("; ")
+                );
+            }
+        }
+        Err(error) => println!("  the walk of the element's ancestors failed: {error}"),
+    }
+    let read = surface::read(uia.client(), &element, process_name);
+    println!(
+        "  the backend's read takes the page URL through {}",
+        read.url_property.map_or_else(
+            || "no property".to_owned(),
+            |property| format!("{property:?}")
+        )
+    );
+}
+
+/// `url`'s scheme and host alone.
+fn scheme_and_host(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => format!(
+            "surfaced, scheme {:?}, host {:?}",
+            parsed.scheme(),
+            parsed.host_str().unwrap_or("")
+        ),
+        Err(_) => "surfaced, and not parsable".to_owned(),
+    }
 }
 
 /// Never prints the text itself, only its length: this channel carries the user's own draft,
