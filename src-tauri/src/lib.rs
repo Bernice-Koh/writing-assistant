@@ -93,13 +93,11 @@ async fn start_checking_pipeline(
     shared_overlay: SharedOverlay,
 ) {
     // Read once, with no watcher: an edit made while the app runs takes effect at the next start.
-    // Managed beside the capture backend for the reader that arrives with the register map. The
-    // analyzer checks every sentence under the default register, against the telltale catalogue
-    // compiled from the toggles.
-    let settings = load_settings();
-    let register = settings.default_register.clone();
+    // Handed to the analyzer, the settings' one reader, which checks each recheck under the
+    // register the register map gives the surface, against the telltale catalogue compiled from
+    // the toggles.
+    let settings = Arc::new(load_settings());
     let catalogue = Arc::new(load_catalogue(&settings));
-    app.manage(settings);
     let store = open_store().await;
     // Read once, like the settings: a version published while the app runs is in force from the
     // next start. Handed to the analyzer, which runs its checkers and routes LanguageTool's matches
@@ -142,7 +140,7 @@ async fn start_checking_pipeline(
         grammar,
         ruleset,
         catalogue,
-        register,
+        settings,
     ));
     overlay::track_flags(
         app.clone(),
