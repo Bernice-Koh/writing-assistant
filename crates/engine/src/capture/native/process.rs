@@ -88,7 +88,8 @@ fn parent_ids() -> Result<HashMap<u32, u32>, windows::core::Error> {
 /// The executable file name of process `pid`, such as `Notepad.exe`, for naming a window's owner
 /// in a log line or an error, and the surface's process. `None` when the process table cannot be
 /// read or holds no such process. Read from one snapshot of the process table, so it costs a walk
-/// of the table; the surface's process is named once per text-change scope.
+/// of the table; a refocus before an insertion asks, and the surface's process is named once per
+/// text-change scope.
 pub fn executable_name(pid: u32) -> Option<String> {
     let mut name = None;
     let walked = each_process(|entry| {
