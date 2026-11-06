@@ -20,7 +20,7 @@ pub mod message;
 use std::net::SocketAddr;
 
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::capture::{Capture, CaptureError, CursorRect, Foreground};
@@ -56,6 +56,9 @@ pub struct WebCapture {
     events: mpsc::UnboundedSender<HubEvent>,
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<()>>,
+    /// The change notification's sender, which nothing raises: the extension's protocol carries no
+    /// change message, and whether the extension stays is not yet decided (#58).
+    changes: watch::Sender<u64>,
 }
 
 impl WebCapture {
@@ -96,6 +99,7 @@ impl WebCapture {
             events: events_tx,
             shutdown: Some(shutdown_tx),
             join: Some(join),
+            changes: watch::channel(0).0,
         })
     }
 
@@ -140,6 +144,10 @@ impl Capture for WebCapture {
             ClientMessage::NoFocus => Err(CaptureError::NoFocus),
             other => Err(unexpected_reply(&other)),
         }
+    }
+
+    fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     /// Answers [`CaptureError::Unsupported`] for a span past its anchor's first occurrence
@@ -229,6 +237,8 @@ async fn run_hub(mut events: mpsc::UnboundedReceiver<HubEvent>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::handshake::client::generate_key;
     use tokio_tungstenite::tungstenite::http::Request as HttpRequest;
@@ -301,6 +311,28 @@ mod tests {
             let result = capture.span_rect(&span("anchor", 0, 1, occurrence)).await;
             assert!(matches!(result, Err(CaptureError::Unsupported)));
         }
+    }
+
+    #[tokio::test]
+    async fn the_change_notification_never_fires() {
+        let capture = WebCapture::start(0, TEST_ORIGIN).await.expect("starts");
+        let changes = capture.changes();
+        let mut client = connect_test_client(capture.local_addr()).await;
+        let capture = Arc::new(capture);
+        let reader = Arc::clone(&capture);
+        let call = tokio::spawn(async move { reader.current_text().await });
+        next_server_message(&mut client).await;
+        reply_with(
+            &mut client,
+            ClientMessage::CurrentText {
+                text: "draft text".to_owned(),
+            },
+        )
+        .await;
+        call.await.expect("task joins").expect("succeeds");
+
+        assert!(!changes.has_changed().expect("the backend holds the sender"));
+        assert!(!capture.changes().has_changed().expect("as above"));
     }
 
     #[tokio::test]

@@ -1,14 +1,15 @@
 //! Measures the wall time of one full-document read through the native capture backend, the read
-//! the analyzer's debounce loop makes on every 200 ms poll, so that the cost of that poll on a long
-//! document is known per surface. A harness run by hand against a real application, not a test.
+//! the analyzer's debounce loop makes after each pause in typing and at each safety poll, so that
+//! its cost on a long document is known per surface. A harness run by hand against a real
+//! application, not a test.
 //!
 //! It starts [`NativeCapture`], waits the given number of seconds for focus to land on the target
 //! document, then calls `current_text` through the `Capture` trait the given number of times in a
 //! row, each call timed from the request to the owned text in hand. It prints each read's time in
 //! milliseconds and length in characters, then the median, the 5th and 95th percentiles by nearest
 //! rank and the maximum of the reads that returned text, a distribution-free 95% interval for the
-//! median from two order statistics, the share of each second those reads would occupy at the
-//! analyzer's five reads a second, and the document's length in characters and in paragraphs,
+//! median from two order statistics, the share of each second those reads would occupy at five
+//! reads a second, and the document's length in characters and in paragraphs,
 //! split by the analyzer's own form-mode module. A read that fails, with no focused document for
 //! instance, is counted and reported with its error, and its time is left out of the statistics.
 //! It never prints the text or any part of it.
@@ -45,7 +46,8 @@ use wa_engine::analyzer::form_mode;
 use wa_engine::capture::native::NativeCapture;
 use wa_engine::capture::Capture;
 
-/// The analyzer's polls a second: one every 200 ms, its `POLL_INTERVAL`.
+/// Reads a second at the analyzer's 200 ms poll before #154 made the text-changed event the
+/// trigger: the cadence #153 and #160 report each read's share of a second against.
 const POLLS_PER_SECOND: f64 = 5.0;
 
 /// The most reads one run makes. Past about 1,070, half to the power of the count underflows to
