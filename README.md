@@ -418,6 +418,7 @@ part is logged once per focus, with the count and the length.
 | Word for the web | Read through native capture. Chromium bridges the page's accessibility tree to UI Automation, and Word for the web backs that tree with the real document |
 | Chromium `textarea`, the GitHub comment box's control | Its value holds at most 10,000 characters, and its `TextPattern` document range returned the whole text, which is why the range is read before the value. Measured on a page written for the check |
 | Chromium `contenteditable` field, Gmail compose's control | No value. Read whole through its `TextPattern` document range. Measured on a page written for the check |
+| Chromium page URL, Microsoft Edge 156.0.4314.58 | The page's root document, of the Document control type and framework `Chrome`, carries the page URL in its `ValuePattern` value and in its `LegacyIAccessiblePattern` value, and the surface takes the first. Measured on 6 November 2026 on this machine on a page written for the check, opened as a `file:` URL and served over `http://localhost`, 5 reads each: surfaced in every read |
 | Google Docs | Read through native capture only with both of its accessibility settings on: screen reader support, then braille support. Without both, native capture returns empty text and no caret |
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. This finding led to a plausibility check on the caret rectangle. The caret is no longer read, since the full-viewport overlay has no use for it, and the check went with it |
@@ -441,7 +442,9 @@ then from its `LegacyIAccessiblePattern` value, and taken only when it parses as
 `https` or `file` URL; another application's document element is not asked, since its value can
 hold the document's text. The document key is the page URL without its fragment where there is
 one, and otherwise the name of the nearest element of the Document control type, the focused
-element included, where it has one; it names the document from one session to the next. The
+element included, where it has one; it names the document from one session to the next. Word
+16.0.20430.20180 names its document element by the file name without its extension, measured on 6
+November 2026 in 5 reads, so two Word documents of one name in different folders share a key. The
 analyzer reads the surface at each recheck, and the log names its process name and its page URL's
 host alone. The web backend answers the surface as unsupported, so its documents are checked under
 the default register.
