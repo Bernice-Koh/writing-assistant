@@ -18,6 +18,7 @@ pub mod foreground;
 pub mod insert;
 mod process;
 pub mod read;
+pub mod surface;
 mod text_change;
 
 use std::sync::mpsc as ready_channel;
@@ -26,10 +27,11 @@ use std::thread::{self, JoinHandle};
 
 use tokio::sync::{mpsc as signal_channel, oneshot, watch};
 use windows::Win32::UI::Accessibility::{
-    IUIAutomationElement, IUIAutomationEventHandler, IUIAutomationFocusChangedEventHandler,
+    IUIAutomation, IUIAutomationElement, IUIAutomationEventHandler,
+    IUIAutomationFocusChangedEventHandler,
 };
 
-use crate::capture::{CaptureError, CursorRect, Foreground};
+use crate::capture::{CaptureError, CursorRect, Foreground, Surface};
 use crate::flag::Span;
 use client::Uia;
 use error::NativeCaptureError;
@@ -138,6 +140,10 @@ impl crate::capture::Capture for NativeCapture {
         self.request(|reply| Signal::GetSpanRects { span, reply })
             .await
     }
+
+    async fn surface(&self) -> Result<Surface, CaptureError> {
+        self.request(Signal::GetSurface).await
+    }
 }
 
 impl Drop for NativeCapture {
@@ -167,6 +173,7 @@ enum Signal {
     },
     GetDocumentViewRect(oneshot::Sender<Result<CursorRect, CaptureError>>),
     GetForeground(oneshot::Sender<Result<Foreground, CaptureError>>),
+    GetSurface(oneshot::Sender<Result<Surface, CaptureError>>),
     GetSpanRects {
         span: Span,
         reply: oneshot::Sender<Result<Vec<CursorRect>, CaptureError>>,
@@ -183,6 +190,7 @@ impl Signal {
             Signal::Replace { .. } => "Replace",
             Signal::GetDocumentViewRect(_) => "GetDocumentViewRect",
             Signal::GetForeground(_) => "GetForeground",
+            Signal::GetSurface(_) => "GetSurface",
             Signal::GetSpanRects { .. } => "GetSpanRects",
         }
     }
@@ -197,6 +205,9 @@ struct TextChangeScope {
     /// The id of the process that owns `element`, against which the foreground window's is
     /// classified.
     process_id: u32,
+    /// The executable name of `process_id`'s process, read from the process table at the scope's
+    /// first surface read and kept, since the scope's process does not change.
+    process_name: Option<String>,
     /// Whether a read of this scope's element has logged that it took more than one part. A new
     /// scope starts on every focus change to an element outside this app, so the line is once
     /// per focus, while the analyzer reads after every pause in typing and at its safety poll.
@@ -217,6 +228,25 @@ fn read_scope_text(scope: &mut TextChangeScope) -> Result<String, NativeCaptureE
         );
     }
     Ok(read.text)
+}
+
+/// The surface of `scope`'s element, by [`surface::read`]. The process is named from the process
+/// table once per scope; a table that names no such process answers an error, since the register
+/// map cannot be read without the name.
+fn read_scope_surface(
+    client: &IUIAutomation,
+    scope: &mut TextChangeScope,
+) -> Result<Surface, CaptureError> {
+    if scope.process_name.is_none() {
+        scope.process_name = process::executable_name(scope.process_id);
+    }
+    let process_name = scope.process_name.clone().ok_or_else(|| {
+        CaptureError::Communication(format!(
+            "the process table names no process {}",
+            scope.process_id
+        ))
+    })?;
+    Ok(surface::read(client, &scope.element, process_name).surface)
 }
 
 /// Raises the change notification for every receiver of the backend's `changes`.
@@ -316,6 +346,7 @@ fn run(
                             element,
                             handler,
                             process_id: pid,
+                            process_name: None,
                             multi_part_read_logged: false,
                         });
                         // A new element is a new document to check.
@@ -373,6 +404,13 @@ fn run(
                         scope.process_id,
                         |process| own_processes.contains(process),
                     )),
+                    None => Err(CaptureError::NoFocus),
+                };
+                let _ = reply.send(result);
+            }
+            Signal::GetSurface(reply) => {
+                let result = match &mut current_scope {
+                    Some(scope) => read_scope_surface(uia.client(), scope),
                     None => Err(CaptureError::NoFocus),
                 };
                 let _ = reply.send(result);

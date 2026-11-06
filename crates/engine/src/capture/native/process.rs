@@ -1,5 +1,5 @@
 //! Whether a focused element, or the foreground window, belongs to this application rather than
-//! to the user's writing target.
+//! to the user's writing target, and the executable name of a window's process.
 //!
 //! The assistant has windows of its own, and they take focus like anything else: without this
 //! check the capture thread adopts the app's own UI as the tracked element and the overlay
@@ -8,10 +8,12 @@
 //! process is a *descendant* of this one, so the test walks the parent chain instead.
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+use windows_core::Owned;
 
 /// Caps the parent walk. The chain from a WebView2 host to this process is a couple of links
 /// long, so this only ever matters if a snapshot comes back malformed enough to contain a
@@ -75,27 +77,62 @@ impl OwnProcesses {
 /// Only focus changes and changes of foreground process ([`OwnProcesses`]) reach this, and those
 /// arrive at human speed.
 fn parent_ids() -> Result<HashMap<u32, u32>, windows::core::Error> {
-    // SAFETY: the snapshot handle is owned here and closed by its `Drop`; `Process32FirstW` and
-    // `Process32NextW` are handed an entry whose `dwSize` is set as they require, and are only
-    // read while they report success.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?;
-        let mut entry = PROCESSENTRY32W {
-            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>())
-                .expect("PROCESSENTRY32W is far smaller than u32::MAX"),
-            ..Default::default()
-        };
-        let mut parents = HashMap::new();
-        if Process32FirstW(snapshot, &raw mut entry).is_ok() {
-            loop {
-                parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
-                if Process32NextW(snapshot, &raw mut entry).is_err() {
-                    break;
-                }
-            }
+    let mut parents = HashMap::new();
+    each_process(|entry| {
+        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        ControlFlow::Continue(())
+    })?;
+    Ok(parents)
+}
+
+/// The executable file name of process `pid`, such as `Notepad.exe`, for naming a window's owner
+/// in a log line or an error, and the surface's process. `None` when the process table cannot be
+/// read or holds no such process. Read from one snapshot of the process table, so it costs a walk
+/// of the table; the surface's process is named once per text-change scope.
+pub fn executable_name(pid: u32) -> Option<String> {
+    let mut name = None;
+    let walked = each_process(|entry| {
+        if entry.th32ProcessID != pid {
+            return ControlFlow::Continue(());
         }
-        Ok(parents)
+        let length = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        name = Some(String::from_utf16_lossy(&entry.szExeFile[..length]));
+        ControlFlow::Break(())
+    });
+    if let Err(error) = walked {
+        log::debug!("could not read the process table to name pid {pid}: {error}");
     }
+    name
+}
+
+/// Hands every entry of one snapshot of the process table to `visit`, in the table's order, until
+/// `visit` breaks or the table ends.
+fn each_process(
+    mut visit: impl FnMut(&PROCESSENTRY32W) -> ControlFlow<()>,
+) -> Result<(), windows::core::Error> {
+    // SAFETY: CreateToolhelp32Snapshot returns a handle this function owns; `Owned` closes it when
+    // dropped at the end of this function.
+    let snapshot = unsafe { Owned::new(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?) };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(size_of::<PROCESSENTRY32W>())
+            .expect("PROCESSENTRY32W is far smaller than u32::MAX"),
+        ..Default::default()
+    };
+    // SAFETY: `snapshot` is the live snapshot handle above; `entry` has its `dwSize` set as
+    // Process32FirstW requires and is read only while the call reports success.
+    let mut more = unsafe { Process32FirstW(*snapshot, &raw mut entry) }.is_ok();
+    while more {
+        if visit(&entry).is_break() {
+            break;
+        }
+        // SAFETY: as for Process32FirstW above, with the same handle and entry.
+        more = unsafe { Process32NextW(*snapshot, &raw mut entry) }.is_ok();
+    }
+    Ok(())
 }
 
 /// Walks `pid`'s parent chain looking for `ancestor`. Split from the snapshot call so the walk
@@ -199,6 +236,17 @@ mod tests {
         assert!(!own.remembered(300, &mut ask));
         assert!(own.remembered(200, &mut ask));
         assert_eq!(asked, vec![200, 300, 200]);
+    }
+
+    #[test]
+    fn this_process_is_named_by_its_executable() {
+        let name = executable_name(std::process::id()).expect("this process is in the table");
+        let expected = std::env::current_exe().expect("a test knows its own executable");
+        let expected = expected
+            .file_name()
+            .expect("an executable path ends in a file name")
+            .to_string_lossy();
+        assert!(name.eq_ignore_ascii_case(&expected));
     }
 
     #[test]

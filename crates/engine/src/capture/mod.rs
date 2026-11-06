@@ -36,9 +36,11 @@
 
 pub mod error;
 pub mod native;
+mod surface;
 pub mod web;
 
 pub use error::CaptureError;
+pub use surface::Surface;
 
 use crate::flag::Span;
 
@@ -150,4 +152,15 @@ pub trait Capture: Send + Sync {
     /// index answers [`CaptureError::TextNotFound`]. Web returns [`CaptureError::Unsupported`],
     /// for the same reason as [`Self::document_view_rect`].
     async fn span_rect(&self, span: &Span) -> Result<Vec<CursorRect>, CaptureError>;
+
+    /// The surface the focused document belongs to: its process's executable name, the page URL
+    /// where the document sits in a browser tab that surfaces one, and a durable key for the
+    /// document, by the rules on [`Surface`]'s fields. The analyzer reads it at each recheck and
+    /// checks under the register the settings map it to.
+    ///
+    /// Native answers it from the element in scope ([`native::surface::read`]), and answers
+    /// [`CaptureError::NoFocus`] with none in scope, as [`Self::current_text`] does. Web returns
+    /// [`CaptureError::Unsupported`]: the extension's protocol carries no surface, and whether the
+    /// extension stays is not yet decided (#58).
+    async fn surface(&self) -> Result<Surface, CaptureError>;
 }
