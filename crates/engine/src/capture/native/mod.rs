@@ -24,7 +24,7 @@ use std::sync::mpsc as ready_channel;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use tokio::sync::{mpsc as signal_channel, oneshot};
+use tokio::sync::{mpsc as signal_channel, oneshot, watch};
 use windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationEventHandler, IUIAutomationFocusChangedEventHandler,
 };
@@ -42,6 +42,11 @@ use process::OwnProcesses;
 pub struct NativeCapture {
     tx: Option<signal_channel::UnboundedSender<Signal>>,
     join: Option<JoinHandle<()>>,
+    /// The change notification, which the capture thread raises and [`Capture::changes`]
+    /// subscribes to.
+    ///
+    /// [`Capture::changes`]: crate::capture::Capture::changes
+    changes: Arc<watch::Sender<u64>>,
 }
 
 impl NativeCapture {
@@ -55,14 +60,17 @@ impl NativeCapture {
         let (tx, rx) = signal_channel::unbounded_channel();
         let (ready_tx, ready_rx) = ready_channel::channel();
         let thread_tx = tx.clone();
+        let changes = Arc::new(watch::channel(0).0);
+        let thread_changes = Arc::clone(&changes);
         let join = thread::Builder::new()
             .name("writing-assistant-uia".to_owned())
-            .spawn(move || run(&ready_tx, rx, thread_tx))
+            .spawn(move || run(&ready_tx, rx, thread_tx, &thread_changes))
             .map_err(|error| NativeCaptureError::ThreadSpawn(error.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 tx: Some(tx),
                 join: Some(join),
+                changes,
             }),
             Ok(Err(error)) => {
                 let _ = join.join();
@@ -100,6 +108,10 @@ impl NativeCapture {
 impl crate::capture::Capture for NativeCapture {
     async fn current_text(&self) -> Result<String, CaptureError> {
         self.request(Signal::GetText).await
+    }
+
+    fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     async fn replace(&self, span: &Span, replacement: &str) -> Result<(), CaptureError> {
@@ -187,7 +199,7 @@ struct TextChangeScope {
     process_id: u32,
     /// Whether a read of this scope's element has logged that it took more than one part. A new
     /// scope starts on every focus change to an element outside this app, so the line is once
-    /// per focus, while the analyzer reads five times a second.
+    /// per focus, while the analyzer reads after every pause in typing and at its safety poll.
     multi_part_read_logged: bool,
 }
 
@@ -207,10 +219,16 @@ fn read_scope_text(scope: &mut TextChangeScope) -> Result<String, NativeCaptureE
     Ok(read.text)
 }
 
+/// Raises the change notification for every receiver of the backend's `changes`.
+fn notify_change(changes: &watch::Sender<u64>) {
+    changes.send_modify(|count| *count = count.wrapping_add(1));
+}
+
 fn run(
     ready: &ready_channel::Sender<Result<(), NativeCaptureError>>,
     mut rx: signal_channel::UnboundedReceiver<Signal>,
     tx: signal_channel::UnboundedSender<Signal>,
+    changes: &watch::Sender<u64>,
 ) {
     let setup = (|| -> Result<_, NativeCaptureError> {
         let uia = Uia::new()?;
@@ -300,15 +318,15 @@ fn run(
                             process_id: pid,
                             multi_part_read_logged: false,
                         });
+                        // A new element is a new document to check.
+                        notify_change(changes);
                     }
                     Err(error) => {
                         log::debug!("failed to register text-change handler: {error}");
                     }
                 }
             }
-            // Nothing reads the event since the caret read was removed; the `signal received`
-            // line above records it.
-            Signal::TextChanged => {}
+            Signal::TextChanged => notify_change(changes),
             Signal::GetText(reply) => {
                 let result = match &mut current_scope {
                     Some(scope) => read_scope_text(scope).map_err(CaptureError::from),

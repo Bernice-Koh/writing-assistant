@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::watch;
 
 use wa_engine::analyzer::Analyzer;
 use wa_engine::capture::{Capture, CaptureError, CursorRect};
@@ -22,16 +23,17 @@ const UNPOSITIONED_REFRESH_TICKS: u32 = 10;
 /// relativised to the overlay window, as a `flags-updated` event for the overlay's own webview to
 /// render.
 ///
-/// Every flag is re-resolved, at one `span_rect` call each, on a flag update from the analyzer
-/// and on a tick where the document-view rectangle changed since the last re-resolution. On any
-/// other tick only the sentinel, the first positioned flag, is re-resolved, and every flag is
-/// re-resolved when the sentinel's rectangles moved: scrolling moves every visible flag, so a
-/// scroll is noticed within one tick at the cost of one `FindText` instead of one per flag (#153
-/// measured the per-flag cost on every tick at 58% of one core for 135 flags in a debug build).
-/// A sentinel the document no longer holds counts as moved. While no flag is positioned, every
-/// flag is re-resolved once a second. An edit between two visible flags moves the later one
-/// without moving the sentinel, and is caught by the analyzer's flag update after its quiet
-/// period.
+/// Every flag is re-resolved, at one `span_rect` call each, on a flag update from the analyzer,
+/// on a tick where the document-view rectangle changed since the last re-resolution, and on a
+/// tick after the capture backend's change notification fired, once however many notifications
+/// arrived since the last tick. On any other tick only the sentinel, the first positioned flag, is
+/// re-resolved, and every flag is re-resolved when the sentinel's rectangles moved: scrolling
+/// moves every visible flag, so a scroll is noticed within one tick at the cost of one `FindText`
+/// instead of one per flag (#153 measured the per-flag cost on every tick at 58% of one core for
+/// 135 flags in a debug build). A sentinel the document no longer holds counts as moved. While no
+/// flag is positioned, every flag is re-resolved once a second. An edit between two visible flags
+/// moves the later one without moving the sentinel, and the change notification it raises
+/// re-resolves every flag on the next tick, before the analyzer's recheck after its quiet period.
 ///
 /// The periodic leg exists because a flag's *position* can go stale for reasons that have
 /// nothing to do with the flag set changing: the document scrolling, the window resizing, or focus
@@ -49,6 +51,7 @@ pub fn track_flags(
 ) {
     tauri::async_runtime::spawn(async move {
         let mut updates = analyzer.subscribe();
+        let mut changes = capture.changes();
         let mut interval = poll_interval();
         let mut resolved_view: Option<CursorRect> = None;
         let mut ticks_since_all: u32 = 0;
@@ -72,6 +75,7 @@ pub fn track_flags(
             };
             let tick = Tick {
                 flags_updated,
+                text_changed: take_change(&mut changes),
                 view_changed: view != resolved_view,
                 has_sentinel: sentinel.is_some(),
                 has_flags: !updates.borrow().is_empty(),
@@ -107,6 +111,8 @@ pub fn track_flags(
 struct Tick {
     /// The analyzer published a flag set since the last tick.
     flags_updated: bool,
+    /// The capture backend's change notification fired since the last tick.
+    text_changed: bool,
     /// The document-view rectangle differs from the one every flag was last re-resolved against.
     view_changed: bool,
     /// At least one flag is positioned, so the first of them can serve as the sentinel.
@@ -128,11 +134,11 @@ enum Refresh {
     Nothing,
 }
 
-/// Every flag on a flag update or a changed document view; otherwise the sentinel when a flag is
-/// positioned; otherwise, while the analyzer holds flags none of which is positioned, every flag
-/// once [`UNPOSITIONED_REFRESH_TICKS`] ticks have passed; otherwise nothing.
+/// Every flag on a flag update, a change to the text or a changed document view; otherwise the
+/// sentinel when a flag is positioned; otherwise, while the analyzer holds flags none of which is
+/// positioned, every flag once [`UNPOSITIONED_REFRESH_TICKS`] ticks have passed; otherwise nothing.
 fn refresh_for(tick: Tick) -> Refresh {
-    if tick.flags_updated || tick.view_changed {
+    if tick.flags_updated || tick.text_changed || tick.view_changed {
         Refresh::All
     } else if tick.has_sentinel {
         Refresh::Sentinel
@@ -141,6 +147,16 @@ fn refresh_for(tick: Tick) -> Refresh {
     } else {
         Refresh::Nothing
     }
+}
+
+/// Whether the change notification fired since the last call, marking it seen, so any number of
+/// notifications between two ticks is one refresh. A closed channel reads as no change.
+fn take_change(changes: &mut watch::Receiver<u64>) -> bool {
+    let changed = changes.has_changed().unwrap_or(false);
+    if changed {
+        changes.borrow_and_update();
+    }
+    changed
 }
 
 /// Whether the sentinel's `fresh` rectangles differ from those it was positioned at, an error,
@@ -289,6 +305,7 @@ mod tests {
     fn idle() -> Tick {
         Tick {
             flags_updated: false,
+            text_changed: false,
             view_changed: false,
             has_sentinel: true,
             has_flags: true,
@@ -303,6 +320,36 @@ mod tests {
             ..idle()
         };
         assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn a_change_to_the_text_re_resolves_every_flag() {
+        let tick = Tick {
+            text_changed: true,
+            ..idle()
+        };
+        assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn notifications_between_two_ticks_are_one_refresh() {
+        let (sender, mut changes) = watch::channel(0_u64);
+        assert!(!take_change(&mut changes), "no notification yet");
+        for _ in 0..3 {
+            sender.send_modify(|count| *count += 1);
+        }
+        assert!(
+            take_change(&mut changes),
+            "the first tick after them refreshes"
+        );
+        assert!(!take_change(&mut changes), "the next tick does not");
+        sender.send_modify(|count| *count += 1);
+        assert!(
+            take_change(&mut changes),
+            "a later notification refreshes again"
+        );
+        drop(sender);
+        assert!(!take_change(&mut changes), "a closed channel is no change");
     }
 
     #[test]
