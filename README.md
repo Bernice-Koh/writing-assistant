@@ -82,8 +82,11 @@ and drops a paragraph that is empty or whitespace. Each paragraph has a form mod
 or code (see The rule layer), and splits into its sentences, each checked under its paragraph's
 mode: spelling, the telltale catalogue and the ruleset's checkers run on prose and fragments, a
 pattern or a checker only in the modes it declares, LanguageTool on prose alone, and nothing on
-code. Every check runs under the settings' default register until capture supplies the surface's
-register (planned, Phase 2).
+code. Every check of a recheck runs under one register, resolved at that recheck from the surface
+capture names for the focused document (see Native capture): the settings' register map is read
+with the process name, a space and the page URL's host, then with the process name alone, and the
+default register applies where neither has an entry or capture cannot name the surface. Focus
+moving to a surface of another register takes effect at its next recheck, with no restart.
 
 The deterministic stage runs three passes. The sentence pass runs spelling, the telltale patterns
 and the checkers whose unit is a span or a sentence on each sentence. The paragraph pass runs the
@@ -122,18 +125,21 @@ and 525 ms in Word. On the same text in Notepad with 135 misspelt words, the fir
 median of 4.3 s after focus over three starts, 3.5 to 3.8 s of it the deterministic stage, which
 took 56 ms on the text with no misspelling.
 
-Flags are cached per sentence by a hash of the ruleset version, its paragraph's form mode and its
-text, so one text in a prose paragraph and in a fragment has an entry for each. An entry has two
+Flags are cached per sentence by a hash of the ruleset version, the register, its paragraph's form
+mode and its text, so one text in a prose paragraph and in a fragment has an entry for each, as has
+one text checked under two registers. An entry has two
 parts: the sentence pass's, and the grammar stage's, marked complete once LanguageTool has answered
 for the sentence, or complete and empty from the start for a sentence of a fragment or of code.
 Each stage runs only on the sentences whose part is missing or incomplete, so an unchanged sentence
 never reaches LanguageTool twice, and a sentence whose check failed or timed out is sent again on
 the next recheck. The paragraph pass's flags are cached per paragraph by a hash of the ruleset
-version, the paragraph's mode and its text, so an unchanged paragraph is served from the cache
-wherever it has moved, and the document pass caches nothing. With the version in both keys, an
-entry made under one ruleset version is never served under another. One source failing degrades
-that source and never ends checking: with LanguageTool down, the deterministic stage's flags
-continue.
+version, the register, the paragraph's mode and its text, so an unchanged paragraph is served from
+the cache wherever it has moved, and the document pass caches nothing. With the version and the
+register in both keys, an entry made under one ruleset version or one register is never served
+under another. A text that reads the same as the text last checked is rechecked when its surface
+resolves to another register, as when focus moves between two copies of one document. One source
+failing degrades that source and never ends checking: with LanguageTool down, the deterministic
+stage's flags continue.
 
 ### Severity and suppression
 
@@ -297,8 +303,8 @@ The engine marks each of the 23 categories in one table, and a test holds the ta
 extracted from 6.6's rule files. No ruleset names a rule until Phase 3, so today LanguageTool
 raises grammar flags alone, from its hard categories and its rules of the default level. Each
 sentence is checked under its paragraph's form mode, and only a prose paragraph's sentences reach
-LanguageTool (see The rule layer). Every sentence is checked under the settings' default register
-until capture supplies the surface's register (planned, Phase 2).
+LanguageTool (see The rule layer). Every sentence is checked under the register its recheck
+resolved from the focused document's surface (see Checking).
 
 Two timeouts bound the requests. The warm-up check and the readiness poll, which run at startup
 and after a restart, keep a bound of 20 seconds, since the first check loads LanguageTool's rules
@@ -365,8 +371,8 @@ base, and the Singapore supplement is a plain word list that grows without a cha
 ## Capture and overlay
 
 One trait, `Capture`, covers text delivery, span positioning, replacement, whose window is in the
-foreground, and a notification that the document changed. The rest of the engine does not know
-which backend served a request.
+foreground, a notification that the document changed, and the surface the document belongs to.
+The rest of the engine does not know which backend served a request.
 
 A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
 code units, never as an absolute offset. UI Automation's character counting drifts across Word's
@@ -420,8 +426,18 @@ Measured again on 4 November 2026 with the read in parts, over 30 reads each, th
 Word document, in two parts, took a median of 12.0 ms in a first run and 3.4 ms in a repeat, and
 the whole read of the `textarea` through its `TextPattern` took 24.4 ms.
 
-Planned for Phase 2: surface identity on the trait, the process name with an optional page URL,
-mapped to a register through a map in settings.
+The trait names the surface of the focused document in three fields. The process name is the
+executable name of the focused element's process, read from the process table that the check for
+the tool's own windows reads, once per focused element. The page URL is the one the outermost
+document of Chromium's framework among the element's ancestors carries, read from its value and
+then from its `LegacyIAccessiblePattern` value, and taken only when it parses as an `http`,
+`https` or `file` URL; another application's document element is not asked, since its value can
+hold the document's text. The document key is the page URL without its fragment where there is
+one, and otherwise the name of the nearest element of the Document control type, the focused
+element included, where it has one; it names the document from one session to the next. The
+analyzer reads the surface at each recheck, and the log names its process name and its page URL's
+host alone. The web backend answers the surface as unsupported, so its documents are checked under
+the default register.
 
 ### Web capture
 
@@ -888,11 +904,12 @@ checking runs, the register map with its default register, and a toggle per tell
 every pattern on except `curly-quotes`. The app loads the file once at startup and writes the
 defaults when it is missing, so an edit made while the app runs takes effect at the next start. A
 file that does not parse is left as it is, and checking starts on the defaults. A top-level key
-that names no setting is ignored with a warning in the log naming the key and the file. The app
-compiles the telltale catalogue from the toggles and checks under the default register; nothing
-reads the register map yet. The controls that edit the file arrive with the settings shell in
-Phase 3, and until then it is edited by hand. Credentials are in
-neither file.
+that names no setting is ignored with a warning in the log naming the key and the file. A
+register map key is a process name as the process table spells the executable, such as
+`WINWORD.EXE`, or a process name, a space and a host, such as `msedge.exe github.com`, which gives
+that host's pages a register of their own (see Checking for the lookup). The app compiles the
+telltale catalogue from the toggles. The controls that edit the file arrive with the settings
+shell in Phase 3, and until then it is edited by hand. Credentials are in neither file.
 
 ### Model roles
 
