@@ -2,8 +2,8 @@
 //! into the real system input queue rather than posting window messages. Modern XAML/UWP-hosted
 //! controls, Windows 11's Notepad among them, require this, since their input dispatcher only
 //! consumes the system queue, not posted messages. `SendInput` reaches whichever window holds
-//! keyboard focus, so the caller must make the target the foreground window first. Nothing in
-//! this module checks that it is.
+//! keyboard focus, so the caller makes the target the foreground window first, as the cascade in
+//! [`super`] does before each stage that calls into this module. Nothing in this module checks it.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,

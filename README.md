@@ -388,6 +388,13 @@ frontend in a child process with its own process id. It registers for the text-c
 focused element's subtree, and raises the change notification on each event and on each focus
 change to a new element.
 
+Focus events do not announce every change of document. A Word document started from the shell
+came up behind the window in front, and the click that brought it forward raised neither a focus
+event nor `EVENT_SYSTEM_FOREGROUND`. So a second thread watches the foreground window, through a
+hook for `EVENT_SYSTEM_FOREGROUND` and a read of the foreground window every 200 ms. When the
+foreground window has changed and no focus event has followed for 300 ms, the capture thread
+re-resolves the focused element.
+
 The thread reads the focused element's whole text from its `TextPattern` document range, and from
 its value where the element has no `TextPattern` or the range read fails. A provider can return
 less than the whole range from one call, so the range is read in parts: after each part the range's
@@ -401,7 +408,7 @@ part is logged once per focus, with the count and the length.
 
 | Surface | Finding |
 |---|---|
-| Microsoft Word, desktop | Read through `TextPattern` like any rich-text control. Its document range returns at most 65,000 characters a call, so the read continues past that in parts. Word ends a table cell or row with U+0007 instead of a carriage return, and the read counts it as a paragraph mark. An Office.js backend was scoped and dropped once the `TextPattern` read was verified |
+| Microsoft Word, desktop | Read through `TextPattern` like any rich-text control. Its document range returns at most 65,000 characters a call, so the read continues past that in parts. Word ends a table cell or row with U+0007 instead of a carriage return, and the read counts it as a paragraph mark. An Office.js backend was scoped and dropped once the `TextPattern` read was verified. Started from the shell, its window came up behind the window in front, and its document was scoped after three clicks in 0 of 5 starts on focus events alone and after the first click in 5 of 5 starts with the foreground watch |
 | Word for the web | Read through native capture. Chromium bridges the page's accessibility tree to UI Automation, and Word for the web backs that tree with the real document |
 | Chromium `textarea`, the GitHub comment box's control | Its value holds at most 10,000 characters, and its `TextPattern` document range returned the whole text, which is why the range is read before the value. Measured on a page written for the check |
 | Chromium `contenteditable` field, Gmail compose's control | No value. Read whole through its `TextPattern` document range. Measured on a page written for the check |
@@ -452,10 +459,32 @@ reading the element's text back, never on the return status of the call that mad
 
 Setting an element's whole value is not a stage, since it cannot target a span.
 
+Synthetic keystrokes and the paste shortcut reach whichever window holds the foreground, so the
+cascade checks the target's window against the foreground window before it selects the span and
+again before each stage that sends a keystroke. The target's window is the top-level window of the
+document's element, found from the element's own window handle or its nearest ancestor's. When
+another window is in front, the native backend restores the target's window if it is minimised,
+calls `SetForegroundWindow` on it, and reads the foreground window again every 20 ms for up to
+500 ms, since the target's thread takes the activation when it next reads its queue. Windows grants
+that call only to a process that meets one of the conditions listed on its reference page, such as
+having received the last input event. When the target's window is still not in front, the
+replacement fails with an error of its own that names both windows' processes, the stage's
+keystrokes are not sent, and no later stage, the clipboard fallback included, is tried. The check
+runs inside the cascade, so every caller of `Capture::replace` and every harness probe gets it.
+The log names the two processes at `info` on each refocus and at `warn` on one that did not take.
+
+Measured on 5 November 2026 on this machine by the insertion harness's `refocus` slot, n = 10 runs
+per arrangement and application, with a window of another process placed over the target by its
+own click between the request and the first keystroke. In Notepad and in Word the refocus was
+refused in 10 of 10 runs, with the target's text unchanged. When the covering window's process then
+called `AllowSetForegroundWindow` for the harness's process, standing in for the app's process after
+a click on its card, the refocus took in 10 of 10 runs, read the target in front 20 ms after the
+call, and the replacement landed at its span in 10 of 10. No keystroke reached the covering window
+in any of the 40 runs. Not yet measured: whether a click on the overlay's card reaches the app's
+own process, which decides whether the app's process meets that condition.
+
 The cascade is implemented behind `Capture::replace` and exercised by its harness. Nothing in the
-overlay calls it yet: the working card's Accept is planned for Phase 4. Synthetic keystrokes reach
-whichever window holds keyboard focus, so a check that the target is the foreground window, with a
-refocus when it is not, is planned for Phase 2.
+overlay calls it yet: the working card's Accept is planned for Phase 4.
 
 Four harnesses under `crates/engine/examples/` measure native capture, the cost of its read, the
 insertion cascade, and the web bridge against real applications. They are run by hand and are not
