@@ -918,9 +918,9 @@ value, a typed replacement's text. The stream is set at insert and never reassig
 label, an edit, a dismissal and an accept name an item, and an edit carries its diff. A version is
 left unnamed only before the first of its kind is published, as for the first questionnaire's
 answers, from which the first Card version is built; once the store holds one, the insert refuses
-an event that names none. The surface stays unset until the capture layer supplies it in Phase 2.
-Nothing writes an event until Phase 3's questionnaire, and the working card's actions follow in
-Phase 4.
+an event that names none. Capture names the surface (see Native capture), and the event record
+carries it when events are first written from the working card's actions, in Phase 4. Nothing
+writes an event until Phase 3's questionnaire, and the working card's actions follow in Phase 4.
 
 A row of `habit_rollups` is one count of the style flags raised on the owner's typing: a day, the
 clause the flags cite, how many there were, and how many words were checked. The counts are kept in
@@ -937,9 +937,11 @@ every pattern on except `curly-quotes`. The app loads the file once at startup a
 defaults when it is missing, so an edit made while the app runs takes effect at the next start. A
 file that does not parse is left as it is, and checking starts on the defaults. A top-level key
 that names no setting is ignored with a warning in the log naming the key and the file. A
-register map key is a process name as the process table spells the executable, such as
-`WINWORD.EXE`, or a process name, a space and a host, such as `msedge.exe github.com`, which gives
-that host's pages a register of their own (see Checking for the lookup). The app compiles the
+register map key is a process name, the executable's file name such as `WINWORD.EXE`, or a process
+name, a space and a host, such as `msedge.exe github.com`, which gives that host's pages a register
+of their own (see Checking for the lookup). The process name matches ignoring case, since Windows
+treats executable names as case-insensitive, so `winword.exe` matches Word, and the host matches as
+a URL parser normalises it; a key keeps the spelling it was written with. The app compiles the
 telltale catalogue from the toggles. The controls that edit the file arrive with the settings
 shell in Phase 3, and until then it is edited by hand. Credentials are in neither file.
 

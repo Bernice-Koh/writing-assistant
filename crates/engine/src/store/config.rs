@@ -16,10 +16,12 @@
 //!   settings shell.
 //! - `default_register`: the register of a surface the map has no entry for.
 //! - `register_map`: surface key to register, empty by default. A key is the executable name of
-//!   the focused document's process as the process table spells it, such as `WINWORD.EXE`, or that
-//!   name, a space and a page's host, such as `msedge.exe github.com`, which gives the pages on
-//!   that host a register of their own. The analyzer resolves the register at each recheck by
-//!   [`Config::register_for`].
+//!   the focused document's process, such as `WINWORD.EXE`, or that name, a space and a page's
+//!   host, such as `msedge.exe github.com`, which gives the pages on that host a register of their
+//!   own. The process name matches ignoring ASCII case, since Windows treats executable names as
+//!   case-insensitive, so `winword.exe` matches Word's process; the host matches as a URL parser
+//!   normalises it. A key keeps the spelling it was written with. The analyzer resolves the
+//!   register at each recheck by [`Config::register_for`].
 //! - `telltale_toggles`: telltale pattern id to on or off. The file written on first start lists
 //!   every catalogue pattern. A pattern the map omits takes its default, off for `curly-quotes`
 //!   and on for every other pattern, and an id the catalogue does not hold is dropped on load.
@@ -73,15 +75,36 @@ impl Config {
     /// process name, a space and its page URL's host, then its entry for the process name alone,
     /// then the default register. A surface with no page URL, or with a URL that has no host, such
     /// as a `file:` URL of a local path, is read by its process name alone.
+    ///
+    /// A key's process name matches ignoring ASCII case, and its host matches once the URL parser
+    /// has normalised it as it normalises the page URL's, so the map is scanned rather than looked
+    /// up by exact key: it holds a handful of entries and is read once per recheck. Of two keys that
+    /// match one surface in the same form, the first in the map's order wins.
     pub fn register_for(&self, surface: &Surface) -> &str {
+        let process = surface.process_name.as_str();
         surface
             .page_host()
             .and_then(|host| {
-                self.register_map
-                    .get(&format!("{} {host}", surface.process_name))
+                self.registers().find_map(|(key, register)| {
+                    let (key_process, key_host) = key.split_once(' ')?;
+                    let host_matches =
+                        normalised_host(key_host).is_some_and(|normalised| normalised == host);
+                    (key_process.eq_ignore_ascii_case(process) && host_matches).then_some(register)
+                })
             })
-            .or_else(|| self.register_map.get(&surface.process_name))
+            .or_else(|| {
+                self.registers().find_map(|(key, register)| {
+                    (!key.contains(' ') && key.eq_ignore_ascii_case(process)).then_some(register)
+                })
+            })
             .unwrap_or(&self.default_register)
+    }
+
+    /// The register map's entries, in the map's order.
+    fn registers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.register_map
+            .iter()
+            .map(|(key, register)| (key.as_str(), register.as_str()))
     }
 
     /// Whether the telltale pattern `pattern_id` is on: its toggle, or the pattern's default when
@@ -139,6 +162,12 @@ fn default_telltale_toggles() -> BTreeMap<String, bool> {
 
 fn telltale_enabled_by_default(pattern_id: &str) -> bool {
     !TELLTALES_OFF_BY_DEFAULT.contains(&pattern_id)
+}
+
+/// `host`, a register map key's host, as the URL parser normalises a web page's host, so that it
+/// compares with [`Surface::page_host`]; `None` when it is not a host.
+fn normalised_host(host: &str) -> Option<String> {
+    url::Host::parse(host).ok().map(|parsed| parsed.to_string())
 }
 
 /// Loads the config from under `data_root`, writing and returning the default if no config file
@@ -452,6 +481,32 @@ mod tests {
             config.register_for(&surface("Notepad.exe", Some("https://example.com/"))),
             "plain"
         );
+    }
+
+    #[test]
+    fn a_keys_process_name_matches_in_another_case_and_its_host_as_the_parser_normalises_it() {
+        let config = mapping(&[
+            ("winword.exe", "formal"),
+            ("MSEDGE.EXE", "chat"),
+            ("MsEdge.exe Mail.Example.COM", "email"),
+        ]);
+        assert_eq!(config.register_for(&surface("WINWORD.EXE", None)), "formal");
+        assert_eq!(
+            config.register_for(&surface(
+                "msedge.exe",
+                Some("https://mail.example.com/inbox")
+            )),
+            "email"
+        );
+        assert_eq!(
+            config.register_for(&surface("msedge.exe", Some("https://example.com/"))),
+            "chat"
+        );
+        // The keys keep the spelling they were written with.
+        assert!(config.register_map.contains_key("winword.exe"));
+        assert!(config
+            .register_map
+            .contains_key("MsEdge.exe Mail.Example.COM"));
     }
 
     #[test]
