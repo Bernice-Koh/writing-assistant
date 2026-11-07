@@ -45,10 +45,6 @@ Current top level:
   variant table, which the engine also reads from there; the LanguageTool distribution and its
   Java runtime are gitignored there and built by `src-tauri/scripts/build-languagetool-jre.ps1`.
 - `src/`: the React and TypeScript frontend: the overlay and the main window.
-- `extension/`: the browser extension behind the web capture backend, which the app does not
-  start today. Microsoft Word is captured natively (see
-  `crates/engine/src/capture/native/`). Not yet decided: whether the extension stays, which
-  rests on verifying Gmail and GitHub through native capture.
 - `adapter/`: not yet created. A Python `uv` project with a committed lockfile: the bench,
   and the training-job scripts for submission, polling, download, and conversion.
 - Root files: the Cargo workspace manifest and lockfile, the `npm` manifest and lockfile, the
