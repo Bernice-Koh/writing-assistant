@@ -79,8 +79,7 @@ use crate::style::ruleset::LoadedRuleset;
 use passes::{Sources, UnitFlag};
 
 /// How long after the last read the debounce loop reads the document again while no change is
-/// pending, so that a control that raises no text-changed event, and the web backend, which never
-/// raises the change notification, are still checked.
+/// pending, so that a control that raises no text-changed event is still checked.
 ///
 /// Each read is of the whole document. #160 measured it in a release build over 30 reads per
 /// surface of a 20,200-word text, at medians of 3.4 ms on a repeat run and 12.0 ms on a first run
@@ -924,8 +923,8 @@ mod tests {
     /// raises the change notification when a test says so.
     pub(super) struct FakeCapture {
         text: StdMutex<String>,
-        /// The surface it answers, or `None` to answer [`CaptureError::Unsupported`], as the web
-        /// backend does.
+        /// The surface it answers, or `None` to answer [`CaptureError::Unsupported`], standing in
+        /// for any failed surface read.
         surface: StdMutex<Option<Surface>>,
         changes: watch::Sender<u64>,
         reads: std::sync::atomic::AtomicUsize,

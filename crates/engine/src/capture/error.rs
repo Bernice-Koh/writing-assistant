@@ -1,7 +1,6 @@
-//! The error type every [`super::Capture`] trait method returns, common across backends so a
-//! caller never needs to match on a specific backend's own error type. Each backend's own,
-//! richer error ([`super::native::error::NativeCaptureError`],
-//! [`super::web::error::WebCaptureError`]) maps into one of these variants at the point where
+//! The error type every [`super::Capture`] trait method returns, so a caller never needs to match
+//! on the backend's own error type. The native backend's richer error,
+//! [`super::native::error::NativeCaptureError`], maps into one of these variants at the point where
 //! it implements the trait.
 
 #[derive(Debug, thiserror::Error)]
