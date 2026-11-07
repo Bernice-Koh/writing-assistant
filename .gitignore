@@ -39,10 +39,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# --- Browser extension builds -----------------------------------------------
-extension/dist/
-extension/*.zip
-
 # --- Python (adapter/, a uv project) -----------------------------------------
 __pycache__/
 *.py[cod]
