@@ -108,14 +108,14 @@ and a focus change to a new element, mark the document changed and restart the 5
 threshold, and read nothing, so typing costs no read until it pauses. Once the threshold passes,
 the analyzer reads the whole document once and rechecks it when the text differs from the text last
 checked; a change of formatting alone reads the same and rechecks nothing. A safety poll covers
-controls that raise no event, and the web backend, which never raises the notification: while no
-change is pending, it reads the document two seconds after the last read, and a text other than the
-one last checked starts the quiet threshold, after which the recheck reads the text again and runs
-once the text has held through the threshold. Two seconds rests on the whole read's cost, measured
-on 4 November 2026 in a release build over 30 reads per surface of a 20,200-word text (see Native
-capture): medians of 3.4 ms and 12.0 ms in two runs on a Word document, 1.6 ms on Notepad, 24.4 ms
-on a Chromium `textarea` and 16.6 ms on a `contenteditable` field, so the poll takes 1.2% of one
-core on the `textarea` and under 1% on the others.
+controls that raise no event: while no change is pending, it reads the document two seconds after
+the last read, and a text other than the one last checked starts the quiet threshold, after which
+the recheck reads the text again and runs once the text has held through the threshold. Two seconds
+rests on the whole read's cost, measured on 4 November 2026 in a release build over 30 reads per
+surface of a 20,200-word text (see Native capture): medians of 3.4 ms and 12.0 ms in two runs on a
+Word document, 1.6 ms on Notepad, 24.4 ms on a Chromium `textarea` and 16.6 ms on a
+`contenteditable` field, so the poll takes 1.2% of one core on the `textarea` and under 1% on the
+others.
 
 Measured on 5 November 2026 on this machine in a release build, with ten bursts of 20 characters
 typed 100 ms apart, each followed by a two-second pause, into each of a Notepad and a Word document
@@ -372,7 +372,8 @@ base, and the Singapore supplement is a plain word list that grows without a cha
 
 One trait, `Capture`, covers text delivery, span positioning, replacement, whose window is in the
 foreground, a notification that the document changed, and the surface the document belongs to.
-The rest of the engine does not know which backend served a request.
+One backend implements it, native capture through UI Automation, for desktop applications and
+browser tabs alike.
 
 A span is addressed as an anchor found in the document plus a local offset and length in UTF-16
 code units, never as an absolute offset. UI Automation's character counting drifts across Word's
@@ -423,7 +424,8 @@ part is logged once per focus, with the count and the length.
 | Notepad | Read and underlined. Its input dispatcher takes keystrokes from the system input queue only, which is why insertion types through `SendInput` |
 | VS Code | Once a UI Automation client is present, the chat input reports a fixed 20 by 20 square in place of its caret. This finding led to a plausibility check on the caret rectangle. The caret is no longer read, since the full-viewport overlay has no use for it, and the check went with it |
 | WPF `TextBox`, RichEdit 5 control | Read and checked, and never underlined: the `TextPattern` of either does not support `FindText`, so no span's anchor resolves. Recorded as unsupported with no fallback, decided 4 November 2026: the anchor contract exists because absolute offsets drift, and such a control cannot resolve an anchor. Not verified on this machine |
-| Gmail compose, GitHub comment box | Neither is verified through native capture, the backend the app starts. The web backend's content script covers both hosts, and the app does not start it. Verification through native capture: planned, Phase 2 |
+| Gmail compose, Microsoft Edge 156.0.4314.58 | Verified through native capture on 7 November 2026 on this machine, one run of each check on text written for the check in a fresh compose: the text read whole, each flagged span underlined in place, the card shown on hovering an underline, a correction through the insertion harness landing at its span and reading back, and the overlay shown while the page's window was in front. Gmail's own autocorrect replaced a misspelt word as it was typed, so a check's text can differ from the keystrokes that typed it |
+| GitHub comment box, Microsoft Edge 156.0.4314.58 | Verified through native capture on 7 November 2026 on this machine, with the same five checks on the same text. The box held the text in three lines at 243 pixels tall, at a display scale of 200%, and the overlay window spans the box, so the card of an underline on the second line opened above the underline and lost its upper part to the window's edge; an underline on the first line showed its whole card below it |
 
 Measured on 4 November 2026 on this machine, at a display scale of 200%, by
 `crates/engine/examples/read_cost.rs` over 30 reads per surface of one text of 20,200 words: the
@@ -446,22 +448,7 @@ element included, where it has one; it names the document from one session to th
 16.0.20430.20180 names its document element by the file name without its extension, measured on 6
 November 2026 in 5 reads, so two Word documents of one name in different folders share a key. The
 analyzer reads the surface at each recheck, and the log names its process name and its page URL's
-host alone. The web backend answers the surface as unsupported, so its documents are checked under
-the default register.
-
-### Web capture
-
-The web backend is a WebSocket server that a Manifest V3 browser extension connects to. The
-server accepts one extension origin. The extension's content script reads and replaces the text
-of the focused editable element on `github.com` and `mail.google.com`. The backend answers every
-positioning call as unsupported, since a content script cannot convert a DOM position to screen
-coordinates. The content script replaces at an anchor's first occurrence and its messages carry
-no occurrence index, so the backend answers a replacement past the first occurrence as
-unsupported. It never raises the change notification, so the analyzer's safety poll finds its
-changes. The app does not start it today.
-
-Not yet decided: whether the web backend stays. Phase 2 verifies Gmail compose and a GitHub
-comment box through native capture. On a pass, the web backend and the extension are deleted.
+host alone. A recheck whose surface cannot be read runs under the default register.
 
 ### Insertion cascade
 
@@ -505,9 +492,8 @@ own process, which decides whether the app's process meets that condition.
 The cascade is implemented behind `Capture::replace` and exercised by its harness. Nothing in the
 overlay calls it yet: the working card's Accept is planned for Phase 4.
 
-Four harnesses under `crates/engine/examples/` measure native capture, the cost of its read, the
-insertion cascade, and the web bridge against real applications. They are run by hand and are not
-tests.
+Three harnesses under `crates/engine/examples/` measure native capture, the cost of its read, and
+the insertion cascade against real applications. They are run by hand and are not tests.
 
 ### Overlay
 
@@ -1041,7 +1027,7 @@ candidates over fresh items, with its size set by a power calculation written be
 | Layer | Technologies |
 |---|---|
 | Engine | [Rust](https://www.rust-lang.org), [Tokio](https://tokio.rs), `thiserror`, `log` with `env_logger`, and `sha2` for content hashes |
-| Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern`. For the web backend, a Manifest V3 extension and `tokio-tungstenite` |
+| Capture | [`windows`](https://github.com/microsoft/windows-rs) with [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32) `TextPattern` |
 | Checking | spellbook, `unicode-segmentation`, `regex`, `lru`, and [LanguageTool](https://languagetool.org) 6.6 over loopback HTTP through `reqwest` |
 | Desktop and UI | Tauri 2, WebView2, [React](https://react.dev) 19, TypeScript, [Vite](https://vite.dev) |
 | Settings | A JSON config file through `serde_json`, under the data root that the engine locates through `directories`. The app loads it once at startup; its controls arrive with the settings shell in Phase 3 |

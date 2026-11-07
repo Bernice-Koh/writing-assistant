@@ -95,8 +95,7 @@ draft it quotes. A log line names a flag id, an offset, a length, or a message k
 
 ## TypeScript
 
-`src/`. Strict mode; no `any` without a `// reason:` comment. `extension/` is plain
-JavaScript under the same naming rules.
+`src/`. Strict mode; no `any` without a `// reason:` comment.
 
 ### Naming
 

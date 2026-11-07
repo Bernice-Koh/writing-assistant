@@ -197,8 +197,7 @@ fn scheme_and_host(url: &str) -> String {
     }
 }
 
-/// Never prints the text itself, only its length: this channel carries the user's own draft,
-/// same as the browser bridge's logging in #12.
+/// Never prints the text itself, only its length: this channel carries the user's own draft.
 async fn query_capture_trait(capture: &NativeCapture, when: &str) {
     match capture.current_text().await {
         Ok(text) => {
