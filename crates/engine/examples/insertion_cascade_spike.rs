@@ -601,48 +601,12 @@ fn run_refocus_test(args: &[String]) {
     );
     sleep(FOCUS_DELAY);
 
-    let uia = match Uia::new() {
-        Ok(uia) => uia,
-        Err(error) => {
-            println!("  could not create UIA client: {error}");
-            return;
-        }
-    };
-    let cache = match uia.base_cache_request() {
-        Ok(cache) => cache,
-        Err(error) => {
-            println!("  could not build cache request: {error}");
-            return;
-        }
-    };
-    let element = match uia.focused_element(&cache) {
-        Ok(element) => element,
-        Err(error) => {
-            println!("  no focused element: {error}");
-            return;
-        }
-    };
-    let Some(window) = foreground::target_window(uia.client(), &element) else {
-        println!("  the focused element has no window to refocus");
+    let Some(client) = Client::new() else {
         return;
     };
-    if !wait_for_front(|front| front.hwnd == window.hwnd) {
-        println!("  the focused element's window is not in front");
+    let Some(target) = client.focused_target(title) else {
         return;
-    }
-    let target = Target {
-        element: &element,
-        window,
-        title,
     };
-    if !target.title_holds() {
-        println!("  the focused window's title does not hold the given title; nothing is typed");
-        return;
-    }
-    println!(
-        "  target: {}'s window",
-        foreground::process_name(window.process_id)
-    );
 
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -650,7 +614,7 @@ fn run_refocus_test(args: &[String]) {
     let mut tally = Tally::default();
     for run in 1..=runs {
         let marker = format!("QQ{stamp:04}R{run:02}QQ");
-        let Some(outcome) = refocus_run(&uia, &cache, &target, &cover, &marker) else {
+        let Some(outcome) = refocus_run(&client, &target, &cover, &marker) else {
             println!("  run {run}: stopped");
             break;
         };
@@ -661,10 +625,65 @@ fn run_refocus_test(args: &[String]) {
     println!("  {tally}");
 }
 
-/// The refocus runs' target: the focused document element, its top-level window, and the text its
-/// window's title must hold.
+/// A UI Automation client and the cache request its reads take.
+struct Client {
+    uia: Uia,
+    cache: IUIAutomationCacheRequest,
+}
+
+impl Client {
+    /// The client, or `None`, with the reason printed, when it could not be set up.
+    fn new() -> Option<Self> {
+        let uia = Uia::new()
+            .map_err(|error| println!("  could not create UIA client: {error}"))
+            .ok()?;
+        let cache = uia
+            .base_cache_request()
+            .map_err(|error| println!("  could not build cache request: {error}"))
+            .ok()?;
+        Some(Self { uia, cache })
+    }
+
+    /// The focused element as the target, once its top-level window is in front and the window's
+    /// title holds `title`, or `None`, with the reason printed, when any of that fails. Prints the
+    /// target window's process name.
+    fn focused_target<'a>(&self, title: &'a str) -> Option<Target<'a>> {
+        let element = self
+            .uia
+            .focused_element(&self.cache)
+            .map_err(|error| println!("  no focused element: {error}"))
+            .ok()?;
+        let Some(window) = foreground::target_window(self.uia.client(), &element) else {
+            println!("  the focused element has no window");
+            return None;
+        };
+        if !wait_for_front(|front| front.hwnd == window.hwnd) {
+            println!("  the focused element's window is not in front");
+            return None;
+        }
+        let target = Target {
+            element,
+            window,
+            title,
+        };
+        if !target.title_holds() {
+            println!(
+                "  the focused window's title does not hold the given title; nothing is typed"
+            );
+            return None;
+        }
+        println!(
+            "  target: {}'s window",
+            foreground::process_name(window.process_id)
+        );
+        Some(target)
+    }
+}
+
+/// The `refocus` and `correct` slots' target: the focused element, its top-level window, and the
+/// text the window's title must hold.
 struct Target<'a> {
-    element: &'a IUIAutomationElement,
+    element: IUIAutomationElement,
     window: Window,
     title: &'a str,
 }
@@ -691,13 +710,12 @@ struct CoverScript<'a> {
 /// One run of [`run_refocus_test`], or `None`, with the reason printed, when the run could not
 /// reach the probe.
 fn refocus_run(
-    uia: &Uia,
-    cache: &IUIAutomationCacheRequest,
+    client: &Client,
     target: &Target,
     cover_script: &CoverScript,
     marker: &str,
 ) -> Option<RunOutcome> {
-    let element = target.element;
+    let element = &target.element;
     if !wait_for_front(|front| front.hwnd == target.window.hwnd) {
         println!("  the target's window is not in front at the run's start");
         return None;
@@ -733,11 +751,15 @@ fn refocus_run(
         stop_cover(&mut cover);
         return None;
     }
-    let cover_element = uia.focused_element(cache).ok().filter(|focused| {
-        // SAFETY: `focused` is the live element just returned; the property read fails safely.
-        let owner = unsafe { focused.CurrentProcessId() };
-        owner.is_ok_and(|owner| owner.cast_unsigned() == cover_pid)
-    });
+    let cover_element = client
+        .uia
+        .focused_element(&client.cache)
+        .ok()
+        .filter(|focused| {
+            // SAFETY: `focused` is the live element just returned; the property read fails safely.
+            let owner = unsafe { focused.CurrentProcessId() };
+            owner.is_ok_and(|owner| owner.cast_unsigned() == cover_pid)
+        });
     let cover_before = cover_element
         .as_ref()
         .and_then(|cover| current_text(cover).ok());
@@ -911,12 +933,10 @@ fn run_correct_test(args: &[String]) {
         std::process::exit(1);
     };
     let paths = spelling::default_paths(Path::new(RESOURCES_DIR));
-    let checker = match SpellChecker::load(&paths.aff, &paths.dic, &paths.supplement) {
-        Ok(checker) => checker,
-        Err(error) => {
-            println!("  could not load the dictionaries: {error}");
-            return;
-        }
+    let Ok(checker) = SpellChecker::load(&paths.aff, &paths.dic, &paths.supplement)
+        .map_err(|error| println!("  could not load the dictionaries: {error}"))
+    else {
+        return;
     };
 
     println!(
@@ -925,55 +945,18 @@ fn run_correct_test(args: &[String]) {
     );
     sleep(FOCUS_DELAY);
 
-    let uia = match Uia::new() {
-        Ok(uia) => uia,
-        Err(error) => {
-            println!("  could not create UIA client: {error}");
-            return;
-        }
-    };
-    let cache = match uia.base_cache_request() {
-        Ok(cache) => cache,
-        Err(error) => {
-            println!("  could not build cache request: {error}");
-            return;
-        }
-    };
-    let element = match uia.focused_element(&cache) {
-        Ok(element) => element,
-        Err(error) => {
-            println!("  no focused element: {error}");
-            return;
-        }
-    };
-    let Some(window) = foreground::target_window(uia.client(), &element) else {
-        println!("  the focused element has no window");
+    let Some(client) = Client::new() else {
         return;
     };
-    if !wait_for_front(|front| front.hwnd == window.hwnd) {
-        println!("  the focused element's window is not in front");
+    let Some(target) = client.focused_target(title) else {
         return;
-    }
-    let target = Target {
-        element: &element,
-        window,
-        title,
     };
-    if !target.title_holds() {
-        println!("  the focused window's title does not hold the given title; nothing is typed");
+    let element = &target.element;
+    let window = target.window;
+    let Ok(before) =
+        current_text(element).map_err(|error| println!("  could not read the target: {error}"))
+    else {
         return;
-    }
-    println!(
-        "  target: {}'s window",
-        foreground::process_name(window.process_id)
-    );
-
-    let before = match current_text(&element) {
-        Ok(text) => text,
-        Err(error) => {
-            println!("  could not read the target: {error}");
-            return;
-        }
     };
     let Some(correction) = first_misspelling(&checker, &before) else {
         println!(
@@ -1002,7 +985,7 @@ fn run_correct_test(args: &[String]) {
 
     let in_front_at_call = foreground::window().is_some_and(|front| front.hwnd == window.hwnd);
     let result = replace_within(
-        &element,
+        element,
         Some(window),
         &correction.span.anchor,
         correction.span.occurrence,
@@ -1012,7 +995,7 @@ fn run_correct_test(args: &[String]) {
     );
     sleep(SETTLE_DELAY);
     let front_after = foreground::window();
-    let after = current_text(&element).ok();
+    let after = current_text(element).ok();
     let expected = format!(
         "{}{}{}",
         &before[..correction.start],
