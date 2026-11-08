@@ -104,8 +104,8 @@ flags therefore never wait on LanguageTool. A recheck that starts while the prev
 grammar stage is still running stops that stage, which publishes nothing.
 
 The capture backend's change notification triggers the recheck. UI Automation's text-changed event,
-and a focus change to a new element, mark the document changed and restart the 500 ms quiet
-threshold, and read nothing, so typing costs no read until it pauses. Once the threshold passes,
+and a focus event outside the tool's own windows, mark the document changed and restart the 500 ms
+quiet threshold, and read nothing, so typing costs no read until it pauses. Once the threshold passes,
 the analyzer reads the whole document once and rechecks it when the text differs from the text last
 checked; a change of formatting alone reads the same and rechecks nothing. A safety poll covers
 controls that raise no event: while no change is pending, it reads the document two seconds after
@@ -393,14 +393,18 @@ One dedicated thread owns the UI Automation client. It follows focus across the 
 ignores the tool's own windows by walking the process parent chain, since WebView2 renders the
 frontend in a child process with its own process id. It registers for the text-changed event on the
 focused element's subtree, and raises the change notification on each event and on each focus
-change to a new element.
+event outside the tool's own windows. A focus event on the element already scoped keeps its
+registration, since Notepad shows a newly selected tab's text in the same document element; an
+element compares as the scoped one through UI Automation's `CompareElements`.
 
 Focus events do not announce every change of document. A Word document started from the shell
 came up behind the window in front, and the click that brought it forward raised neither a focus
 event nor `EVENT_SYSTEM_FOREGROUND`. So a second thread watches the foreground window, through a
 hook for `EVENT_SYSTEM_FOREGROUND` and a read of the foreground window every 200 ms. When the
 foreground window has changed and no focus event has followed for 300 ms, the capture thread
-re-resolves the focused element.
+re-resolves the focused element. A re-resolution that finds the element already scoped leaves the
+scope and its registration in place and raises nothing, so a switch to another window and back
+costs no read of the document and no re-resolution of the flags.
 
 The thread reads the focused element's whole text from its `TextPattern` document range, and from
 its value where the element has no `TextPattern` or the range read fails. A provider can return
@@ -511,9 +515,11 @@ where it was.
 Three loops poll every 100 ms: one for the document's rectangle and the foreground window, one for
 the flags' positions, and one for the pointer. Polling is the design here: scrolling and window
 movement raise no dependable event. The flags loop re-resolves every flag's position on a flag
-update, on the capture backend's change notification, once a tick however many notifications
-arrived since the last, and when the document's rectangle changed. On any other tick it re-resolves
-one sentinel, the first positioned flag, and every flag when the sentinel has moved, so a scroll is
+update and when the document's rectangle changed. While the text is changing it waits: a tick that
+saw the capture backend's change notification re-resolves nothing, the sentinel included, and the
+first tick that saw none after one or more that did re-resolves every flag, so a burst of typing
+costs one re-resolution, a tick after its last keystroke. On any other tick it re-resolves one
+sentinel, the first positioned flag, and every flag when the sentinel has moved, so a scroll is
 noticed within a tick at the cost of one search. While no flag is positioned, it re-resolves every
 flag once a second.
 
@@ -526,6 +532,17 @@ flags loop re-resolved on a change, the app and its WebView2 processes spent a m
 one core with 135 flags and 3.2% with none, and Notepad's own process 64.1%; after it, a median of
 0.0% in both conditions, with means over the minute of 1.2% with 135 flags and 1.1% with none, and
 Notepad's own process a median of 0.0% and a mean of 2.1%.
+
+Measured on 8 November 2026 under the same protocol on release builds, over 60 one-second samples
+per build while typing: sixteen bursts of 20 characters 100 ms apart, each followed by a two-second
+pause, at the end of the same Notepad document with 135 flags. When every tick that saw the change
+notification re-resolved every flag, the app and its WebView2 processes spent a mean of 99.2% of one
+core over the minute, with a median of 100.4% (98.7 to 110.4), and Notepad's own process a mean of
+32.6%, with a median of 33.9% (12.4 to 53.1). With the rule above, the means were 82.3% and 7.5%,
+with medians of 98.4% (82.7 to 99.5) and 6.3% (4.7 to 9.4). Most of the app's number on both builds
+is each pause's recheck, which re-ran the whole deterministic stage, 3 to 4 s in each of its 14 runs
+per build: the analyzer's sentence cache holds 1,000 entries, fewer than the document's 2,010
+sentences, so a recheck in document order finds almost none of them still cached.
 
 Phase 2 built the non-activating window and the card's place in the hover's hit region, so the card
 can carry buttons; the card has no actions today. Planned for Phase 4: the working card.
@@ -739,7 +756,7 @@ the app's scheduler, the Python project, and use by hand.
 | Process | Role | State |
 |---|---|---|
 | The app | [Tauri](https://tauri.app) 2. Hosts the UI Automation thread, the store thread, the analyzer, the overlay, and the main window | Runs today |
-| LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess | Runs today |
+| LanguageTool | Grammar over loopback HTTP, under a trimmed Java runtime. A supervised subprocess with no console window of its own | Runs today |
 | llama-server | The server from [llama.cpp](https://github.com/ggml-org/llama.cpp), at a pinned release verified by hash. Serves the base model with adapters attached and scaled per request, the pre-sort's decision model, and embeddings from a second instance. A supervised subprocess | Planned, Phase 3 |
 | `wa` | The engine on the command line | Built, with two subcommands. `wa backup` copies the store file alone; `wa screen` runs the screen over JSONL with a LanguageTool subprocess of its own |
 | `adapter/` | A Python `uv` project: the bench, and job submission, polling, download, and conversion | Planned, Phase 5 |
@@ -747,7 +764,10 @@ the app's scheduler, the Python project, and use by hand.
 LanguageTool's supervision is the pattern for both subprocesses. A free port is probed upward from
 8081, readiness is polled, and a warm-up check loads the `en-GB` rules before the first real
 check. An unexpected exit is answered with a restart, up to three in a session. After that,
-grammar checking stays off for the session and the other sources continue.
+grammar checking stays off for the session and the other sources continue. The subprocess starts
+with no console window of its own, which Windows otherwise opens for it under a release build of
+the app, since that has no console, and its log goes to the standard error of the process that
+started it, the app's or `wa`'s.
 
 The model runs in a subprocess for the same reason LanguageTool does: a graphics driver fault or
 an out-of-memory in the model runtime stays out of the app's process and never takes live checking
