@@ -23,17 +23,20 @@ const UNPOSITIONED_REFRESH_TICKS: u32 = 10;
 /// relativised to the overlay window, as a `flags-updated` event for the overlay's own webview to
 /// render.
 ///
-/// Every flag is re-resolved, at one `span_rect` call each, on a flag update from the analyzer,
-/// on a tick where the document-view rectangle changed since the last re-resolution, and on a
-/// tick after the capture backend's change notification fired, once however many notifications
-/// arrived since the last tick. On any other tick only the sentinel, the first positioned flag, is
-/// re-resolved, and every flag is re-resolved when the sentinel's rectangles moved: scrolling
-/// moves every visible flag, so a scroll is noticed within one tick at the cost of one `FindText`
-/// instead of one per flag (#153 measured the per-flag cost on every tick at 58% of one core for
-/// 135 flags in a debug build). A sentinel the document no longer holds counts as moved. While no
-/// flag is positioned, every flag is re-resolved once a second. An edit between two visible flags
-/// moves the later one without moving the sentinel, and the change notification it raises
-/// re-resolves every flag on the next tick, before the analyzer's recheck after its quiet period.
+/// Every flag is re-resolved, at one `span_rect` call each, on a flag update from the analyzer and
+/// on a tick where the document-view rectangle changed since the last re-resolution. While the
+/// text is changing, a tick that saw the capture backend's change notification re-resolves
+/// nothing, the sentinel included, and the first tick that saw none after one or more that did
+/// re-resolves every flag: one re-resolution per burst of typing, a tick after its last keystroke,
+/// where re-resolving on every tick that saw the notification cost every tick of the burst (#167).
+/// On any other tick only the sentinel, the first positioned flag, is re-resolved, and every flag
+/// is re-resolved when the sentinel's rectangles moved: scrolling moves every visible flag, so a
+/// scroll is noticed within one tick at the cost of one `FindText` instead of one per flag (#153
+/// measured the per-flag cost on every tick at 58% of one core for 135 flags in a debug build). A
+/// sentinel the document no longer holds counts as moved. While no flag is positioned, every flag
+/// is re-resolved once a second. An edit between two visible flags moves the later one without
+/// moving the sentinel, and the change notification it raises re-resolves every flag on the first
+/// tick after the edit stops, before the analyzer's recheck after its quiet period.
 ///
 /// The periodic leg exists because a flag's *position* can go stale for reasons that have
 /// nothing to do with the flag set changing: the document scrolling, the window resizing, or focus
@@ -55,6 +58,7 @@ pub fn track_flags(
         let mut interval = poll_interval();
         let mut resolved_view: Option<CursorRect> = None;
         let mut ticks_since_all: u32 = 0;
+        let mut text_was_changing = false;
         loop {
             let flags_updated = tokio::select! {
                 changed = updates.changed() => {
@@ -76,11 +80,13 @@ pub fn track_flags(
             let tick = Tick {
                 flags_updated,
                 text_changed: take_change(&mut changes),
+                text_was_changing,
                 view_changed: view != resolved_view,
                 has_sentinel: sentinel.is_some(),
                 has_flags: !updates.borrow().is_empty(),
                 ticks_since_all,
             };
+            text_was_changing = tick.text_changed;
             match refresh_for(tick) {
                 Refresh::Nothing => continue,
                 Refresh::Sentinel => {
@@ -113,6 +119,8 @@ struct Tick {
     flags_updated: bool,
     /// The capture backend's change notification fired since the last tick.
     text_changed: bool,
+    /// The previous tick saw the change notification.
+    text_was_changing: bool,
     /// The document-view rectangle differs from the one every flag was last re-resolved against.
     view_changed: bool,
     /// At least one flag is positioned, so the first of them can serve as the sentinel.
@@ -134,11 +142,17 @@ enum Refresh {
     Nothing,
 }
 
-/// Every flag on a flag update, a change to the text or a changed document view; otherwise the
-/// sentinel when a flag is positioned; otherwise, while the analyzer holds flags none of which is
-/// positioned, every flag once [`UNPOSITIONED_REFRESH_TICKS`] ticks have passed; otherwise nothing.
+/// Every flag on a flag update or a changed document view; otherwise nothing on a tick that saw
+/// the change notification, and every flag on the first tick that saw none after one that did;
+/// otherwise the sentinel when a flag is positioned; otherwise, while the analyzer holds flags none
+/// of which is positioned, every flag once [`UNPOSITIONED_REFRESH_TICKS`] ticks have passed;
+/// otherwise nothing.
 fn refresh_for(tick: Tick) -> Refresh {
-    if tick.flags_updated || tick.text_changed || tick.view_changed {
+    if tick.flags_updated || tick.view_changed {
+        Refresh::All
+    } else if tick.text_changed {
+        Refresh::Nothing
+    } else if tick.text_was_changing {
         Refresh::All
     } else if tick.has_sentinel {
         Refresh::Sentinel
@@ -306,10 +320,20 @@ mod tests {
         Tick {
             flags_updated: false,
             text_changed: false,
+            text_was_changing: false,
             view_changed: false,
             has_sentinel: true,
             has_flags: true,
             ticks_since_all: 1,
+        }
+    }
+
+    /// A tick inside a burst of typing: this tick and the one before it saw the notification.
+    fn typing() -> Tick {
+        Tick {
+            text_changed: true,
+            text_was_changing: true,
+            ..idle()
         }
     }
 
@@ -323,12 +347,80 @@ mod tests {
     }
 
     #[test]
-    fn a_change_to_the_text_re_resolves_every_flag() {
-        let tick = Tick {
+    fn a_tick_that_saw_the_notification_re_resolves_nothing_not_even_the_sentinel() {
+        let first = Tick {
             text_changed: true,
             ..idle()
         };
+        assert_eq!(refresh_for(first), Refresh::Nothing);
+        assert_eq!(refresh_for(typing()), Refresh::Nothing);
+    }
+
+    #[test]
+    fn a_tick_that_saw_the_notification_skips_the_once_a_second_refresh_too() {
+        let tick = Tick {
+            has_sentinel: false,
+            ticks_since_all: UNPOSITIONED_REFRESH_TICKS,
+            ..typing()
+        };
+        assert_eq!(refresh_for(tick), Refresh::Nothing);
+    }
+
+    #[test]
+    fn the_first_tick_without_the_notification_after_one_with_it_re_resolves_every_flag() {
+        let tick = Tick {
+            text_changed: false,
+            ..typing()
+        };
         assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn a_flag_update_during_a_run_of_notifications_re_resolves_every_flag() {
+        let tick = Tick {
+            flags_updated: true,
+            ..typing()
+        };
+        assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn a_view_change_during_a_run_of_notifications_re_resolves_every_flag() {
+        let tick = Tick {
+            view_changed: true,
+            ..typing()
+        };
+        assert_eq!(refresh_for(tick), Refresh::All);
+    }
+
+    #[test]
+    fn a_burst_re_resolves_nothing_while_it_lasts_every_flag_once_after_and_then_the_sentinel() {
+        // Each tick's `text_was_changing` is the previous tick's `text_changed`, as in the loop.
+        let seen = [true, true, true, false, false, false];
+        let mut text_was_changing = false;
+        let refreshes: Vec<Refresh> = seen
+            .iter()
+            .map(|&text_changed| {
+                let tick = Tick {
+                    text_changed,
+                    text_was_changing,
+                    ..idle()
+                };
+                text_was_changing = text_changed;
+                refresh_for(tick)
+            })
+            .collect();
+        assert_eq!(
+            refreshes,
+            vec![
+                Refresh::Nothing,
+                Refresh::Nothing,
+                Refresh::Nothing,
+                Refresh::All,
+                Refresh::Sentinel,
+                Refresh::Sentinel,
+            ]
+        );
     }
 
     #[test]
