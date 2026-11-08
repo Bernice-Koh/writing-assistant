@@ -83,9 +83,12 @@ pub trait Capture: Send + Sync {
     /// Each call returns a receiver of its own with the current value marked seen, so the analyzer
     /// and the overlay each see every notification once.
     ///
-    /// Native raises it on UI Automation's text-changed event and when a focus change scopes a new
-    /// element, since a new document is a change. In a control that raises no text-changed event,
-    /// the analyzer's safety poll is what finds a change.
+    /// Native raises it on UI Automation's text-changed event and on a focus event outside this
+    /// app, whether the element is a new one or the one already scoped, since a new document is a
+    /// change and Notepad shows a newly selected tab's text in the same element. The foreground
+    /// watch's re-resolution raises it only when it finds an element other than the scoped one. In
+    /// a control that raises no text-changed event, the analyzer's safety poll is what finds a
+    /// change.
     fn changes(&self) -> tokio::sync::watch::Receiver<u64>;
 
     /// Replaces `span`'s text with `replacement`: the `local_length` UTF-16 code units starting
