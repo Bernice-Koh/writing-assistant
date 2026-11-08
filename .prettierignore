@@ -1,7 +1,6 @@
 node_modules/
 dist/
 dist-ssr/
-extension/dist/
 target/
 package-lock.json
 

@@ -852,7 +852,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_surface_the_backend_cannot_name_is_checked_under_the_default_register() {
-        // The web backend answers the surface as unsupported.
+        // Native answers an error when the process table no longer names the element's process.
         let fake = Arc::new(FakeCapture::on(None, "Perhaps it rains."));
         let settings = Config {
             default_register: "email".to_owned(),

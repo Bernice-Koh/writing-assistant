@@ -1,26 +1,25 @@
 //! One contract for text delivery, span positioning, and replacement, with the native UI
-//! Automation backend and the insertion cascade behind it. The rest of the engine never learns
-//! which backend served a request.
+//! Automation backend and the insertion cascade behind it.
 //!
-//! [`Capture`] has two implementations: [`native`], which also covers Microsoft Word's desktop
-//! document surface (UI Automation's `TextPattern` covers it like any other rich-text control,
-//! no Word-specific integration needed), and [`web`], which covers browser-based editors with
-//! real DOM text content. A third backend built on Office.js was scoped in #22 to give Word its
-//! own document-object-model path; it was dropped once manual verification confirmed native's
-//! coverage against real Word, with the reasoning recorded on that issue.
+//! [`Capture`] has one implementation, [`native`], for desktop applications and browser tabs
+//! alike. It covers Microsoft Word's desktop document surface (UI Automation's `TextPattern`
+//! covers it like any other rich-text control, no Word-specific integration needed) and a Chromium
+//! tab, through the accessibility tree Chromium bridges to UI Automation. A backend built on
+//! Office.js was scoped in #22 to give Word its own document-object-model path; it was dropped
+//! once manual verification confirmed native's coverage against real Word, with the reasoning
+//! recorded on that issue. A web backend, a WebSocket server for a browser extension's content
+//! script, was removed in #158: the extension's replace rewrote an element's inner text and
+//! stripped its formatting, and the app never started it.
 //!
-//! Canvas-rendered web editors, which draw their document onto a canvas instead of real DOM
-//! text nodes for cross-browser layout fidelity, defeat `web`'s DOM-based read: it sees only the
-//! decoy input such an editor positions at the caret to capture keystrokes and IME composition,
-//! not the document. `native` is not automatically exempt, since it depends just as much on a
-//! trustworthy accessibility tree, only reached a different way (UI Automation against the
-//! browser tab's own bridged tree, rather than the page's DOM). Manual verification against
-//! each editor individually, not an assumption from one covering the other, is what #31 settled.
-//! Word for the web turned out to be readable through `native` regardless: Chromium bridges its
-//! full accessibility tree to UI Automation for screen-reader support, and Word for the web's own
-//! editing surface backs that tree completely, so `native`'s ordinary `TextPattern` read sees the
-//! real document there, with no Word-for-the-web-specific code needed, the same way Word's
-//! desktop surface needed none. Google Docs needs a condition Word for the web does not: by
+//! Canvas-rendered web editors draw their document onto a canvas instead of real DOM text nodes,
+//! for cross-browser layout fidelity, and position a decoy input at the caret to capture
+//! keystrokes and IME composition. `native` reads such an editor only where its accessibility tree
+//! backs the real document, so each editor is verified individually, as #31 settled. Word for the
+//! web is readable through `native`: Chromium bridges its full accessibility tree to UI Automation
+//! for screen-reader support, and Word for the web's own editing surface backs that tree
+//! completely, so `native`'s ordinary `TextPattern` read sees the real document there, with no
+//! Word-for-the-web-specific code needed, the same way Word's desktop surface needed none. Google
+//! Docs needs a condition Word for the web does not: by
 //! default it does not, matching `native/insert/mod.rs`'s `replace_last_typed` doc comment's
 //! finding from the write side, that Google Docs exposes a "side DOM" purely for accessibility
 //! that does not back a trustworthy read, so `native` against it returns empty text, not a decoy
@@ -37,7 +36,6 @@
 pub mod error;
 pub mod native;
 mod surface;
-pub mod web;
 
 pub use error::CaptureError;
 pub use surface::Surface;
@@ -69,15 +67,14 @@ pub enum Foreground {
 }
 
 /// One contract for text delivery, span positioning, and replacement, so the rest of the engine
-/// never learns which backend served a request. Async because every real implementation crosses
-/// a thread or network boundary: native forwards through its dedicated UIA thread, web
-/// round-trips a message.
+/// never calls UI Automation itself and its tests can stand a fake in for the backend. Async
+/// because the native backend crosses a thread boundary: it forwards each call to its dedicated
+/// UIA thread and awaits the reply.
 #[async_trait::async_trait]
 pub trait Capture: Send + Sync {
-    /// The full current text of whatever the backend considers "the document": the focused
-    /// element's `TextPattern` document range, read whole in parts, or its value where it has no
-    /// `TextPattern`, for native ([`native::insert::current_text`]), or the captured element's
-    /// text for web.
+    /// The full current text of whatever the backend considers "the document": for native, the
+    /// focused element's `TextPattern` document range, read whole in parts, or its value where it
+    /// has no `TextPattern` ([`native::insert::current_text`]).
     async fn current_text(&self) -> Result<String, CaptureError>;
 
     /// A notification that the document changed: a counter the backend raises on each change,
@@ -87,8 +84,8 @@ pub trait Capture: Send + Sync {
     /// and the overlay each see every notification once.
     ///
     /// Native raises it on UI Automation's text-changed event and when a focus change scopes a new
-    /// element, since a new document is a change. Web never raises it: the analyzer's safety poll
-    /// is what finds a change there, as for any control that raises no text-changed event.
+    /// element, since a new document is a change. In a control that raises no text-changed event,
+    /// the analyzer's safety poll is what finds a change.
     fn changes(&self) -> tokio::sync::watch::Receiver<u64>;
 
     /// Replaces `span`'s text with `replacement`: the `local_length` UTF-16 code units starting
@@ -102,9 +99,7 @@ pub trait Capture: Send + Sync {
     /// surface, while a local offset from a freshly-found anchor never crosses the boundary
     /// that causes the drift.
     ///
-    /// UTF-16 code units because that is what UI Automation counts by and what JavaScript
-    /// strings are natively: a genuine convergence across both backends, not a
-    /// Windows-specific artifact.
+    /// UTF-16 code units because that is what UI Automation's text ranges count by.
     ///
     /// Native types the replacement as keystrokes, which reach whichever window holds the
     /// foreground, so it brings the target's window to the front before each stage that sends one
@@ -119,10 +114,9 @@ pub trait Capture: Send + Sync {
     /// by content without a caller-supplied anchor. Both exist for the insertion harness, which
     /// has no flag to take an anchor from.
     ///
-    /// Web relays the request to the browser extension, which resolves the first occurrence, so
-    /// web answers [`CaptureError::Unsupported`] for a span whose index is above zero. The
-    /// extension's protocol carries no index, since whether the extension stays is not yet
-    /// decided (#58).
+    /// Native resolves a span at any occurrence index, through the search that serves
+    /// [`Self::span_rect`] ([`native::insert::select::find_within_range`]), so a replacement lands
+    /// on the occurrence its underline marks.
     async fn replace(&self, span: &Span, replacement: &str) -> Result<(), CaptureError>;
 
     /// The on-screen rectangle of the focused editable element, or the foreground window when
@@ -130,18 +124,14 @@ pub trait Capture: Send + Sync {
     /// overlay so every visible flagged span falls inside it. Native answers this from UI
     /// Automation's `BoundingRectangle` ([`native::cursor::document_view_rect`]), and answers
     /// [`CaptureError::Unsupported`] rather than fall back to a foreground window of this app's
-    /// own, which would place the overlay over the app instead of the document. Web returns
-    /// [`CaptureError::Unsupported`]: a browser content script cannot convert a DOM position to
-    /// absolute screen coordinates, since page JavaScript cannot learn the height of the
-    /// browser's own chrome.
+    /// own, which would place the overlay over the app instead of the document.
     async fn document_view_rect(&self) -> Result<CursorRect, CaptureError>;
 
     /// Whose window is in the foreground: the scoped document's process's, this app's, or
     /// another's, so the overlay can hide while the document is behind another window. Native
     /// compares the foreground window's process with the scoped element's
     /// ([`native::foreground::classify`]); a document whose window belongs to a process other
-    /// than its element's answers [`Foreground::Other`] while in front. Web returns
-    /// [`CaptureError::Unsupported`], for the same reason as [`Self::document_view_rect`].
+    /// than its element's answers [`Foreground::Other`] while in front.
     async fn foreground(&self) -> Result<Foreground, CaptureError>;
 
     /// Every on-screen bounding rectangle `span` produces, for underlining a flagged span in
@@ -155,8 +145,7 @@ pub trait Capture: Send + Sync {
     /// ([`native::cursor::span_rects`]), through the same anchor and occurrence search,
     /// [`native::insert::select::find_within_range`], that serves `replace`, so an underline and
     /// a replacement land on the same occurrence. An anchor the document no longer holds at that
-    /// index answers [`CaptureError::TextNotFound`]. Web returns [`CaptureError::Unsupported`],
-    /// for the same reason as [`Self::document_view_rect`].
+    /// index answers [`CaptureError::TextNotFound`].
     async fn span_rect(&self, span: &Span) -> Result<Vec<CursorRect>, CaptureError>;
 
     /// The surface the focused document belongs to: its process's executable name, the page URL
@@ -165,8 +154,6 @@ pub trait Capture: Send + Sync {
     /// checks under the register the settings map it to.
     ///
     /// Native answers it from the element in scope ([`native::surface::read`]), and answers
-    /// [`CaptureError::NoFocus`] with none in scope, as [`Self::current_text`] does. Web returns
-    /// [`CaptureError::Unsupported`]: the extension's protocol carries no surface, and whether the
-    /// extension stays is not yet decided (#58).
+    /// [`CaptureError::NoFocus`] with none in scope, as [`Self::current_text`] does.
     async fn surface(&self) -> Result<Surface, CaptureError>;
 }

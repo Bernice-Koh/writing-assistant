@@ -31,7 +31,7 @@ pub struct Span {
     ///
     /// A checking source sees one sentence and builds its spans with 0; the analyzer counts the
     /// index as it publishes. The native backend resolves the span at the occurrence the index
-    /// names; the web backend resolves only an index of 0.
+    /// names.
     pub occurrence: usize,
 }
 

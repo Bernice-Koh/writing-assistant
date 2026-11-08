@@ -14,13 +14,20 @@
 //! The `refocus` slot (#157) measures the cascade's refocus: it places another window in front of
 //! the target between the request and the first keystroke, and takes a run count, a title the
 //! target window's must hold, and a cover script after the slot (see `run_refocus_test`).
+//!
+//! The `correct` slot (#158) replaces the first misspelt word of a field focused by hand, such as
+//! one in a browser tab, by the spell checker's first suggestion, through the span the analyzer
+//! would publish for it, and takes a title the target window's must hold after the slot (see
+//! `run_correct_test`).
 
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use unicode_segmentation::UnicodeSegmentation;
 use wa_engine::capture::native::client::Uia;
 use wa_engine::capture::native::error::NativeCaptureError;
 use wa_engine::capture::native::foreground::{self, Window};
@@ -28,6 +35,8 @@ use wa_engine::capture::native::insert::{
     changed_region, clipboard, current_selection, current_text, replace_last_typed, replace_span,
     replace_within, restore_after_failed_attempt, select, synthetic, value,
 };
+use wa_engine::flag::Span;
+use wa_engine::spelling::{self, SpellChecker};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::Accessibility::{IUIAutomationCacheRequest, IUIAutomationElement};
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetWindowTextW, SetProcessDPIAware};
@@ -48,9 +57,10 @@ fn main() {
         Some("diagnose-selection") => run_selection_diagnostic(),
         Some("restore-drill") => run_restore_drill(),
         Some("refocus") => run_refocus_test(&args[2..]),
+        Some("correct") => run_correct_test(&args[2..]),
         _ => {
             eprintln!(
-                "usage: insertion_cascade_spike <notepad|edge|word|replace-live|replace-within-live|diagnose-selection|restore-drill|refocus>"
+                "usage: insertion_cascade_spike <notepad|edge|word|replace-live|replace-within-live|diagnose-selection|restore-drill|refocus|correct>"
             );
             std::process::exit(1);
         }
@@ -591,48 +601,12 @@ fn run_refocus_test(args: &[String]) {
     );
     sleep(FOCUS_DELAY);
 
-    let uia = match Uia::new() {
-        Ok(uia) => uia,
-        Err(error) => {
-            println!("  could not create UIA client: {error}");
-            return;
-        }
-    };
-    let cache = match uia.base_cache_request() {
-        Ok(cache) => cache,
-        Err(error) => {
-            println!("  could not build cache request: {error}");
-            return;
-        }
-    };
-    let element = match uia.focused_element(&cache) {
-        Ok(element) => element,
-        Err(error) => {
-            println!("  no focused element: {error}");
-            return;
-        }
-    };
-    let Some(window) = foreground::target_window(uia.client(), &element) else {
-        println!("  the focused element has no window to refocus");
+    let Some(client) = Client::new() else {
         return;
     };
-    if !wait_for_front(|front| front.hwnd == window.hwnd) {
-        println!("  the focused element's window is not in front");
+    let Some(target) = client.focused_target(title) else {
         return;
-    }
-    let target = Target {
-        element: &element,
-        window,
-        title,
     };
-    if !target.title_holds() {
-        println!("  the focused window's title does not hold the given title; nothing is typed");
-        return;
-    }
-    println!(
-        "  target: {}'s window",
-        foreground::process_name(window.process_id)
-    );
 
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -640,7 +614,7 @@ fn run_refocus_test(args: &[String]) {
     let mut tally = Tally::default();
     for run in 1..=runs {
         let marker = format!("QQ{stamp:04}R{run:02}QQ");
-        let Some(outcome) = refocus_run(&uia, &cache, &target, &cover, &marker) else {
+        let Some(outcome) = refocus_run(&client, &target, &cover, &marker) else {
             println!("  run {run}: stopped");
             break;
         };
@@ -651,10 +625,65 @@ fn run_refocus_test(args: &[String]) {
     println!("  {tally}");
 }
 
-/// The refocus runs' target: the focused document element, its top-level window, and the text its
-/// window's title must hold.
+/// A UI Automation client and the cache request its reads take.
+struct Client {
+    uia: Uia,
+    cache: IUIAutomationCacheRequest,
+}
+
+impl Client {
+    /// The client, or `None`, with the reason printed, when it could not be set up.
+    fn new() -> Option<Self> {
+        let uia = Uia::new()
+            .map_err(|error| println!("  could not create UIA client: {error}"))
+            .ok()?;
+        let cache = uia
+            .base_cache_request()
+            .map_err(|error| println!("  could not build cache request: {error}"))
+            .ok()?;
+        Some(Self { uia, cache })
+    }
+
+    /// The focused element as the target, once its top-level window is in front and the window's
+    /// title holds `title`, or `None`, with the reason printed, when any of that fails. Prints the
+    /// target window's process name.
+    fn focused_target<'a>(&self, title: &'a str) -> Option<Target<'a>> {
+        let element = self
+            .uia
+            .focused_element(&self.cache)
+            .map_err(|error| println!("  no focused element: {error}"))
+            .ok()?;
+        let Some(window) = foreground::target_window(self.uia.client(), &element) else {
+            println!("  the focused element has no window");
+            return None;
+        };
+        if !wait_for_front(|front| front.hwnd == window.hwnd) {
+            println!("  the focused element's window is not in front");
+            return None;
+        }
+        let target = Target {
+            element,
+            window,
+            title,
+        };
+        if !target.title_holds() {
+            println!(
+                "  the focused window's title does not hold the given title; nothing is typed"
+            );
+            return None;
+        }
+        println!(
+            "  target: {}'s window",
+            foreground::process_name(window.process_id)
+        );
+        Some(target)
+    }
+}
+
+/// The `refocus` and `correct` slots' target: the focused element, its top-level window, and the
+/// text the window's title must hold.
 struct Target<'a> {
-    element: &'a IUIAutomationElement,
+    element: IUIAutomationElement,
     window: Window,
     title: &'a str,
 }
@@ -681,13 +710,12 @@ struct CoverScript<'a> {
 /// One run of [`run_refocus_test`], or `None`, with the reason printed, when the run could not
 /// reach the probe.
 fn refocus_run(
-    uia: &Uia,
-    cache: &IUIAutomationCacheRequest,
+    client: &Client,
     target: &Target,
     cover_script: &CoverScript,
     marker: &str,
 ) -> Option<RunOutcome> {
-    let element = target.element;
+    let element = &target.element;
     if !wait_for_front(|front| front.hwnd == target.window.hwnd) {
         println!("  the target's window is not in front at the run's start");
         return None;
@@ -723,11 +751,15 @@ fn refocus_run(
         stop_cover(&mut cover);
         return None;
     }
-    let cover_element = uia.focused_element(cache).ok().filter(|focused| {
-        // SAFETY: `focused` is the live element just returned; the property read fails safely.
-        let owner = unsafe { focused.CurrentProcessId() };
-        owner.is_ok_and(|owner| owner.cast_unsigned() == cover_pid)
-    });
+    let cover_element = client
+        .uia
+        .focused_element(&client.cache)
+        .ok()
+        .filter(|focused| {
+            // SAFETY: `focused` is the live element just returned; the property read fails safely.
+            let owner = unsafe { focused.CurrentProcessId() };
+            owner.is_ok_and(|owner| owner.cast_unsigned() == cover_pid)
+        });
     let cover_before = cover_element
         .as_ref()
         .and_then(|cover| current_text(cover).ok());
@@ -755,15 +787,7 @@ fn refocus_run(
         &before[..span.start],
         &before[span.start + span.length..]
     );
-    let landing = match &after {
-        None => Landing::Unread,
-        Some(after) if *after == expected => Landing::AtTheSpan,
-        Some(after) if *after == before => Landing::Unchanged,
-        Some(after) => Landing::Elsewhere(
-            changed_region(&before, after)
-                .map(|(at, region)| (after[..at].chars().count(), region.chars().count())),
-        ),
-    };
+    let landing = Landing::of(&before, after.as_deref(), &expected);
     Some(RunOutcome {
         cover_in_front,
         refocus_failed: matches!(result, Err(NativeCaptureError::RefocusFailed { .. })),
@@ -885,6 +909,188 @@ fn wait_for_front(wanted: impl Fn(Window) -> bool) -> bool {
     }
 }
 
+/// Where the `correct` slot loads the dictionaries from, relative to the repository root it runs
+/// from.
+const RESOURCES_DIR: &str = "src-tauri/resources";
+
+/// One replacement of a misspelt word by its correction (#158), against a field focused by hand
+/// that holds text written for the check, such as one in a browser tab, where the per-application
+/// slots' markers and value-set would overwrite the field. After the countdown the focused element
+/// is the target; its window must be in front and its title must hold `title`, as for the
+/// `refocus` slot, or nothing is typed. The span is the one the analyzer publishes for the first
+/// misspelt word with a suggestion: the spell checker's flag on the sentence that holds it,
+/// anchored on that sentence at the occurrence index the analyzer counts for it, and the
+/// correction is the flag's first suggestion. `replace_within`, the path `Capture::replace` takes,
+/// replaces it, with the cascade's foreground check before each stage that sends a keystroke. The
+/// text read back is compared with the text before with the span, and only the span, replaced.
+/// Prints counts, offsets, lengths and outcomes, never text.
+///
+/// `cargo run -p wa-engine --example insertion_cascade_spike -- correct <title>`, from the
+/// repository root, with `RUST_LOG=info` for the cascade's refocus lines.
+fn run_correct_test(args: &[String]) {
+    let Some(title) = args.first() else {
+        eprintln!("usage: insertion_cascade_spike correct <title>");
+        std::process::exit(1);
+    };
+    let paths = spelling::default_paths(Path::new(RESOURCES_DIR));
+    let Ok(checker) = SpellChecker::load(&paths.aff, &paths.dic, &paths.supplement)
+        .map_err(|error| println!("  could not load the dictionaries: {error}"))
+    else {
+        return;
+    };
+
+    println!(
+        "\nFocus the target field; the replacement starts in {}s.",
+        FOCUS_DELAY.as_secs()
+    );
+    sleep(FOCUS_DELAY);
+
+    let Some(client) = Client::new() else {
+        return;
+    };
+    let Some(target) = client.focused_target(title) else {
+        return;
+    };
+    let element = &target.element;
+    let window = target.window;
+    let Ok(before) =
+        current_text(element).map_err(|error| println!("  could not read the target: {error}"))
+    else {
+        return;
+    };
+    let Some(correction) = first_misspelling(&checker, &before) else {
+        println!(
+            "  the target's {} characters hold no misspelt word with a suggestion",
+            before.chars().count()
+        );
+        return;
+    };
+    let span_at = before[..correction.start].chars().count();
+    println!(
+        "  text: {} characters in {} sentences; the first misspelt word with a suggestion is in \
+         sentence {}, at character {span_at}, {} characters, occurrence index {} of its sentence; \
+         its correction, the first of {} suggestions, is {} characters",
+        before.chars().count(),
+        correction.sentences,
+        correction.sentence,
+        before[correction.start..correction.end].chars().count(),
+        correction.span.occurrence,
+        correction.suggestions,
+        correction.replacement.chars().count()
+    );
+    if !target.title_holds() {
+        println!("  the target window's title no longer holds the given title; nothing is typed");
+        return;
+    }
+
+    let in_front_at_call = foreground::window().is_some_and(|front| front.hwnd == window.hwnd);
+    let result = replace_within(
+        element,
+        Some(window),
+        &correction.span.anchor,
+        correction.span.occurrence,
+        correction.span.local_start,
+        correction.span.local_length,
+        &correction.replacement,
+    );
+    sleep(SETTLE_DELAY);
+    let front_after = foreground::window();
+    let after = current_text(element).ok();
+    let expected = format!(
+        "{}{}{}",
+        &before[..correction.start],
+        correction.replacement,
+        &before[correction.end..]
+    );
+    let landing = Landing::of(&before, after.as_deref(), &expected);
+    println!(
+        "  the target in front at the call: {in_front_at_call}; result: {}; in front after: {}; \
+         read back: {}; replacement landed {}",
+        match result {
+            Ok(method) => format!("ok via {method:?}"),
+            Err(error) => format!("failed ({error})"),
+        },
+        match front_after {
+            Some(front) if front.hwnd == window.hwnd => "the target",
+            Some(_) => "another window",
+            None => "no window",
+        },
+        after.as_ref().map_or_else(
+            || "nothing".to_owned(),
+            |after| format!("{} characters", after.chars().count())
+        ),
+        landing.describe(span_at)
+    );
+}
+
+/// The first misspelt word of a text, as the analyzer would publish it, and where it sits.
+struct Correction {
+    /// The spell checker's span on the word's sentence, with the occurrence index the analyzer
+    /// counts for it.
+    span: Span,
+    /// The checker's first suggestion.
+    replacement: String,
+    /// How many suggestions the checker gave.
+    suggestions: usize,
+    /// The word's sentence, numbered from 1, and the text's count of sentences.
+    sentence: usize,
+    sentences: usize,
+    /// The word's byte range in the text.
+    start: usize,
+    end: usize,
+}
+
+/// The first word of `text` the spell checker flags with a suggestion, checked a sentence at a
+/// time as the analyzer checks it: the sentences of Unicode's sentence boundaries, trimmed, and
+/// the occurrence index the count of the sentence's text in the text before it.
+fn first_misspelling(checker: &SpellChecker, text: &str) -> Option<Correction> {
+    let sentences: Vec<(usize, &str)> = text
+        .unicode_sentences()
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        // `unicode_sentences` and `trim` both return slices of `text`, so the distance between the
+        // two addresses is the sentence's byte offset in it.
+        .map(|sentence| (sentence.as_ptr().addr() - text.as_ptr().addr(), sentence))
+        .collect();
+    sentences
+        .iter()
+        .enumerate()
+        .find_map(|(index, &(sentence_start, sentence))| {
+            let flag = checker
+                .check(sentence)
+                .into_iter()
+                .find(|flag| !flag.suggestions.is_empty())?;
+            let start = sentence_start + byte_offset(sentence, flag.span.local_start)?;
+            let end = sentence_start
+                + byte_offset(sentence, flag.span.local_start + flag.span.local_length)?;
+            Some(Correction {
+                replacement: flag.suggestions[0].clone(),
+                suggestions: flag.suggestions.len(),
+                span: Span {
+                    occurrence: text[..sentence_start].matches(sentence).count(),
+                    ..flag.span
+                },
+                sentence: index + 1,
+                sentences: sentences.len(),
+                start,
+                end,
+            })
+        })
+}
+
+/// The byte offset in `text` of the character `utf16` UTF-16 code units into it, or `None` when
+/// no character starts there.
+fn byte_offset(text: &str, utf16: usize) -> Option<usize> {
+    let mut units = 0;
+    for (at, character) in text.char_indices() {
+        if units == utf16 {
+            return Some(at);
+        }
+        units += character.len_utf16();
+    }
+    (units == utf16).then_some(text.len())
+}
+
 /// Where a run's replacement landed, from the target's text read back after it.
 enum Landing {
     /// The text read back is the text before with the span, and only the span, replaced.
@@ -895,6 +1101,36 @@ enum Landing {
     Elsewhere(Option<(usize, usize)>),
     /// The text could not be read back.
     Unread,
+}
+
+impl Landing {
+    /// Where a replacement landed, from the text `before` it, the text read back `after` it, or
+    /// `None` when it could not be read back, and the text `expected` with the span, and only the
+    /// span, replaced.
+    fn of(before: &str, after: Option<&str>, expected: &str) -> Self {
+        match after {
+            None => Self::Unread,
+            Some(after) if after == expected => Self::AtTheSpan,
+            Some(after) if after == before => Self::Unchanged,
+            Some(after) => Self::Elsewhere(
+                changed_region(before, after)
+                    .map(|(at, region)| (after[..at].chars().count(), region.chars().count())),
+            ),
+        }
+    }
+
+    /// The landing in words, with `span_at`, the span's offset in characters.
+    fn describe(&self, span_at: usize) -> String {
+        match self {
+            Self::AtTheSpan => format!("at the span, character {span_at}"),
+            Self::Unchanged => "nowhere, the target's text is unchanged".to_owned(),
+            Self::Elsewhere(Some((at, length))) => format!(
+                "elsewhere: {length} characters changed at character {at}, the span at {span_at}"
+            ),
+            Self::Elsewhere(None) => "elsewhere".to_owned(),
+            Self::Unread => "unknown, the target could not be read back".to_owned(),
+        }
+    }
 }
 
 struct RunOutcome {
@@ -911,16 +1147,7 @@ struct RunOutcome {
 
 impl std::fmt::Display for RunOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let landing = match self.landing {
-            Landing::AtTheSpan => format!("at the span, character {}", self.span_at),
-            Landing::Unchanged => "nowhere, the target's text is unchanged".to_owned(),
-            Landing::Elsewhere(Some((at, length))) => format!(
-                "elsewhere: {length} characters changed at character {at}, the span at {}",
-                self.span_at
-            ),
-            Landing::Elsewhere(None) => "elsewhere".to_owned(),
-            Landing::Unread => "unknown, the target could not be read back".to_owned(),
-        };
+        let landing = self.landing.describe(self.span_at);
         let cover = match self.cover_changed {
             Some(true) => "changed",
             Some(false) => "unchanged",

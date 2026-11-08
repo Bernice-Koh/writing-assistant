@@ -5,8 +5,7 @@ not how code reads (`CODE_STYLE.md`) or how prose reads (`style-guide.md`).
 
 Project shape: a Tauri v2 desktop app for Windows, with the Rust code in a Cargo workspace of
 `crates/engine`, `crates/wa`, and `src-tauri/`, the React and TypeScript frontend under `src/`,
-a browser extension in `extension/`, and a Python project in `adapter/` for the bench and the
-adapter training jobs. Solo developer, public repo, MIT licensed, single intended user.
+and a Python project in `adapter/` for the bench and the adapter training jobs. Solo developer, public repo, MIT licensed, single intended user.
 
 ## Folder structure
 
@@ -77,8 +76,7 @@ and the command that runs it.
 ## Dependencies and tooling
 
 - Rust: `cargo`, with `Cargo.lock` committed, on the release `rust-toolchain.toml` pins.
-- Frontend (`src/`): `npm`, with `package-lock.json` committed. `extension/` is plain
-  JavaScript with no `package.json` of its own, linted from the root config.
+- Frontend (`src/`): `npm`, with `package-lock.json` committed.
 - Python (`adapter/`): `uv`, with `pyproject.toml` and `uv.lock` committed and the environment
   in `.venv/`. `ruff` lints and formats, and `pytest` runs the tests. Both are CI gates in the
   Python job that arrives with `adapter/`.

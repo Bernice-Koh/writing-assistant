@@ -24,15 +24,6 @@ export default tseslint.config(
     },
   },
   {
-    files: ["extension/**/*.js"],
-    extends: [js.configs.recommended],
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: "module",
-      globals: { ...globals.browser, chrome: "readonly" },
-    },
-  },
-  {
     files: ["*.config.{js,ts}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
