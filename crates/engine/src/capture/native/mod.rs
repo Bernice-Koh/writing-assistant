@@ -9,6 +9,14 @@
 //! thread that owns the client, never inside a callback. The `Capture` trait's methods (#20)
 //! extend the same principle: they too only send a signal and await a reply carrying owned
 //! data, never a COM object, across the boundary.
+//!
+//! The scope, the element the text-change registration targets, follows the focused element,
+//! resolved on a focus event and on the foreground watch's re-resolution after a foreground change
+//! that no focus event followed. The thread compares the resolved element with the scoped one
+//! through `CompareElements` before it tears anything down, and `scope::decide` keeps the scope
+//! when they are one element: the watch's re-resolution then raises nothing, and a focus event
+//! keeps the registration and raises the change notification. Another element moves the scope and
+//! raises the notification.
 
 pub mod client;
 pub mod cursor;
@@ -19,6 +27,7 @@ mod foreground_hook;
 pub mod insert;
 mod process;
 pub mod read;
+mod scope;
 pub mod surface;
 mod text_change;
 
@@ -40,6 +49,7 @@ use error::NativeCaptureError;
 use focus::FocusHandler;
 use foreground_hook::ForegroundHook;
 use process::OwnProcesses;
+use scope::{Resolution, ScopeAction};
 
 /// A live capture session: one dedicated thread owning the UIA client, the focus-changed
 /// registration, and whichever element the text-change registration currently targets.
@@ -165,7 +175,8 @@ impl Drop for NativeCapture {
 /// teardown from whatever thread drops the `NativeCapture`, and a `Capture` trait call signals
 /// a request from whatever async task made it.
 enum Signal {
-    FocusChanged,
+    /// Resolve the focused element, for the given source.
+    FocusChanged(Resolution),
     TextChanged,
     Stop,
     GetText(oneshot::Sender<Result<String, CaptureError>>),
@@ -189,7 +200,8 @@ enum Signal {
 impl Signal {
     fn name(&self) -> &'static str {
         match self {
-            Signal::FocusChanged => "FocusChanged",
+            Signal::FocusChanged(Resolution::FocusEvent) => "FocusChanged",
+            Signal::FocusChanged(Resolution::ForegroundWatch) => "FocusChanged from the watch",
             Signal::TextChanged => "TextChanged",
             Signal::Stop => "Stop",
             Signal::GetText(_) => "GetText",
@@ -216,8 +228,9 @@ struct TextChangeScope {
     /// first surface read and kept, since the scope's process does not change.
     process_name: Option<String>,
     /// Whether a read of this scope's element has logged that it took more than one part. A new
-    /// scope starts on every focus change to an element outside this app, so the line is once
-    /// per focus, while the analyzer reads after every pause in typing and at its safety poll.
+    /// scope starts when focus moves to another element outside this app, so the line is once
+    /// per scoped element, while the analyzer reads after every pause in typing and at its safety
+    /// poll.
     multi_part_read_logged: bool,
 }
 
@@ -273,7 +286,7 @@ fn run(
         let focus_tx = tx.clone();
         let focus_handler: IUIAutomationFocusChangedEventHandler = FocusHandler {
             callback: Arc::new(move |_element: &IUIAutomationElement| {
-                let _ = focus_tx.send(Signal::FocusChanged);
+                let _ = focus_tx.send(Signal::FocusChanged(Resolution::FocusEvent));
             }),
         }
         .into();
@@ -295,7 +308,7 @@ fn run(
     let _ = ready.send(Ok(()));
     // Seed initial state: focus-changed only fires on a *change*, so whatever already has
     // focus when this thread starts up needs one explicit kick to be tracked.
-    let _ = tx.send(Signal::FocusChanged);
+    let _ = tx.send(Signal::FocusChanged(Resolution::FocusEvent));
 
     let mut current_scope: Option<TextChangeScope> = None;
     let mut own_processes = OwnProcesses::default();
@@ -311,23 +324,25 @@ fn run(
 
     while let Some(signal) = rx.blocking_recv() {
         log::debug!("signal received: {}", signal.name());
-        if matches!(signal, Signal::FocusChanged) {
+        if matches!(signal, Signal::FocusChanged(_)) {
             last_focus_signal = Some(Instant::now());
         }
         match signal {
             Signal::Stop => break,
             // A foreground change that no focus event followed leaves the scope on the element
-            // focused before it; re-resolving the focused element is the focus handler's own work.
+            // focused before it; re-resolving the focused element is the focus handler's own work,
+            // marked as the watch's so that an element that compares equal to the scoped one, as
+            // after a switch to another window and back, keeps the scope and raises nothing.
             Signal::ForegroundSettled(changed_at) => {
                 if foreground_hook::reresolve_after(changed_at, last_focus_signal) {
                     log::info!(
                         "the foreground window changed and no focus event followed; re-resolving \
                          the focused element"
                     );
-                    let _ = tx.send(Signal::FocusChanged);
+                    let _ = tx.send(Signal::FocusChanged(Resolution::ForegroundWatch));
                 }
             }
-            Signal::FocusChanged => {
+            Signal::FocusChanged(source) => {
                 let element = match uia.focused_element(&cache) {
                     Ok(element) => element,
                     Err(error) => {
@@ -352,6 +367,28 @@ fn run(
                 if process::belongs_to_this_app(pid) {
                     log::debug!("focus is on this app's own window (pid {pid}); scope unchanged");
                     continue;
+                }
+                let same_element = current_scope.as_ref().is_some_and(|scope| {
+                    scope::same_element(uia.client(), &scope.element, &element)
+                });
+                match scope::decide(same_element, source) {
+                    ScopeAction::Keep => {
+                        log::debug!(
+                            "the foreground watch resolved the scoped element, {}; scope kept, \
+                             nothing raised",
+                            describe(&element)
+                        );
+                        continue;
+                    }
+                    ScopeAction::KeepAndNotify => {
+                        log::debug!(
+                            "a focus event resolved the scoped element, {}; registration kept",
+                            describe(&element)
+                        );
+                        notify_change(changes);
+                        continue;
+                    }
+                    ScopeAction::Move => {}
                 }
                 if let Some(scope) = current_scope.take() {
                     // SAFETY: `scope.element`/`scope.handler` are the exact pair returned by

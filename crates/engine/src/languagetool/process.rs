@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 use tokio::time::Instant;
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::client::LanguageToolClient;
 use super::error::LanguageToolError;
@@ -91,6 +92,13 @@ pub(crate) fn spawn(paths: &LanguageToolPaths, port: u16) -> Result<Child, Langu
         // an inherited one does. The server reads no input, and takes none of this process's.
         .stdin(Stdio::null())
         .stdout(std::io::stderr())
+        // A release build of the app has no console, so Windows gives a console program it starts
+        // a new console window: Java's opened as LanguageTool started, took the foreground, and
+        // was scoped and read by the capture thread until the next click, for 37 s and 15 s in two
+        // starts on 7 November 2026 (#158). The flag withholds the console window and not the
+        // handles: the streams above are unchanged, so `wa screen` and a dev run still receive the
+        // log on stderr.
+        .creation_flags(CREATE_NO_WINDOW.0)
         .kill_on_drop(true)
         .spawn()
         .map_err(|source| LanguageToolError::Spawn {

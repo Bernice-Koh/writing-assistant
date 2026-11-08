@@ -1,7 +1,7 @@
 //! Text-change event registration, scoped to a single element's subtree at a time. The scope
 //! moves with focus: `capture::native` removes the previous registration and adds a new one
-//! each time focus changes, rather than accumulating one registration per element ever
-//! focused.
+//! each time focus moves to another element, rather than accumulating one registration per
+//! element ever focused.
 
 use std::sync::Arc;
 
