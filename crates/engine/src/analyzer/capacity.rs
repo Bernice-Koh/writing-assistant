@@ -2,10 +2,10 @@
 //! capacity follows the text just read, sentences for the sentence cache and paragraphs for the
 //! paragraph cache.
 //!
-//! A fixed capacity smaller than a document costs the document every entry: the deterministic stage
-//! and the grammar stage walk the units in document order, so by the time a pass reaches a unit, the
-//! misses since its last use have put more entries than the cache holds and the least-recently-used
-//! rule has evicted it (#169).
+//! A fixed capacity smaller than a document costs the document every entry: the deterministic
+//! stage and the grammar stage walk the units in document order, so by the time a pass reaches a
+//! unit, the misses since its last use have put more entries than the cache holds and the
+//! least-recently-used rule has evicted it (#169).
 
 use std::num::NonZeroUsize;
 

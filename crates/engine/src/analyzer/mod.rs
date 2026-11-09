@@ -31,13 +31,21 @@
 //! registers. The paragraph cache holds the paragraph pass's flags for a paragraph under a hash of
 //! the ruleset version, the register, its mode and its text, so an unchanged paragraph is served
 //! wherever it has moved. With the version and the register in both keys, an entry made under one
-//! ruleset version or one register is never served under another. Suppression by severity is applied each time
-//! the document's flags are assembled for a publish, over each sentence's parts in hand and the
-//! paragraph and document passes' flags anchored on it, so a soft flag that a grammar flag overlaps
-//! is in the first update and gone from the second. A grammar check that fails, times out, or meets
-//! LanguageTool degraded or absent leaves the sentence's grammar part incomplete, and the next
-//! recheck sends it again. Each span's occurrence index is counted from its sentence's position in
-//! the document as each update is assembled.
+//! ruleset version or one register is never served under another. Before a recheck's first lookup,
+//! each cache's capacity is raised to twice the units of the text just read, its sentences for the
+//! sentence cache and its paragraphs for the paragraph cache, whenever that exceeds the capacity.
+//! Both start at a floor of `CACHE_CAPACITY` and neither is lowered while the app runs, so each is
+//! bounded by twice the units of the longest text checked since the app started. With as many
+//! spare slots as the text has units, a pass that follows one over the same document evicts only
+//! entries for text the document no longer holds, even when every unit changed, and never one it
+//! has yet to reach.
+//!
+//! Suppression by severity is applied each time the document's flags are assembled for a publish,
+//! over each sentence's parts in hand and the paragraph and document passes' flags anchored on it,
+//! so a soft flag that a grammar flag overlaps is in the first update and gone from the second. A
+//! grammar check that fails, times out, or meets LanguageTool degraded or absent leaves the
+//! sentence's grammar part incomplete, and the next recheck sends it again. Each span's occurrence
+//! index is counted from its sentence's position in the document as each update is assembled.
 //!
 //! Every recheck carries a number. A new recheck aborts the grammar stage of the one before, and a
 //! stage publishes only while its number is the latest, so a stage that a newer recheck replaced
@@ -586,9 +594,12 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
 /// under `register`. Each sentence's parts come from the sentence cache where it holds an entry,
 /// and otherwise from a fresh check under its paragraph's mode, cached as [`deterministic_parts`]
 /// leaves them. Each paragraph's flags come from [`passes::cached_paragraph_pass`], and the
-/// document's from [`passes::counted_document_pass`]. An unchanged sentence or paragraph whose
-/// entry aged out under the LRU's capacity is checked afresh, the correct fallback rather than
-/// showing no flags. Returns the recheck with what the stage did, for its log line.
+/// document's from [`passes::counted_document_pass`]. With the capacities raised first, a pass
+/// that follows one over the same document finds every unchanged sentence and paragraph in its
+/// cache. An entry can still age out while other documents are checked, once their units fill the
+/// spare slots and this document's are the least recently used; an unchanged sentence or paragraph
+/// whose entry aged out is checked afresh, the correct fallback rather than showing no flags.
+/// Returns the recheck with what the stage did, for its log line.
 fn deterministic_stage(
     inner: &Inner,
     number: u64,
