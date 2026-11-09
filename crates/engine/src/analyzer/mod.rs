@@ -44,11 +44,13 @@
 //! never publishes over the newer text's flags.
 //!
 //! [`form_mode`] covers the paragraphs and their modes, `sentences` the split of a paragraph,
-//! `passes` the rule layer's passes, and `dedupe` suppression. [`form_mode`] is public for the
-//! native capture harness; [`Analyzer`] is the only other public surface. The screen segments a
-//! rewrite candidate through `form_mode` and `sentences`, checks it through `passes`, and places
-//! its flags through `placed_in_document`, as the analyzer does live text.
+//! `passes` the rule layer's passes, `dedupe` suppression, and `capacity` the caches' capacity
+//! rule. [`form_mode`] is public for the native capture harness; [`Analyzer`] is the only other
+//! public surface. The screen segments a rewrite candidate through `form_mode` and `sentences`,
+//! checks it through `passes`, and places its flags through `placed_in_document`, as the analyzer
+//! does live text.
 
+mod capacity;
 mod dedupe;
 pub mod form_mode;
 pub(crate) mod passes;
