@@ -95,10 +95,10 @@ const SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// one recheck after typing pauses rather than one per keystroke, per AC #40(a).
 const QUIET_THRESHOLD: Duration = Duration::from_millis(500);
 
-/// How many entries each LRU cache holds at once: sentences' in the sentence cache, and
-/// paragraphs', which a document holds fewer of, in the paragraph cache. Sized for a long document
-/// (a few thousand words is on the order of a few hundred sentences) without growing unbounded
-/// for the life of a long writing session.
+/// The capacity both LRU caches start at, and the floor [`capacity::capacity_for`] raises each
+/// from: before a recheck's first lookup, the sentence cache's capacity becomes twice the text's
+/// sentences and the paragraph cache's twice its paragraphs, whenever that exceeds it, and neither
+/// is lowered while the app runs.
 const CACHE_CAPACITY: usize = 1000;
 
 /// Runs the debounce, the two checking stages, suppression, and the cache against a [`Capture`]
@@ -581,14 +581,14 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
     inner.flags_tx.send_replace(flags);
 }
 
-/// Splits `text` into its paragraphs and each paragraph into its sentences, and runs the three
-/// passes under `register`. Each sentence's parts come from the sentence cache where it holds an
-/// entry, and otherwise from a fresh check under its paragraph's mode, cached as
-/// [`deterministic_parts`] leaves them. Each paragraph's flags come from
-/// [`passes::cached_paragraph_pass`], and the document's from [`passes::counted_document_pass`].
-/// An unchanged sentence or paragraph whose entry aged out under the LRU's capacity is checked
-/// afresh, the correct fallback rather than showing no flags. Returns the recheck with what the
-/// stage did, for its log line.
+/// Splits `text` into its paragraphs and each paragraph into its sentences, raises each cache's
+/// capacity for the text by [`fit_capacity`] before the first lookup, and runs the three passes
+/// under `register`. Each sentence's parts come from the sentence cache where it holds an entry,
+/// and otherwise from a fresh check under its paragraph's mode, cached as [`deterministic_parts`]
+/// leaves them. Each paragraph's flags come from [`passes::cached_paragraph_pass`], and the
+/// document's from [`passes::counted_document_pass`]. An unchanged sentence or paragraph whose
+/// entry aged out under the LRU's capacity is checked afresh, the correct fallback rather than
+/// showing no flags. Returns the recheck with what the stage did, for its log line.
 fn deterministic_stage(
     inner: &Inner,
     number: u64,
@@ -596,14 +596,26 @@ fn deterministic_stage(
     register: String,
 ) -> (Recheck, StageWork) {
     let version = inner.ruleset.version();
-    let mut sentences = Vec::new();
-    let mut parts = Vec::new();
-    let mut unit_flags: Vec<Vec<Flag>> = Vec::new();
+    let paragraphs: Vec<_> = form_mode::split(&text)
+        .into_iter()
+        .map(|paragraph| {
+            let paragraph_sentences = sentences::split(paragraph.text);
+            (paragraph, paragraph_sentences)
+        })
+        .collect();
+    let sentence_count = paragraphs
+        .iter()
+        .map(|(_, paragraph_sentences)| paragraph_sentences.len())
+        .sum();
+    fit_capacity(&inner.cache, sentence_count);
+    fit_capacity(&inner.paragraph_cache, paragraphs.len());
+    let mut sentences = Vec::with_capacity(sentence_count);
+    let mut parts = Vec::with_capacity(sentence_count);
+    let mut unit_flags: Vec<Vec<Flag>> = Vec::with_capacity(sentence_count);
     let mut checked = 0;
     let mut served = 0;
-    for paragraph in form_mode::split(&text) {
+    for (paragraph, paragraph_sentences) in paragraphs {
         let first_sentence = sentences.len();
-        let paragraph_sentences = sentences::split(paragraph.text);
         for sentence in &paragraph_sentences {
             let key = cache_key(version, &register, paragraph.mode, sentence.text);
             let cached = inner
@@ -695,6 +707,18 @@ fn log_stage_work(
         work.checked,
         work.served
     );
+}
+
+/// Raises `cache`'s capacity to [`capacity::capacity_for`] its capacity and `units`, the units of
+/// the text a recheck is about to look up in it. `lru`'s `resize` returns at once while the
+/// capacity is unchanged; on growth it keeps every entry in its order, reserves nothing for the new
+/// slots and shrinks its map to the entries it holds, so the map grows as entries arrive.
+fn fit_capacity<V>(cache: &Mutex<LruCache<u64, V>>, units: usize) {
+    let mut cache = cache
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked");
+    let capacity = capacity::capacity_for(cache.cap(), units);
+    cache.resize(capacity);
 }
 
 /// How many entries `cache` holds, and its capacity.
@@ -1517,6 +1541,117 @@ mod tests {
                 assert!(!line.contains(hidden), "{hidden} in {line}");
             }
         }
+    }
+
+    /// More units than the caches' floor, so that a cache held at the floor misses on every unit of
+    /// an in-order pass.
+    const PAST_THE_FLOOR: usize = CACHE_CAPACITY + 200;
+
+    /// `count` distinct sentences of prose with every word spelt correctly, so that checking them
+    /// costs no spelling suggestion.
+    fn distinct_sentences(count: usize) -> Vec<String> {
+        const SUBJECTS: [&str; 10] = [
+            "baker", "farmer", "teacher", "sailor", "painter", "doctor", "miner", "porter",
+            "tailor", "singer",
+        ];
+        const VERBS: [&str; 10] = [
+            "carried", "painted", "found", "moved", "cleaned", "sold", "bought", "mended",
+            "watched", "counted",
+        ];
+        const OBJECTS: [&str; 12] = [
+            "chair", "table", "basket", "ladder", "window", "lantern", "bucket", "blanket",
+            "kettle", "barrel", "parcel", "wagon",
+        ];
+        let sentences: Vec<String> = SUBJECTS
+            .iter()
+            .flat_map(|subject| {
+                VERBS.iter().flat_map(move |verb| {
+                    OBJECTS
+                        .iter()
+                        .map(move |object| format!("The {subject} {verb} the {object}."))
+                })
+            })
+            .take(count)
+            .collect();
+        assert_eq!(
+            sentences.len(),
+            count,
+            "the word lists make too few sentences"
+        );
+        sentences
+    }
+
+    /// A sentence none of [`distinct_sentences`] holds.
+    const CHANGED: &str = "The baker carried the old chair.";
+
+    #[tokio::test(start_paused = true)]
+    async fn a_document_past_the_floor_checks_only_its_changed_sentence() {
+        let mut sentences = distinct_sentences(PAST_THE_FLOOR);
+        let fake = Arc::new(FakeCapture::new(&sentences.join(" ")));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(analyzer.deterministic_check_count(), PAST_THE_FLOOR);
+
+        sentences[PAST_THE_FLOOR / 2] = CHANGED.to_owned();
+        fake.set_text(&sentences.join(" "));
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 2);
+        assert_eq!(analyzer.deterministic_check_count(), PAST_THE_FLOOR + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_document_past_the_floor_sends_only_its_changed_sentence_to_grammar() {
+        let mut sentences = distinct_sentences(PAST_THE_FLOOR);
+        let fake = Arc::new(FakeCapture::new(&sentences.join(" ")));
+        let grammar = FakeGrammar::flagging(&[]);
+        let analyzer = analyzer_with_grammar(&fake, &grammar);
+        step(6).await;
+        assert_eq!(grammar.sent(), sentences, "every sentence is answered once");
+        assert_eq!(analyzer.updates().len(), 2, "both stages published");
+
+        sentences[PAST_THE_FLOOR / 2] = CHANGED.to_owned();
+        fake.set_text(&sentences.join(" "));
+        step(6).await;
+        assert_eq!(grammar.sent()[PAST_THE_FLOOR..], [CHANGED]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_document_of_more_paragraphs_than_the_floor_evaluates_only_its_changed_paragraph() {
+        let mut paragraphs = distinct_sentences(PAST_THE_FLOOR);
+        let fake = Arc::new(FakeCapture::new(&paragraphs.join("\n")));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(analyzer.paragraph_check_count(), PAST_THE_FLOOR);
+
+        paragraphs[PAST_THE_FLOOR / 2] = CHANGED.to_owned();
+        fake.set_text(&paragraphs.join("\n"));
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 2);
+        assert_eq!(analyzer.paragraph_check_count(), PAST_THE_FLOOR + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_short_document_between_two_visits_to_a_long_one_costs_the_long_one_nothing() {
+        let long = distinct_sentences(PAST_THE_FLOOR).join(" ");
+        let fake = Arc::new(FakeCapture::new(&long));
+        let analyzer = analyzer_on(&fake);
+        step(6).await;
+        assert_eq!(analyzer.deterministic_check_count(), PAST_THE_FLOOR);
+
+        fake.set_text("A short note. It holds two sentences.");
+        step(6).await;
+        assert_eq!(analyzer.deterministic_check_count(), PAST_THE_FLOOR + 2);
+
+        fake.set_text(&long);
+        step(6).await;
+        assert_eq!(analyzer.updates().len(), 3);
+        assert_eq!(analyzer.deterministic_check_count(), PAST_THE_FLOOR + 2);
+        let capacity = analyzer.inner.cache.lock().unwrap().cap().get();
+        assert_eq!(
+            capacity,
+            2 * PAST_THE_FLOOR,
+            "never lowered for the short text"
+        );
     }
 
     #[tokio::test(start_paused = true)]
