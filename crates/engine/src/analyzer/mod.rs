@@ -172,6 +172,16 @@ struct Recheck {
     unit_flags: Vec<Vec<Flag>>,
 }
 
+/// What a recheck's deterministic stage did, for its log line.
+struct StageWork {
+    /// How many sentences the sentence pass checked, each one the sentence cache held no entry for.
+    checked: usize,
+    /// How many sentences the sentence cache served.
+    served: usize,
+    /// How long the document pass took.
+    document_pass: Duration,
+}
+
 /// One sentence of a [`Recheck`]'s document.
 struct DocumentSentence {
     /// Where the trimmed sentence sits in the document's text, in bytes.
@@ -505,13 +515,18 @@ fn recheck(
         register.name,
         register.source
     );
-    let recheck = deterministic_stage(inner, number, read.text, register.name);
-    publish(
+    let started = std::time::Instant::now();
+    let (recheck, work) = deterministic_stage(inner, number, read.text, register.name);
+    let assembly_started = std::time::Instant::now();
+    let flags = recheck.document_flags(inner);
+    log_stage_work(
         inner,
         number,
-        Stage::Deterministic,
-        recheck.document_flags(inner),
+        &work,
+        started.elapsed(),
+        assembly_started.elapsed(),
     );
+    publish(inner, number, Stage::Deterministic, flags);
 
     let grammar = inner.grammar.clone()?;
     if recheck.incomplete_sentences().is_empty() {
@@ -570,12 +585,20 @@ fn publish(inner: &Inner, number: u64, stage: Stage, flags: Vec<Flag>) {
 /// [`deterministic_parts`] leaves them. Each paragraph's flags come from
 /// [`passes::cached_paragraph_pass`], and the document's from [`passes::counted_document_pass`].
 /// An unchanged sentence or paragraph whose entry aged out under the LRU's capacity is checked
-/// afresh, the correct fallback rather than showing no flags.
-fn deterministic_stage(inner: &Inner, number: u64, text: String, register: String) -> Recheck {
+/// afresh, the correct fallback rather than showing no flags. Returns the recheck with what the
+/// stage did, for its log line.
+fn deterministic_stage(
+    inner: &Inner,
+    number: u64,
+    text: String,
+    register: String,
+) -> (Recheck, StageWork) {
     let version = inner.ruleset.version();
     let mut sentences = Vec::new();
     let mut parts = Vec::new();
     let mut unit_flags: Vec<Vec<Flag>> = Vec::new();
+    let mut checked = 0;
+    let mut served = 0;
     for paragraph in form_mode::split(&text) {
         let first_sentence = sentences.len();
         let paragraph_sentences = sentences::split(paragraph.text);
@@ -587,15 +610,19 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String, register: Strin
                 .expect("a poisoned lock here means another thread already panicked")
                 .get(&key)
                 .cloned();
-            let sentence_parts = cached.unwrap_or_else(|| {
-                let checked = deterministic_parts(inner, &register, sentence.text, paragraph.mode);
+            let sentence_parts = if let Some(cached) = cached {
+                served += 1;
+                cached
+            } else {
+                checked += 1;
+                let fresh = deterministic_parts(inner, &register, sentence.text, paragraph.mode);
                 inner
                     .cache
                     .lock()
                     .expect("a poisoned lock here means another thread already panicked")
-                    .put(key, checked.clone());
-                checked
-            });
+                    .put(key, fresh.clone());
+                fresh
+            };
             let start = paragraph.start + sentence.start;
             sentences.push(DocumentSentence {
                 range: start..start + sentence.text.len(),
@@ -619,8 +646,10 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String, register: Strin
         parts,
         unit_flags,
     };
+    let document_pass_started = std::time::Instant::now();
     let document_flags =
         passes::counted_document_pass(inner, &recheck.register, &recheck.mode_sentences());
+    let document_pass = document_pass_started.elapsed();
     for UnitFlag { sentence, flag } in document_flags {
         recheck.unit_flags[sentence].push(flag);
     }
@@ -632,7 +661,50 @@ fn deterministic_stage(inner: &Inner, number: u64, text: String, register: Strin
         recheck.count_in(FormMode::Code),
         recheck.incomplete_sentences().len()
     );
-    recheck
+    let work = StageWork {
+        checked,
+        served,
+        document_pass,
+    };
+    (recheck, work)
+}
+
+/// Logs what recheck `number`'s deterministic stage did: `took`, the time from its start until its
+/// update was assembled, with the document pass's part of that and `assembly`, the assembly's part;
+/// the sentences it checked and those it served; and each cache's entry count and capacity. The
+/// line holds counts and durations, never text.
+fn log_stage_work(
+    inner: &Inner,
+    number: u64,
+    work: &StageWork,
+    took: Duration,
+    assembly: Duration,
+) {
+    let (sentence_entries, sentence_capacity) = occupancy(&inner.cache);
+    let (paragraph_entries, paragraph_capacity) = occupancy(&inner.paragraph_cache);
+    log::debug!(
+        "recheck {number}'s deterministic stage took {:.2} ms, {:.2} ms of it in the document pass \
+         and {:.2} ms in assembling its update; it checked {} sentences and served {} from the \
+         cache; the sentence cache holds {sentence_entries} entries at a capacity of \
+         {sentence_capacity}, the paragraph cache {paragraph_entries} at {paragraph_capacity}",
+        milliseconds(took),
+        milliseconds(work.document_pass),
+        milliseconds(assembly),
+        work.checked,
+        work.served
+    );
+}
+
+/// How many entries `cache` holds, and its capacity.
+fn occupancy<V>(cache: &Mutex<LruCache<u64, V>>) -> (usize, NonZeroUsize) {
+    let cache = cache
+        .lock()
+        .expect("a poisoned lock here means another thread already panicked");
+    (cache.len(), cache.cap())
+}
+
+fn milliseconds(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
 }
 
 /// The parts of `sentence`, a sentence of a paragraph of `mode`, as the deterministic stage leaves
@@ -903,7 +975,7 @@ mod tests {
 
     use crate::capture::{CaptureError, CursorRect, Foreground, Surface};
     use crate::flag::{FlagOrigin, RulesetVersion, Span};
-    use crate::test_support::{test_spell_checker, Answer, FakeGrammar};
+    use crate::test_support::{capture_logs, test_spell_checker, Answer, FakeGrammar};
 
     /// The catalogue compiled from the toggles the settings file is first written with.
     pub(super) fn default_catalogue() -> Catalogue {
@@ -1392,6 +1464,57 @@ mod tests {
         let flags = published_flags(&analyzer);
         let flagged: Vec<String> = flags.iter().map(flagged_text).collect();
         assert_eq!(flagged, ["mispelling"], "{flags:#?}");
+    }
+
+    #[test]
+    fn each_recheck_logs_its_stage_time_its_sentence_counts_and_its_caches_and_no_text() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let ((), lines) = capture_logs(|| {
+            runtime.block_on(async {
+                let fake = Arc::new(FakeCapture::new(
+                    "The baker carried the chair. The farmer painted the table.",
+                ));
+                let _analyzer = analyzer_on(&fake);
+                step(6).await;
+                fake.set_text("The baker carried the chair. The farmer painted the door.");
+                step(6).await;
+            });
+        });
+
+        let stage_line = regex::Regex::new(
+            "^recheck (\\d+)'s deterministic stage took \\d+\\.\\d\\d ms, \\d+\\.\\d\\d ms of it in \
+             the document pass and \\d+\\.\\d\\d ms in assembling its update; (.+)$",
+        )
+        .unwrap();
+        let stages: Vec<(String, String)> = lines
+            .iter()
+            .filter_map(|(_, line)| stage_line.captures(line))
+            .map(|found| (found[1].to_owned(), found[2].to_owned()))
+            .collect();
+        let counts = |checked: usize, served: usize, sentences: usize, paragraphs: usize| {
+            format!(
+                "it checked {checked} sentences and served {served} from the cache; the sentence \
+                 cache holds {sentences} entries at a capacity of {CACHE_CAPACITY}, the paragraph \
+                 cache {paragraphs} at {CACHE_CAPACITY}"
+            )
+        };
+        assert_eq!(
+            stages,
+            [
+                ("1".to_owned(), counts(2, 0, 2, 1)),
+                ("2".to_owned(), counts(1, 1, 3, 2)),
+            ],
+            "{lines:#?}"
+        );
+        for (_, line) in &lines {
+            for hidden in ["baker", "chair", "farmer", "table", "door"] {
+                assert!(!line.contains(hidden), "{hidden} in {line}");
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
