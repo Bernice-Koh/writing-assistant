@@ -141,6 +141,20 @@ resolves to another register, as when focus moves between two copies of one docu
 failing degrades that source and never ends checking: with LanguageTool down, the deterministic
 stage's flags continue.
 
+Each cache's capacity follows the document. Before a recheck's first lookup, the sentence cache's
+capacity is raised to twice the sentences of the text just read, and the paragraph cache's to twice
+its paragraphs, whenever that exceeds the capacity. Both start at 1,000 entries, and neither is
+lowered while the app runs, so each is bounded by twice the units of the longest text checked since
+the app started: 4,022 sentence entries for the 2,011 sentences of the typed document measured
+under Overlay. Twice, because a pass that misses puts an entry and evicts the least recently used
+one: with as many spare slots as the document has units, a pass that follows one over the same
+document evicts only entries of text the document no longer holds, even when every sentence
+changed, and never one it has yet to reach. Never lowered, because a short document checked between
+two visits to a long one must not cost the long one its entries. Once another document of
+comparable length has filled the spare slots, the returning document's entries are the least
+recently used, and a sentence inserted before others evicts the ones after it, which are then
+checked afresh.
+
 ### Severity and suppression
 
 Spelling, grammar, and content-preservation flags are hard. Style and telltale flags are soft.
@@ -543,6 +557,19 @@ with medians of 98.4% (82.7 to 99.5) and 6.3% (4.7 to 9.4). Most of the app's nu
 is each pause's recheck, which re-ran the whole deterministic stage, 3 to 4 s in each of its 14 runs
 per build: the analyzer's sentence cache holds 1,000 entries, fewer than the document's 2,010
 sentences, so a recheck in document order finds almost none of them still cached.
+
+Measured on 9 November 2026 under the same protocol and typing on release builds, over 60
+one-second samples and 16 rechecks per build, before and after the analyzer's caches were sized to
+the document (see Checking). With the caches at 1,000 entries, each recheck spent a median of
+3,265 ms (3,217 to 3,469) in its deterministic stage and checked a median of 1,962 of the
+document's 2,011 sentences (1,949 to 1,973), and the app and its WebView2 processes spent a mean of
+82.6% of one core over the minute, with a median of 94.8% (81.8 to 98.7), and Notepad's own process
+a mean of 7.1%, with a median of 6.3% (4.6 to 7.8). With the caches sized to the document, each
+recheck checked the one sentence its burst changed and sent LanguageTool at most that sentence, in
+a median of 6.7 ms (6.5 to 7.4), of which 1.4 ms was the document pass and 2.6 ms the assembly of
+the update, both over the whole document. The means were then 4.7% and 9.2%, with medians of 1.6%
+(1.6 to 4.6) and 7.7% (6.2 to 9.4). Notepad's number rose because each pause's grammar stage now
+completes and publishes, and each publish re-resolves every flag.
 
 Phase 2 built the non-activating window and the card's place in the hover's hit region, so the card
 can carry buttons; the card has no actions today. Planned for Phase 4: the working card.
